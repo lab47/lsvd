@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-hclog"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/mr-tron/base58"
 	"lukechampine.com/blake3"
 )
@@ -25,9 +26,9 @@ type (
 type Disk struct {
 	BlockSize int
 
-	log         hclog.Logger
-	path        string
-	recentReads map[LBA]Block
+	log     hclog.Logger
+	path    string
+	l1cache *lru.Cache[LBA, Block]
 
 	activeLog  *os.File
 	nextLogIdx uint64
@@ -35,7 +36,7 @@ type Disk struct {
 	crc        hash.Hash64
 	curOffset  uint32
 
-	cacheTLB  map[LBA]PBA
+	lba2pba   map[LBA]PBA
 	activeTLB map[LBA]uint32
 
 	u64buf []byte
@@ -47,18 +48,24 @@ type Disk struct {
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
-		BlockSize:   4 * 1024,
-		log:         log,
-		path:        path,
-		recentReads: make(map[LBA]Block),
-		nextLogIdx:  1,
-		u64buf:      make([]byte, 16),
-		crc:         crc64.New(crc64.MakeTable(crc64.ECMA)),
-		bh:          blake3.New(32, nil),
-		cacheTLB:    make(map[LBA]PBA),
-		activeTLB:   make(map[LBA]uint32),
-		parent:      empty,
+		BlockSize:  4 * 1024,
+		log:        log,
+		path:       path,
+		nextLogIdx: 1,
+		u64buf:     make([]byte, 16),
+		crc:        crc64.New(crc64.MakeTable(crc64.ECMA)),
+		bh:         blake3.New(32, nil),
+		lba2pba:    make(map[LBA]PBA),
+		activeTLB:  make(map[LBA]uint32),
+		parent:     empty,
 	}
+
+	l1cache, err := lru.New[LBA, Block](4096)
+	if err != nil {
+		return nil, err
+	}
+
+	d.l1cache = l1cache
 
 	return d, nil
 }
@@ -154,7 +161,7 @@ func (d *Disk) closeChunk() error {
 	d.activeLog = nil
 
 	for lba, offset := range d.activeTLB {
-		d.cacheTLB[lba] = PBA{
+		d.lba2pba[lba] = PBA{
 			Chunk:  BlockId(sum),
 			Offset: offset,
 		}
@@ -172,7 +179,7 @@ func (d *Disk) NewBlock() Block {
 type LBA int
 
 func (d *Disk) ReadBlock(block LBA, data Block) error {
-	if cacheData, ok := d.recentReads[block]; ok {
+	if cacheData, ok := d.l1cache.Get(block); ok {
 		copy(data, cacheData)
 		return nil
 	}
@@ -182,7 +189,7 @@ func (d *Disk) ReadBlock(block LBA, data Block) error {
 		return err
 	}
 
-	if pba, ok := d.cacheTLB[block]; ok {
+	if pba, ok := d.lba2pba[block]; ok {
 		return d.readPBA(block, pba, data)
 	}
 
@@ -205,7 +212,7 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data Block) error {
 	}
 
 	cacheCopy := slices.Clone(data)
-	d.recentReads[lba] = cacheCopy
+	d.l1cache.Add(lba, cacheCopy)
 
 	//clear(data)
 	return nil
@@ -221,13 +228,13 @@ func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
 		return PBA{Offset: offset}, true
 	}
 
-	p, ok := d.cacheTLB[addr]
+	p, ok := d.lba2pba[addr]
 	return p, ok
 }
 
 func (d *Disk) WriteBlock(block LBA, data Block) error {
 	cacheCopy := slices.Clone(data)
-	d.recentReads[block] = cacheCopy
+	d.l1cache.Add(block, cacheCopy)
 
 	if d.activeLog == nil {
 		l, err := d.nextLog(d.parent)
@@ -338,7 +345,7 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 			return nil, err
 		}
 
-		d.cacheTLB[LBA(lba)] = cur
+		d.lba2pba[LBA(lba)] = cur
 
 		cur.Offset += uint32(8 + d.BlockSize)
 	}
@@ -354,7 +361,7 @@ func (d *Disk) saveLBAMap() error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.cacheTLB, f)
+	return saveLBAMap(d.lba2pba, f)
 }
 
 func saveLBAMap(m map[LBA]PBA, f io.Writer) error {

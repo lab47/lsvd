@@ -167,7 +167,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteBlock(47, data)
 		r.NoError(err)
 
-		clear(d.recentReads)
+		d.l1cache.Purge()
 
 		r.NotEmpty(d.activeTLB)
 
@@ -195,7 +195,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteBlock(47, data)
 		r.NoError(err)
 
-		clear(d.recentReads)
+		d.l1cache.Purge()
 
 		r.NotEmpty(d.activeTLB)
 
@@ -208,7 +208,7 @@ func TestLSVD(t *testing.T) {
 
 		blockEqual(t, d2, data)
 
-		r.NotEmpty(d.recentReads)
+		r.NotEmpty(d.l1cache.Values())
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -227,15 +227,15 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteBlock(47, data)
 		r.NoError(err)
 
-		clear(d.recentReads)
-		clear(d.cacheTLB)
+		d.l1cache.Purge()
+		clear(d.lba2pba)
 
 		r.NoError(d.closeChunk())
 
 		r.Empty(d.activeTLB)
 
 		r.NoError(d.rebuild())
-		r.NotEmpty(d.cacheTLB)
+		r.NotEmpty(d.lba2pba)
 
 		d2 := d.NewBlock()
 
@@ -244,7 +244,7 @@ func TestLSVD(t *testing.T) {
 
 		blockEqual(t, d2, data)
 
-		r.NotEmpty(d.recentReads)
+		r.NotEmpty(d.l1cache.Values())
 	})
 
 	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
