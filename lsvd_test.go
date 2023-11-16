@@ -228,14 +228,14 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		d.l1cache.Purge()
-		clear(d.lba2pba)
+		d.lba2disk.Clear()
 
 		r.NoError(d.closeChunk())
 
 		r.Empty(d.activeTLB)
 
 		r.NoError(d.rebuild())
-		r.NotEmpty(d.lba2pba)
+		r.NotZero(d.lba2disk.Len())
 
 		d2 := d.NewBlock()
 

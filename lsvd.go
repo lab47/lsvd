@@ -14,6 +14,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/igrmk/treemap/v2"
 	"github.com/mr-tron/base58"
 	"lukechampine.com/blake3"
 )
@@ -30,13 +31,12 @@ type Disk struct {
 	path    string
 	l1cache *lru.Cache[LBA, Block]
 
-	activeLog  *os.File
-	nextLogIdx uint64
-	logCnt     uint64
-	crc        hash.Hash64
-	curOffset  uint32
+	activeLog *os.File
+	logCnt    uint64
+	crc       hash.Hash64
+	curOffset uint32
 
-	lba2pba   map[LBA]PBA
+	lba2disk  *treemap.TreeMap[LBA, PBA]
 	activeTLB map[LBA]uint32
 
 	u64buf []byte
@@ -48,16 +48,15 @@ type Disk struct {
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
-		BlockSize:  4 * 1024,
-		log:        log,
-		path:       path,
-		nextLogIdx: 1,
-		u64buf:     make([]byte, 16),
-		crc:        crc64.New(crc64.MakeTable(crc64.ECMA)),
-		bh:         blake3.New(32, nil),
-		lba2pba:    make(map[LBA]PBA),
-		activeTLB:  make(map[LBA]uint32),
-		parent:     empty,
+		BlockSize: 4 * 1024,
+		log:       log,
+		path:      path,
+		u64buf:    make([]byte, 16),
+		crc:       crc64.New(crc64.MakeTable(crc64.ECMA)),
+		bh:        blake3.New(32, nil),
+		lba2disk:  treemap.New[LBA, PBA](),
+		activeTLB: make(map[LBA]uint32),
+		parent:    empty,
 	}
 
 	l1cache, err := lru.New[LBA, Block](4096)
@@ -101,13 +100,9 @@ func (d *Disk) nextLog(parent BlockId) (*os.File, error) {
 		return nil, err
 	}
 
-	pos, err := f.Seek(int64(headerSize), io.SeekStart)
+	_, err = f.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
 		return nil, err
-	}
-
-	if pos != int64(headerSize) {
-		panic("ack")
 	}
 
 	d.curOffset = uint32(headerSize)
@@ -161,10 +156,10 @@ func (d *Disk) closeChunk() error {
 	d.activeLog = nil
 
 	for lba, offset := range d.activeTLB {
-		d.lba2pba[lba] = PBA{
+		d.lba2disk.Set(lba, PBA{
 			Chunk:  BlockId(sum),
 			Offset: offset,
-		}
+		})
 	}
 
 	clear(d.activeTLB)
@@ -189,7 +184,7 @@ func (d *Disk) ReadBlock(block LBA, data Block) error {
 		return err
 	}
 
-	if pba, ok := d.lba2pba[block]; ok {
+	if pba, ok := d.lba2disk.Get(block); ok {
 		return d.readPBA(block, pba, data)
 	}
 
@@ -228,7 +223,7 @@ func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
 		return PBA{Offset: offset}, true
 	}
 
-	p, ok := d.lba2pba[addr]
+	p, ok := d.lba2disk.Get(addr)
 	return p, ok
 }
 
@@ -345,7 +340,7 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 			return nil, err
 		}
 
-		d.lba2pba[LBA(lba)] = cur
+		d.lba2disk.Set(LBA(lba), cur)
 
 		cur.Offset += uint32(8 + d.BlockSize)
 	}
@@ -361,25 +356,17 @@ func (d *Disk) saveLBAMap() error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.lba2pba, f)
+	return saveLBAMap(d.lba2disk, f)
 }
 
-func saveLBAMap(m map[LBA]PBA, f io.Writer) error {
-	var keys []LBA
-
-	for lba := range m {
-		keys = append(keys, lba)
-	}
-
-	slices.Sort(keys)
-
-	for _, lba := range keys {
-		err := binary.Write(f, binary.BigEndian, uint64(lba))
+func saveLBAMap(m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
+	for it := m.Iterator(); it.Valid(); it.Next() {
+		err := binary.Write(f, binary.BigEndian, uint64(it.Key()))
 		if err != nil {
 			return err
 		}
 
-		err = binary.Write(f, binary.BigEndian, m[lba])
+		err = binary.Write(f, binary.BigEndian, it.Value())
 		if err != nil {
 			return err
 		}
