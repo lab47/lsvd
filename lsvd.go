@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
 	"hash/crc64"
@@ -16,6 +17,11 @@ import (
 	"lukechampine.com/blake3"
 )
 
+type (
+	Block   []byte
+	BlockId [32]byte
+)
+
 type Disk struct {
 	BlockSize int
 
@@ -27,19 +33,17 @@ type Disk struct {
 	nextLogIdx uint64
 	logCnt     uint64
 	crc        hash.Hash64
-	curPBA     PBA
+	curOffset  uint32
 
 	cacheTLB  map[LBA]PBA
 	activeTLB map[LBA]uint32
 
 	u64buf []byte
 
-	parent [32]byte
+	parent BlockId
 
 	bh *blake3.Hasher
 }
-
-type Block []byte
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
@@ -62,15 +66,15 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 type logHeader struct {
 	Count  uint64
 	CRC    uint64
-	Parent [32]byte
+	Parent BlockId
 }
 
 var (
 	headerSize = 1024
-	empty      [32]byte
+	empty      BlockId
 )
 
-func (d *Disk) nextLog(parent [32]byte) (*os.File, error) {
+func (d *Disk) nextLog(parent BlockId) (*os.File, error) {
 	f, err := os.Create(filepath.Join(d.path, "log.active"))
 	if err != nil {
 		return nil, err
@@ -99,7 +103,7 @@ func (d *Disk) nextLog(parent [32]byte) (*os.File, error) {
 		panic("ack")
 	}
 
-	d.curPBA = PBA{Chunk: empty, Offset: uint32(headerSize)}
+	d.curOffset = uint32(headerSize)
 
 	return f, nil
 }
@@ -126,7 +130,7 @@ func (d *Disk) closeChunk() error {
 		return err
 	}
 
-	d.curPBA = PBA{}
+	d.curOffset = 0
 
 	d.activeLog.Close()
 
@@ -151,7 +155,7 @@ func (d *Disk) closeChunk() error {
 
 	for lba, offset := range d.activeTLB {
 		d.cacheTLB[lba] = PBA{
-			Chunk:  [32]byte(sum),
+			Chunk:  BlockId(sum),
 			Offset: offset,
 		}
 	}
@@ -208,7 +212,7 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data Block) error {
 }
 
 type PBA struct {
-	Chunk  [32]byte
+	Chunk  BlockId
 	Offset uint32
 }
 
@@ -253,9 +257,9 @@ func (d *Disk) WriteBlock(block LBA, data Block) error {
 		return fmt.Errorf("invalid write size (%d != %d)", n, d.BlockSize)
 	}
 
-	d.activeTLB[block] = d.curPBA.Offset
+	d.activeTLB[block] = d.curOffset
 
-	d.curPBA.Offset += uint32(8 + d.BlockSize)
+	d.curOffset += uint32(8 + d.BlockSize)
 
 	return nil
 }
@@ -282,21 +286,10 @@ func (d *Disk) rebuild() error {
 		}
 	}
 
-	/*
-		entries, err := os.ReadDir(d.path)
-		if err != nil {
-			return err
-		}
-
-		for _, ent := range entries {
-			d.rebuildTLB(filepath.Join(d.path, ent.Name()))
-		}
-	*/
-
 	return nil
 }
 
-func chunkFromName(name string) ([32]byte, bool) {
+func chunkFromName(name string) (BlockId, bool) {
 	_, intPart, ok := strings.Cut(name, ".")
 	if !ok {
 		return empty, false
@@ -308,7 +301,7 @@ func chunkFromName(name string) ([32]byte, bool) {
 	}
 
 	if len(data) == 32 {
-		return [32]byte(data), true
+		return BlockId(data), true
 	}
 
 	return empty, false
@@ -351,4 +344,68 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 	}
 
 	return &hdr, nil
+}
+
+func (d *Disk) saveLBAMap() error {
+	f, err := os.Create(filepath.Join(d.path, "head.map"))
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	return saveLBAMap(d.cacheTLB, f)
+}
+
+func saveLBAMap(m map[LBA]PBA, f io.Writer) error {
+	var keys []LBA
+
+	for lba := range m {
+		keys = append(keys, lba)
+	}
+
+	slices.Sort(keys)
+
+	for _, lba := range keys {
+		err := binary.Write(f, binary.BigEndian, uint64(lba))
+		if err != nil {
+			return err
+		}
+
+		err = binary.Write(f, binary.BigEndian, m[lba])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func processLBAMap(f io.Reader) (map[LBA]PBA, error) {
+	m := make(map[LBA]PBA)
+
+	for {
+		var (
+			lba uint64
+			pba PBA
+		)
+
+		err := binary.Read(f, binary.BigEndian, &lba)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, err
+		}
+
+		err = binary.Read(f, binary.BigEndian, &pba)
+		if err != nil {
+			return nil, err
+		}
+
+		m[LBA(lba)] = pba
+	}
+
+	return m, nil
 }

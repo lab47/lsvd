@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/mr-tron/base58"
 	"github.com/stretchr/testify/require"
 )
 
@@ -244,5 +245,46 @@ func TestLSVD(t *testing.T) {
 		blockEqual(t, d2, data)
 
 		r.NotEmpty(d.recentReads)
+	})
+
+	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		data := d.NewBlock()
+		copy(data, testData)
+
+		err = d.WriteBlock(47, data)
+		r.NoError(err)
+
+		r.NoError(d.closeChunk())
+
+		r.NoError(d.saveLBAMap())
+
+		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
+		r.NoError(err)
+
+		defer f.Close()
+
+		m, err := processLBAMap(f)
+		r.NoError(err)
+
+		pba, ok := m[47]
+		r.True(ok)
+
+		headName, err := os.ReadFile(filepath.Join(tmpdir, "head"))
+		r.NoError(err)
+
+		cdata, err := base58.Decode(string(headName))
+		r.NoError(err)
+
+		r.Equal(BlockId(cdata), pba.Chunk)
+		r.Equal(uint32(headerSize), pba.Offset)
 	})
 }
