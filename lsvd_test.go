@@ -153,7 +153,7 @@ func TestLSVD(t *testing.T) {
 			pba, ok := d.cacheTranslate(47)
 			r.True(ok)
 
-			r.Equal(empty, pba.Chunk)
+			r.Equal(empty, pba.Segment)
 			r.Equal(uint32(headerSize), pba.Offset)
 		})
 	})
@@ -206,7 +206,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NotEmpty(d.activeTLB)
 
-		r.NoError(d.closeChunk())
+		r.NoError(d.closeSegment())
 
 		d2 := d.NewExtent(1)
 
@@ -235,7 +235,7 @@ func TestLSVD(t *testing.T) {
 		d.l1cache.Purge()
 		d.lba2disk.Clear()
 
-		r.NoError(d.closeChunk())
+		r.NoError(d.closeSegment())
 
 		r.Empty(d.activeTLB)
 
@@ -266,7 +266,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
-		r.NoError(d.closeChunk())
+		r.NoError(d.closeSegment())
 
 		r.NoError(d.saveLBAMap())
 
@@ -287,7 +287,7 @@ func TestLSVD(t *testing.T) {
 		cdata, err := base58.Decode(string(headName))
 		r.NoError(err)
 
-		r.Equal(SegmentId(cdata), pba.Chunk)
+		r.Equal(SegmentId(cdata), pba.Segment)
 		r.Equal(uint32(headerSize), pba.Offset)
 	})
 

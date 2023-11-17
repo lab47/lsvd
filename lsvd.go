@@ -32,7 +32,7 @@ func (e Extent) Blocks() int {
 	return len(e) / BlockSize
 }
 
-type chunkInfo struct {
+type segmentInfo struct {
 	f *os.File
 	m mmap.MMap
 }
@@ -49,9 +49,9 @@ type Disk struct {
 	crc       hash.Hash64
 	curOffset uint32
 
-	lba2disk   *treemap.TreeMap[LBA, PBA]
-	activeTLB  map[LBA]uint32
-	openChunks *lru.Cache[SegmentId, *chunkInfo]
+	lba2disk     *treemap.TreeMap[LBA, PBA]
+	activeTLB    map[LBA]uint32
+	openSegments *lru.Cache[SegmentId, *segmentInfo]
 
 	u64buf []byte
 
@@ -80,8 +80,8 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 
 	d.l1cache = l1cache
 
-	openChunks, err := lru.NewWithEvict[SegmentId, *chunkInfo](
-		256, func(key SegmentId, value *chunkInfo) {
+	openSegments, err := lru.NewWithEvict[SegmentId, *segmentInfo](
+		256, func(key SegmentId, value *segmentInfo) {
 			value.m.Unmap()
 			value.f.Close()
 		})
@@ -89,7 +89,7 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		return nil, err
 	}
 
-	d.openChunks = openChunks
+	d.openSegments = openSegments
 
 	return d, nil
 }
@@ -164,7 +164,7 @@ func (d *Disk) flushLogHeader() error {
 	return nil
 }
 
-func (d *Disk) closeChunk() error {
+func (d *Disk) closeSegment() error {
 	err := d.flushLogHeader()
 	if err != nil {
 		return err
@@ -208,8 +208,8 @@ func (d *Disk) closeChunk() error {
 
 	for lba, offset := range d.activeTLB {
 		d.lba2disk.Set(lba, PBA{
-			Chunk:  SegmentId(sum),
-			Offset: offset,
+			Segment: SegmentId(sum),
+			Offset:  offset,
 		})
 	}
 
@@ -255,10 +255,10 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 }
 
 func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
-	ci, ok := d.openChunks.Get(addr.Chunk)
+	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
 		f, err := os.Open(filepath.Join(d.path,
-			"log."+base58.Encode(addr.Chunk[:])))
+			"log."+base58.Encode(addr.Segment[:])))
 		if err != nil {
 			return err
 		}
@@ -268,12 +268,12 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
 			return err
 		}
 
-		ci = &chunkInfo{
+		ci = &segmentInfo{
 			f: f,
 			m: mm,
 		}
 
-		d.openChunks.Add(addr.Chunk, ci)
+		d.openSegments.Add(addr.Segment, ci)
 	}
 
 	copy(data, ci.m[addr.Offset+8:])
@@ -282,8 +282,8 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
 }
 
 type PBA struct {
-	Chunk  SegmentId
-	Offset uint32
+	Segment SegmentId
+	Offset  uint32
 }
 
 func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
@@ -365,7 +365,7 @@ func (d *Disk) rebuild() error {
 	return nil
 }
 
-func chunkFromName(name string) (SegmentId, bool) {
+func segmentFromName(name string) (SegmentId, bool) {
 	_, intPart, ok := strings.Cut(name, ".")
 	if !ok {
 		return empty, false
@@ -384,9 +384,9 @@ func chunkFromName(name string) (SegmentId, bool) {
 }
 
 func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
-	chunk, ok := chunkFromName(path)
+	seg, ok := segmentFromName(path)
 	if !ok {
-		return nil, fmt.Errorf("bad chunk name")
+		return nil, fmt.Errorf("bad segment name")
 	}
 
 	f, err := os.Open(path)
@@ -402,8 +402,8 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 	}
 
 	cur := PBA{
-		Chunk:  chunk,
-		Offset: 16,
+		Segment: seg,
+		Offset:  16,
 	}
 
 	for i := 0; i < int(hdr.Count); i++ {
