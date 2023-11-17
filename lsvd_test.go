@@ -210,8 +210,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, d2, data)
-
-		r.NotEmpty(d.l1cache.Values())
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -246,8 +244,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, d2, data)
-
-		r.NotEmpty(d.l1cache.Values())
 	})
 
 	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
@@ -287,7 +283,7 @@ func TestLSVD(t *testing.T) {
 		cdata, err := base58.Decode(string(headName))
 		r.NoError(err)
 
-		r.Equal(BlockId(cdata), pba.Chunk)
+		r.Equal(SegmentId(cdata), pba.Chunk)
 		r.Equal(uint32(headerSize), pba.Offset)
 	})
 }
