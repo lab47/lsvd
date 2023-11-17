@@ -91,6 +91,11 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 
 	d.openSegments = openSegments
 
+	err = d.loadLBAMap()
+	if err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -422,6 +427,14 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 	return &hdr, nil
 }
 
+func (d *Disk) Close() error {
+	err := d.saveLBAMap()
+
+	d.openSegments.Purge()
+
+	return err
+}
+
 func (d *Disk) saveLBAMap() error {
 	f, err := os.Create(filepath.Join(d.path, "head.map"))
 	if err != nil {
@@ -431,6 +444,28 @@ func (d *Disk) saveLBAMap() error {
 	defer f.Close()
 
 	return saveLBAMap(d.lba2disk, f)
+}
+
+func (d *Disk) loadLBAMap() error {
+	f, err := os.Open(filepath.Join(d.path, "head.map"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	defer f.Close()
+
+	m, err := processLBAMap(f)
+	if err != nil {
+		return err
+	}
+
+	d.lba2disk = m
+
+	return nil
 }
 
 func saveLBAMap(m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
@@ -449,8 +484,8 @@ func saveLBAMap(m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(f io.Reader) (map[LBA]PBA, error) {
-	m := make(map[LBA]PBA)
+func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, PBA], error) {
+	m := treemap.New[LBA, PBA]()
 
 	for {
 		var (
@@ -472,7 +507,7 @@ func processLBAMap(f io.Reader) (map[LBA]PBA, error) {
 			return nil, err
 		}
 
-		m[LBA(lba)] = pba
+		m.Set(LBA(lba), pba)
 	}
 
 	return m, nil

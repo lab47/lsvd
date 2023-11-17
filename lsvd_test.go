@@ -278,7 +278,7 @@ func TestLSVD(t *testing.T) {
 		m, err := processLBAMap(f)
 		r.NoError(err)
 
-		pba, ok := m[47]
+		pba, ok := m.Get(47)
 		r.True(ok)
 
 		headName, err := os.ReadFile(filepath.Join(tmpdir, "head"))
@@ -289,6 +289,37 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(SegmentId(cdata), pba.Segment)
 		r.Equal(uint32(headerSize), pba.Offset)
+	})
+
+	t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		data := d.NewExtent(1)
+		copy(data, testData)
+
+		err = d.WriteExtent(47, data)
+		r.NoError(err)
+
+		r.NoError(d.closeSegment())
+
+		r.NoError(d.Close())
+
+		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
+		r.NoError(err)
+
+		defer f.Close()
+
+		d2, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		r.NotZero(d2.lba2disk.Len())
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {
