@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"hash/crc64"
 	"io"
 	"os"
@@ -46,8 +45,8 @@ type Disk struct {
 
 	activeLog *os.File
 	logCnt    uint64
-	crc       hash.Hash64
 	curOffset uint32
+	logWriter io.Writer
 
 	lba2disk     *treemap.TreeMap[LBA, PBA]
 	activeTLB    map[LBA]uint32
@@ -66,7 +65,6 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		log:       log,
 		path:      path,
 		u64buf:    make([]byte, 16),
-		crc:       crc64.New(crc64.MakeTable(crc64.ECMA)),
 		bh:        blake3.New(32, nil),
 		lba2disk:  treemap.New[LBA, PBA](),
 		activeTLB: make(map[LBA]uint32),
@@ -105,137 +103,43 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 }
 
 type logHeader struct {
-	Count     uint64
-	CRC       uint64
 	Parent    SegmentId
 	CreatedAt uint64
 }
 
 var (
-	headerSize = 1024
+	headerSize = binary.Size(logHeader{})
 	empty      SegmentId
 )
 
-func (d *Disk) nextLog(parent SegmentId) (*os.File, error) {
+func (d *Disk) nextLog(parent SegmentId) error {
 	f, err := os.Create(filepath.Join(d.path, "log.active"))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	d.crc.Reset()
 	d.bh.Reset()
+
+	d.activeLog = f
+	d.logWriter = io.MultiWriter(f, d.bh)
 
 	ts := uint64(time.Now().Unix())
 
-	// Calculate the initial CRC over a header with no count and
-	// 0 as the crc
-	err = binary.Write(d.crc, binary.BigEndian, logHeader{
+	err = binary.Write(d.logWriter, binary.BigEndian, logHeader{
 		Parent:    parent,
 		CreatedAt: ts,
 	})
 	if err != nil {
-		return nil, err
-	}
-
-	// both will be patched later
-	binary.Write(f, binary.BigEndian, uint64(0))
-	binary.Write(f, binary.BigEndian, d.crc.Sum64())
-
-	_, err = f.Write(parent[:])
-	if err != nil {
-		return nil, err
-	}
-
-	binary.Write(f, binary.BigEndian, uint64(time.Now().Unix()))
-
-	_, err = f.Seek(int64(headerSize), io.SeekStart)
-	if err != nil {
-		return nil, err
+		return err
 	}
 
 	d.curOffset = uint32(headerSize)
-
-	return f, nil
-}
-
-func (d *Disk) restoreActive() error {
-	f, err := os.Open(filepath.Join(d.path, "log.active"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-
-		return err
-	}
-
-	defer f.Close()
-
-	var hdr logHeader
-
-	err = binary.Read(f, binary.BigEndian, &hdr)
-	if err != nil {
-		return err
-	}
-
-	d.log.Debug("found orphan active log", "created-at", hdr.CreatedAt)
-
-	_, err = f.Seek(int64(headerSize), io.SeekStart)
-	if err != nil {
-		return err
-	}
-
-	offset := uint32(headerSize)
-
-	for {
-		var lba uint64
-
-		err = binary.Read(f, binary.BigEndian, &lba)
-		if err != nil {
-			return nil
-		}
-
-		d.activeTLB[LBA(lba)] = offset
-
-		offset += uint32(8 + d.BlockSize)
-	}
-}
-
-func (d *Disk) flushLogHeader() error {
-	if d.activeLog == nil {
-		return nil
-	}
-
-	binary.BigEndian.PutUint64(d.u64buf, d.logCnt)
-	binary.BigEndian.PutUint64(d.u64buf[8:], d.crc.Sum64())
-
-	_, err := d.activeLog.WriteAt(d.u64buf, 0)
-	if err != nil {
-		return err
-	}
 
 	return nil
 }
 
 func (d *Disk) closeSegment() error {
-	err := d.flushLogHeader()
-	if err != nil {
-		return err
-	}
-
 	d.curOffset = 0
-
-	data := make([]byte, headerSize)
-
-	n, err := d.activeLog.ReadAt(data, 0)
-	if err != nil {
-		return err
-	}
-
-	if n != headerSize {
-		return fmt.Errorf("short read detected")
-	}
-
-	d.bh.Write(data)
 
 	d.activeLog.Close()
 
@@ -243,7 +147,7 @@ func (d *Disk) closeSegment() error {
 
 	newPath := filepath.Join(d.path, "log."+base58.Encode(sum))
 
-	err = os.Rename(d.activeLog.Name(), newPath)
+	err := os.Rename(d.activeLog.Name(), newPath)
 	if err != nil {
 		return err
 	}
@@ -253,7 +157,6 @@ func (d *Disk) closeSegment() error {
 		return err
 	}
 
-	d.crc.Reset()
 	d.bh.Reset()
 
 	d.activeLog = nil
@@ -274,7 +177,9 @@ func (d *Disk) NewExtent(sz int) Extent {
 	return make(Extent, d.BlockSize*sz)
 }
 
-type LBA int
+type LBA uint64
+
+const perBlockHeader = 16
 
 func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 	numBlocks := data.Blocks()
@@ -287,7 +192,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 		if cacheData, ok := d.l1cache.Get(lba); ok {
 			copy(view, cacheData)
 		} else if pba, ok := d.activeTLB[lba]; ok {
-			_, err := d.activeLog.ReadAt(view, int64(pba+8))
+			_, err := d.activeLog.ReadAt(view, int64(pba+perBlockHeader))
 			if err != nil {
 				return err
 			}
@@ -328,7 +233,7 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
 		d.openSegments.Add(addr.Segment, ci)
 	}
 
-	copy(data, ci.m[addr.Offset+8:])
+	copy(data, ci.m[addr.Offset+perBlockHeader:])
 
 	return nil
 }
@@ -347,34 +252,64 @@ func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
 	return p, ok
 }
 
+var crcTable = crc64.MakeTable(crc64.ECMA)
+
+func crcLBA(crc uint64, lba LBA) uint64 {
+	x := uint64(lba)
+
+	a := [8]byte{
+		byte(x >> 56),
+		byte(x >> 48),
+		byte(x >> 40),
+		byte(x >> 32),
+		byte(x >> 24),
+		byte(x >> 16),
+		byte(x >> 8),
+		byte(x),
+	}
+
+	return crc64.Update(crc, crcTable, a[:])
+}
+
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	cacheCopy := slices.Clone(data)
 
 	if d.activeLog == nil {
-		l, err := d.nextLog(d.parent)
+		err := d.nextLog(d.parent)
 		if err != nil {
 			return err
 		}
 
-		d.activeLog = l
 		d.logCnt = 0
 	}
 
 	d.logCnt++
 
-	dw := io.MultiWriter(d.activeLog, d.crc, d.bh)
+	dw := d.activeLog // io.MultiWriter(d.activeLog, d.crc, d.bh)
+
+	crc64.New(crc64.MakeTable(crc64.ECMA))
 
 	numBlocks := data.Blocks()
 	for i := 0; i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
+
+		view := data[:BlockSize]
+
+		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
+
 		d.l1cache.Add(lba, cacheCopy[BlockSize*i:])
 
-		err := binary.Write(dw, binary.BigEndian, uint64(lba))
+		err := binary.Write(dw, binary.BigEndian, crc)
 		if err != nil {
 			return err
 		}
 
-		n, err := dw.Write(data[:BlockSize])
+		err = binary.Write(dw, binary.BigEndian, uint64(lba))
+		if err != nil {
+			return err
+		}
+
+		n, err := dw.Write(view)
 		if err != nil {
 			return err
 		}
@@ -386,7 +321,7 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		}
 
 		d.activeTLB[lba] = d.curOffset
-		d.curOffset += uint32(8 + d.BlockSize)
+		d.curOffset += uint32(perBlockHeader + d.BlockSize)
 	}
 
 	return nil
@@ -446,14 +381,11 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 		return nil, err
 	}
 
+	defer f.Close()
+
 	var hdr logHeader
 
 	err = binary.Read(f, binary.BigEndian, &hdr)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = f.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
@@ -463,20 +395,99 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 		Offset:  uint32(headerSize),
 	}
 
-	for i := 0; i < int(hdr.Count); i++ {
-		var lba uint64
+	view := make([]byte, BlockSize)
+
+	for {
+		var crc, lba uint64
+
+		err = binary.Read(f, binary.BigEndian, &crc)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
 
 		err = binary.Read(f, binary.BigEndian, &lba)
 		if err != nil {
 			return nil, err
 		}
 
+		_, err = io.ReadFull(f, view)
+		if err != nil {
+			return nil, err
+		}
+
+		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
+			d.log.Warn("detected mis-match crc reloading log", "offset", cur.Offset)
+			break
+		}
+
 		d.lba2disk.Set(LBA(lba), cur)
 
-		cur.Offset += uint32(8 + d.BlockSize)
+		cur.Offset += uint32(perBlockHeader + d.BlockSize)
 	}
 
 	return &hdr, nil
+}
+
+func (d *Disk) restoreActive() error {
+	f, err := os.Open(filepath.Join(d.path, "log.active"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	defer f.Close()
+
+	var hdr logHeader
+
+	err = binary.Read(f, binary.BigEndian, &hdr)
+	if err != nil {
+		return err
+	}
+
+	d.log.Debug("found orphan active log", "created-at", hdr.CreatedAt)
+
+	offset := uint32(headerSize)
+
+	view := make([]byte, BlockSize)
+
+	for {
+		var lba, crc uint64
+
+		err = binary.Read(f, binary.BigEndian, &crc)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+
+		err = binary.Read(f, binary.BigEndian, &lba)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.ReadFull(f, view)
+		if err != nil {
+			return err
+		}
+
+		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
+			d.log.Warn("detected mis-match crc reloading log", "offset", offset)
+			break
+		}
+
+		d.activeTLB[LBA(lba)] = offset
+
+		offset += uint32(perBlockHeader + d.BlockSize)
+	}
+
+	return nil
 }
 
 func (d *Disk) Close() error {

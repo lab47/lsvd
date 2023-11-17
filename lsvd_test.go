@@ -117,9 +117,6 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
-		err = d.flushLogHeader()
-		r.NoError(err)
-
 		f, err := os.Open(filepath.Join(tmpdir, "log.active"))
 		r.NoError(err)
 
@@ -129,10 +126,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(binary.Read(f, binary.BigEndian, &hdr))
 
-		r.Equal(uint64(1), hdr.Count)
-		r.NotEqual(uint64(0), hdr.CRC)
-
-		var lba uint64
+		var lba, crc uint64
 
 		h := crc64.New(crc64.MakeTable(crc64.ECMA))
 
@@ -143,6 +137,7 @@ func TestLSVD(t *testing.T) {
 
 		f.Seek(int64(headerSize), io.SeekStart)
 
+		r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &crc))
 		r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &lba))
 
 		r.Equal(uint64(47), lba)
@@ -157,8 +152,6 @@ func TestLSVD(t *testing.T) {
 		r.Equal(data, blk)
 
 		t.Logf("crc: %d", h.Sum64())
-
-		r.Equal(hdr.CRC, h.Sum64())
 
 		t.Run("and are tracked for reading back", func(t *testing.T) {
 			r := require.New(t)
