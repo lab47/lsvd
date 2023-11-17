@@ -21,14 +21,18 @@ import (
 )
 
 type (
-	Extent    []byte
+	Extent struct {
+		blocks int
+		data   []byte
+	}
+
 	SegmentId [32]byte
 )
 
 const BlockSize = 4 * 1024
 
 func (e Extent) Blocks() int {
-	return len(e) / BlockSize
+	return e.blocks
 }
 
 type segmentInfo struct {
@@ -41,7 +45,7 @@ type Disk struct {
 
 	log     hclog.Logger
 	path    string
-	l1cache *lru.Cache[LBA, Extent]
+	l1cache *lru.Cache[LBA, []byte]
 
 	activeLog *os.File
 	logCnt    uint64
@@ -71,7 +75,7 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		parent:    empty,
 	}
 
-	l1cache, err := lru.New[LBA, Extent](4096)
+	l1cache, err := lru.New[LBA, []byte](4096)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +178,34 @@ func (d *Disk) closeSegment() error {
 }
 
 func (d *Disk) NewExtent(sz int) Extent {
-	return make(Extent, d.BlockSize*sz)
+	return Extent{
+		blocks: sz,
+		data:   make([]byte, BlockSize*sz),
+	}
+}
+
+func (e Extent) BlockView(cnt int) []byte {
+	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
+}
+
+func (e Extent) SetBlock(blk int, data []byte) {
+	if len(data) != BlockSize {
+		panic("invalid data length, not block size")
+	}
+
+	copy(e.data[BlockSize*blk:], data)
+}
+
+func ExtentView(blk []byte) Extent {
+	cnt := len(blk) / BlockSize
+	if cnt < 0 || len(blk)%BlockSize != 0 {
+		panic("invalid block data size for extent")
+	}
+
+	return Extent{
+		blocks: cnt,
+		data:   slices.Clone(blk),
+	}
 }
 
 type LBA uint64
@@ -187,7 +218,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 	for i := 0; i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
 
-		view := data[:BlockSize]
+		view := data.BlockView(i)
 
 		if cacheData, ok := d.l1cache.Get(lba); ok {
 			copy(view, cacheData)
@@ -204,14 +235,12 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 		} else {
 			clear(view)
 		}
-
-		data = data[BlockSize:]
 	}
 
 	return nil
 }
 
-func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
+func (d *Disk) readPBA(lba LBA, addr PBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
 		f, err := os.Open(filepath.Join(d.path,
@@ -272,7 +301,6 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 }
 
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
-	cacheCopy := slices.Clone(data)
 
 	if d.activeLog == nil {
 		err := d.nextLog(d.parent)
@@ -293,11 +321,11 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	for i := 0; i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
 
-		view := data[:BlockSize]
+		view := data.BlockView(i)
 
 		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
 
-		d.l1cache.Add(lba, cacheCopy[BlockSize*i:])
+		d.l1cache.Add(lba, slices.Clone(view))
 
 		err := binary.Write(dw, binary.BigEndian, crc)
 		if err != nil {
@@ -313,8 +341,6 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		if err != nil {
 			return err
 		}
-
-		data = data[BlockSize:]
 
 		if n != d.BlockSize {
 			return fmt.Errorf("invalid write size (%d != %d)", n, d.BlockSize)

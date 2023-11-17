@@ -28,6 +28,10 @@ var (
 	testData  = make([]byte, 4*1024)
 	testData2 = make([]byte, 4*1024)
 	testData3 = make([]byte, 4*1024)
+
+	testExtent  Extent
+	testExtent2 Extent
+	testExtent3 Extent
 )
 
 func init() {
@@ -42,9 +46,13 @@ func init() {
 	for i := 0; i < 10; i++ {
 		testData3[i] = 0x49
 	}
+
+	testExtent = ExtentView(testData)
+	testExtent2 = ExtentView(testData2)
+	testExtent3 = ExtentView(testData3)
 }
 
-func blockEqual(t *testing.T, a, b Extent) {
+func blockEqual(t *testing.T, a, b []byte) {
 	t.Helper()
 	if !bytes.Equal(a, b) {
 		t.Error("blocks are not the same")
@@ -67,14 +75,12 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := make([]byte, d.BlockSize)
-
-		copy(data, testData)
+		data := d.NewExtent(1)
 
 		err = d.ReadExtent(0, data)
 		r.NoError(err)
 
-		r.True(isEmpty(data))
+		r.True(isEmpty(data.BlockView(0)))
 	})
 
 	t.Run("writes are returned by next read", func(t *testing.T) {
@@ -87,10 +93,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(0, data)
+		err = d.WriteExtent(0, testExtent)
 		r.NoError(err)
 
 		d2 := d.NewExtent(1)
@@ -98,7 +101,7 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(0, d2)
 		r.NoError(err)
 
-		r.Equal(d2, data)
+		r.Equal(d2, testExtent)
 	})
 
 	t.Run("writes are written to a log file", func(t *testing.T) {
@@ -111,10 +114,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		f, err := os.Open(filepath.Join(tmpdir, "log.active"))
@@ -144,12 +144,12 @@ func TestLSVD(t *testing.T) {
 
 		blk := d.NewExtent(1)
 
-		n, err := io.ReadFull(io.TeeReader(f, h), blk)
+		n, err := io.ReadFull(io.TeeReader(f, h), blk.BlockView(0))
 		r.NoError(err)
 
 		r.Equal(d.BlockSize, n)
 
-		r.Equal(data, blk)
+		r.Equal(testExtent, blk)
 
 		t.Logf("crc: %d", h.Sum64())
 
@@ -173,10 +173,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		d.l1cache.Purge()
@@ -188,7 +185,7 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
-		r.Equal(d2, data)
+		r.Equal(testExtent, d2)
 	})
 
 	t.Run("can access blocks from the log when the check isn't active", func(t *testing.T) {
@@ -201,10 +198,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		d.l1cache.Purge()
@@ -218,7 +212,7 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
-		blockEqual(t, d2, data)
+		blockEqual(t, d2.BlockView(0), testExtent.BlockView(0))
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -231,10 +225,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		d.l1cache.Purge()
@@ -258,7 +249,7 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
-		blockEqual(t, d2, data)
+		blockEqual(t, d2.BlockView(0), testData)
 	})
 
 	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
@@ -271,10 +262,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		r.NoError(d.closeSegment())
@@ -312,10 +300,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		r.NoError(d.closeSegment())
@@ -338,22 +323,14 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
-		copy(data, testData)
-
-		err = d.WriteExtent(47, data)
+		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
 		r.NoError(d.closeSegment())
 
 		r.NoError(d.saveLBAMap())
 
-		d2 := d.NewExtent(1)
-		copy(d2, testData2)
-
-		r.NoError(d.WriteExtent(48, d2))
-
-		//r.NoError(d.flushLogHeader())
+		r.NoError(d.WriteExtent(48, testExtent2))
 
 		disk2, err := NewDisk(log, tmpdir)
 		r.NoError(err)
@@ -375,8 +352,8 @@ func TestLSVD(t *testing.T) {
 			r.NoError(err)
 
 			data := d.NewExtent(2)
-			copy(data, testData)
-			copy(data[len(testData):], testData)
+			copy(data.BlockView(0), testData)
+			copy(data.BlockView(1), testData)
 
 			err = d.WriteExtent(0, data)
 			r.NoError(err)
@@ -386,16 +363,16 @@ func TestLSVD(t *testing.T) {
 			err = d.ReadExtent(1, d2)
 			r.NoError(err)
 
-			blockEqual(t, d2, testData)
+			blockEqual(t, d2.BlockView(0), testData)
 
-			clear(d2)
+			d3 := d.NewExtent(1)
 
 			d.l1cache.Purge()
 
-			err = d.ReadExtent(1, d2)
+			err = d.ReadExtent(1, d3)
 			r.NoError(err)
 
-			blockEqual(t, d2, testData)
+			blockEqual(t, d3.BlockView(0), testData)
 		})
 
 		t.Run("reads can return multiple blocks", func(t *testing.T) {
@@ -409,8 +386,8 @@ func TestLSVD(t *testing.T) {
 			r.NoError(err)
 
 			data := d.NewExtent(2)
-			copy(data, testData)
-			copy(data[len(testData):], testData)
+			copy(data.BlockView(0), testData)
+			copy(data.BlockView(1), testData)
 
 			err = d.WriteExtent(0, data)
 			r.NoError(err)
@@ -420,18 +397,18 @@ func TestLSVD(t *testing.T) {
 			err = d.ReadExtent(0, d2)
 			r.NoError(err)
 
-			blockEqual(t, d2[:BlockSize], testData)
-			blockEqual(t, d2[BlockSize:], testData)
+			blockEqual(t, d2.BlockView(0), testData)
+			blockEqual(t, d2.BlockView(1), testData)
 
-			clear(d2)
+			d3 := d.NewExtent(1)
 
 			d.l1cache.Purge()
 
-			err = d.ReadExtent(0, d2)
+			err = d.ReadExtent(0, d3)
 			r.NoError(err)
 
-			blockEqual(t, d2[:BlockSize], testData)
-			blockEqual(t, d2[BlockSize:], testData)
+			blockEqual(t, d2.BlockView(0), testData)
+			blockEqual(t, d2.BlockView(1), testData)
 		})
 
 	})
