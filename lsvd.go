@@ -22,9 +22,15 @@ import (
 )
 
 type (
-	Block     []byte
+	Extent    []byte
 	SegmentId [32]byte
 )
+
+const BlockSize = 4 * 1024
+
+func (e Extent) Blocks() int {
+	return len(e) / BlockSize
+}
 
 type chunkInfo struct {
 	f *os.File
@@ -36,7 +42,7 @@ type Disk struct {
 
 	log     hclog.Logger
 	path    string
-	l1cache *lru.Cache[LBA, Block]
+	l1cache *lru.Cache[LBA, Extent]
 
 	activeLog *os.File
 	logCnt    uint64
@@ -67,7 +73,7 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		parent:    empty,
 	}
 
-	l1cache, err := lru.New[LBA, Block](4096)
+	l1cache, err := lru.New[LBA, Extent](4096)
 	if err != nil {
 		return nil, err
 	}
@@ -212,32 +218,43 @@ func (d *Disk) closeChunk() error {
 	return err
 }
 
-func (d *Disk) NewBlock() Block {
-	return make(Block, d.BlockSize)
+func (d *Disk) NewExtent(sz int) Extent {
+	return make(Extent, d.BlockSize*sz)
 }
 
 type LBA int
 
-func (d *Disk) ReadBlock(block LBA, data Block) error {
-	if cacheData, ok := d.l1cache.Get(block); ok {
-		copy(data, cacheData)
-		return nil
+func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
+	numBlocks := data.Blocks()
+
+	for i := 0; i < numBlocks; i++ {
+		lba := firstBlock + LBA(i)
+
+		view := data[:BlockSize]
+
+		if cacheData, ok := d.l1cache.Get(lba); ok {
+			copy(view, cacheData)
+		} else if pba, ok := d.activeTLB[lba]; ok {
+			_, err := d.activeLog.ReadAt(view, int64(pba+8))
+			if err != nil {
+				return err
+			}
+		} else if pba, ok := d.lba2disk.Get(lba); ok {
+			err := d.readPBA(lba, pba, view)
+			if err != nil {
+				return err
+			}
+		} else {
+			clear(view)
+		}
+
+		data = data[BlockSize:]
 	}
 
-	if pba, ok := d.activeTLB[block]; ok {
-		_, err := d.activeLog.ReadAt(data, int64(pba+8))
-		return err
-	}
-
-	if pba, ok := d.lba2disk.Get(block); ok {
-		return d.readPBA(block, pba, data)
-	}
-
-	clear(data)
 	return nil
 }
 
-func (d *Disk) readPBA(lba LBA, addr PBA, data Block) error {
+func (d *Disk) readPBA(lba LBA, addr PBA, data Extent) error {
 	ci, ok := d.openChunks.Get(addr.Chunk)
 	if !ok {
 		f, err := os.Open(filepath.Join(d.path,
@@ -278,9 +295,8 @@ func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
 	return p, ok
 }
 
-func (d *Disk) WriteBlock(block LBA, data Block) error {
+func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	cacheCopy := slices.Clone(data)
-	d.l1cache.Add(block, cacheCopy)
 
 	if d.activeLog == nil {
 		l, err := d.nextLog(d.parent)
@@ -296,23 +312,30 @@ func (d *Disk) WriteBlock(block LBA, data Block) error {
 
 	dw := io.MultiWriter(d.activeLog, d.crc, d.bh)
 
-	err := binary.Write(dw, binary.BigEndian, uint64(block))
-	if err != nil {
-		return err
+	numBlocks := data.Blocks()
+	for i := 0; i < numBlocks; i++ {
+		lba := firstBlock + LBA(i)
+		d.l1cache.Add(lba, cacheCopy[BlockSize*i:])
+
+		err := binary.Write(dw, binary.BigEndian, uint64(lba))
+		if err != nil {
+			return err
+		}
+
+		n, err := dw.Write(data[:BlockSize])
+		if err != nil {
+			return err
+		}
+
+		data = data[BlockSize:]
+
+		if n != d.BlockSize {
+			return fmt.Errorf("invalid write size (%d != %d)", n, d.BlockSize)
+		}
+
+		d.activeTLB[lba] = d.curOffset
+		d.curOffset += uint32(8 + d.BlockSize)
 	}
-
-	n, err := dw.Write(data)
-	if err != nil {
-		return err
-	}
-
-	if n != d.BlockSize {
-		return fmt.Errorf("invalid write size (%d != %d)", n, d.BlockSize)
-	}
-
-	d.activeTLB[block] = d.curOffset
-
-	d.curOffset += uint32(8 + d.BlockSize)
 
 	return nil
 }

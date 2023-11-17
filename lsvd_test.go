@@ -32,8 +32,12 @@ func init() {
 	}
 }
 
-func blockEqual(t *testing.T, a, b Block) {
-	require.True(t, bytes.Equal(a, b), "blocks are not the same")
+func blockEqual(t *testing.T, a, b Extent) {
+	t.Helper()
+	if !bytes.Equal(a, b) {
+		t.Error("blocks are not the same")
+	}
+	//require.True(t, bytes.Equal(a, b), "blocks are not the same")
 }
 
 func TestLSVD(t *testing.T) {
@@ -55,7 +59,7 @@ func TestLSVD(t *testing.T) {
 
 		copy(data, testData)
 
-		err = d.ReadBlock(0, data)
+		err = d.ReadExtent(0, data)
 		r.NoError(err)
 
 		r.True(isEmpty(data))
@@ -71,15 +75,15 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(0, data)
+		err = d.WriteExtent(0, data)
 		r.NoError(err)
 
-		d2 := d.NewBlock()
+		d2 := d.NewExtent(1)
 
-		err = d.ReadBlock(0, d2)
+		err = d.ReadExtent(0, d2)
 		r.NoError(err)
 
 		r.Equal(d2, data)
@@ -95,10 +99,10 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(47, data)
+		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
 		err = d.flushLogHeader()
@@ -131,7 +135,7 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(uint64(47), lba)
 
-		blk := d.NewBlock()
+		blk := d.NewExtent(1)
 
 		n, err := io.ReadFull(io.TeeReader(f, h), blk)
 		r.NoError(err)
@@ -164,19 +168,19 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(47, data)
+		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
 		d.l1cache.Purge()
 
 		r.NotEmpty(d.activeTLB)
 
-		d2 := d.NewBlock()
+		d2 := d.NewExtent(1)
 
-		err = d.ReadBlock(47, d2)
+		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
 		r.Equal(d2, data)
@@ -192,10 +196,10 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(47, data)
+		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
 		d.l1cache.Purge()
@@ -204,9 +208,9 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.closeChunk())
 
-		d2 := d.NewBlock()
+		d2 := d.NewExtent(1)
 
-		err = d.ReadBlock(47, d2)
+		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
 		blockEqual(t, d2, data)
@@ -222,10 +226,10 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(47, data)
+		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
 		d.l1cache.Purge()
@@ -238,9 +242,9 @@ func TestLSVD(t *testing.T) {
 		r.NoError(d.rebuild())
 		r.NotZero(d.lba2disk.Len())
 
-		d2 := d.NewBlock()
+		d2 := d.NewExtent(1)
 
-		err = d.ReadBlock(47, d2)
+		err = d.ReadExtent(47, d2)
 		r.NoError(err)
 
 		blockEqual(t, d2, data)
@@ -256,10 +260,10 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewBlock()
+		data := d.NewExtent(1)
 		copy(data, testData)
 
-		err = d.WriteBlock(47, data)
+		err = d.WriteExtent(47, data)
 		r.NoError(err)
 
 		r.NoError(d.closeChunk())
@@ -285,5 +289,78 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(SegmentId(cdata), pba.Chunk)
 		r.Equal(uint32(headerSize), pba.Offset)
+	})
+
+	t.Run("with multiple blocks", func(t *testing.T) {
+		t.Run("writes are returned by next read", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			data := d.NewExtent(2)
+			copy(data, testData)
+			copy(data[len(testData):], testData)
+
+			err = d.WriteExtent(0, data)
+			r.NoError(err)
+
+			d2 := d.NewExtent(1)
+
+			err = d.ReadExtent(1, d2)
+			r.NoError(err)
+
+			blockEqual(t, d2, testData)
+
+			clear(d2)
+
+			d.l1cache.Purge()
+
+			err = d.ReadExtent(1, d2)
+			r.NoError(err)
+
+			blockEqual(t, d2, testData)
+		})
+
+		t.Run("reads can return multiple blocks", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			data := d.NewExtent(2)
+			copy(data, testData)
+			copy(data[len(testData):], testData)
+
+			err = d.WriteExtent(0, data)
+			r.NoError(err)
+
+			d2 := d.NewExtent(2)
+
+			err = d.ReadExtent(0, d2)
+			r.NoError(err)
+
+			blockEqual(t, d2[:BlockSize], testData)
+			blockEqual(t, d2[BlockSize:], testData)
+
+			clear(d2)
+
+			d.l1cache.Purge()
+
+			err = d.ReadExtent(0, d2)
+			r.NoError(err)
+
+			blockEqual(t, d2[:BlockSize], testData)
+			blockEqual(t, d2[BlockSize:], testData)
+		})
+
 	})
 }
