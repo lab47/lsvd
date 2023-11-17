@@ -96,6 +96,11 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		return nil, err
 	}
 
+	err = d.restoreActive()
+	if err != nil {
+		return nil, err
+	}
+
 	return d, nil
 }
 
@@ -151,6 +156,48 @@ func (d *Disk) nextLog(parent SegmentId) (*os.File, error) {
 	d.curOffset = uint32(headerSize)
 
 	return f, nil
+}
+
+func (d *Disk) restoreActive() error {
+	f, err := os.Open(filepath.Join(d.path, "log.active"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	defer f.Close()
+
+	var hdr logHeader
+
+	err = binary.Read(f, binary.BigEndian, &hdr)
+	if err != nil {
+		return err
+	}
+
+	d.log.Debug("found orphan active log", "created-at", hdr.CreatedAt)
+
+	_, err = f.Seek(int64(headerSize), io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	offset := uint32(headerSize)
+
+	for {
+		var lba uint64
+
+		err = binary.Read(f, binary.BigEndian, &lba)
+		if err != nil {
+			return nil
+		}
+
+		d.activeTLB[LBA(lba)] = offset
+
+		offset += uint32(8 + d.BlockSize)
+	}
 }
 
 func (d *Disk) flushLogHeader() error {
@@ -406,9 +453,14 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 		return nil, err
 	}
 
+	_, err = f.Seek(int64(headerSize), io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
 	cur := PBA{
 		Segment: seg,
-		Offset:  16,
+		Offset:  uint32(headerSize),
 	}
 
 	for i := 0; i < int(hdr.Count); i++ {

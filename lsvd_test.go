@@ -24,11 +24,23 @@ func isEmpty(d []byte) bool {
 	return true
 }
 
-var testData = make([]byte, 4*1024)
+var (
+	testData  = make([]byte, 4*1024)
+	testData2 = make([]byte, 4*1024)
+	testData3 = make([]byte, 4*1024)
+)
 
 func init() {
 	for i := 0; i < 10; i++ {
 		testData[i] = 0x47
+	}
+
+	for i := 0; i < 10; i++ {
+		testData2[i] = 0x48
+	}
+
+	for i := 0; i < 10; i++ {
+		testData3[i] = 0x49
 	}
 }
 
@@ -238,9 +250,15 @@ func TestLSVD(t *testing.T) {
 		r.NoError(d.closeSegment())
 
 		r.Empty(d.activeTLB)
+		d.lba2disk.Clear()
 
 		r.NoError(d.rebuild())
 		r.NotZero(d.lba2disk.Len())
+
+		pba, ok := d.lba2disk.Get(47)
+		r.True(ok)
+
+		r.Equal(uint32(headerSize), pba.Offset)
 
 		d2 := d.NewExtent(1)
 
@@ -311,15 +329,45 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close())
 
-		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
-		r.NoError(err)
-
-		defer f.Close()
-
 		d2, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
 		r.NotZero(d2.lba2disk.Len())
+	})
+
+	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		data := d.NewExtent(1)
+		copy(data, testData)
+
+		err = d.WriteExtent(47, data)
+		r.NoError(err)
+
+		r.NoError(d.closeSegment())
+
+		r.NoError(d.saveLBAMap())
+
+		d2 := d.NewExtent(1)
+		copy(d2, testData2)
+
+		r.NoError(d.WriteExtent(48, d2))
+
+		//r.NoError(d.flushLogHeader())
+
+		disk2, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		r.NotEmpty(disk2.activeTLB)
+
+		r.Equal(uint32(headerSize), disk2.activeTLB[48])
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {
