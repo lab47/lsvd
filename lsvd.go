@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -70,9 +71,10 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 }
 
 type logHeader struct {
-	Count  uint64
-	CRC    uint64
-	Parent BlockId
+	Count     uint64
+	CRC       uint64
+	Parent    BlockId
+	CreatedAt uint64
 }
 
 var (
@@ -86,7 +88,17 @@ func (d *Disk) nextLog(parent BlockId) (*os.File, error) {
 		return nil, err
 	}
 
-	_, err = d.crc.Write(parent[:])
+	d.crc.Reset()
+	d.bh.Reset()
+
+	ts := uint64(time.Now().Unix())
+
+	// Calculate the initial CRC over a header with no count and
+	// 0 as the crc
+	err = binary.Write(d.crc, binary.BigEndian, logHeader{
+		Parent:    parent,
+		CreatedAt: ts,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +111,8 @@ func (d *Disk) nextLog(parent BlockId) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	binary.Write(f, binary.BigEndian, uint64(time.Now().Unix()))
 
 	_, err = f.Seek(int64(headerSize), io.SeekStart)
 	if err != nil {
@@ -133,6 +147,19 @@ func (d *Disk) closeChunk() error {
 	}
 
 	d.curOffset = 0
+
+	data := make([]byte, headerSize)
+
+	n, err := d.activeLog.ReadAt(data, 0)
+	if err != nil {
+		return err
+	}
+
+	if n != headerSize {
+		return fmt.Errorf("short read detected")
+	}
+
+	d.bh.Write(data)
 
 	d.activeLog.Close()
 
@@ -243,7 +270,7 @@ func (d *Disk) WriteBlock(block LBA, data Block) error {
 
 	d.logCnt++
 
-	dw := io.MultiWriter(d.activeLog, d.crc)
+	dw := io.MultiWriter(d.activeLog, d.crc, d.bh)
 
 	err := binary.Write(dw, binary.BigEndian, uint64(block))
 	if err != nil {

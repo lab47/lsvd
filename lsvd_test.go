@@ -120,7 +120,10 @@ func TestLSVD(t *testing.T) {
 
 		h := crc64.New(crc64.MakeTable(crc64.ECMA))
 
+		binary.Write(h, binary.BigEndian, uint64(0))
+		binary.Write(h, binary.BigEndian, uint64(0))
 		h.Write(empty[:])
+		binary.Write(h, binary.BigEndian, hdr.CreatedAt)
 
 		f.Seek(int64(headerSize), io.SeekStart)
 
