@@ -41,22 +41,17 @@ type segmentInfo struct {
 }
 
 type Disk struct {
-	BlockSize int
-
 	log     hclog.Logger
 	path    string
 	l1cache *lru.Cache[LBA, []byte]
 
 	activeLog *os.File
-	logCnt    uint64
 	curOffset uint32
 	logWriter io.Writer
 
 	lba2disk     *treemap.TreeMap[LBA, PBA]
 	activeTLB    map[LBA]uint32
 	openSegments *lru.Cache[SegmentId, *segmentInfo]
-
-	u64buf []byte
 
 	parent SegmentId
 
@@ -65,10 +60,8 @@ type Disk struct {
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
-		BlockSize: 4 * 1024,
 		log:       log,
 		path:      path,
-		u64buf:    make([]byte, 16),
 		bh:        blake3.New(32, nil),
 		lba2disk:  treemap.New[LBA, PBA](),
 		activeTLB: make(map[LBA]uint32),
@@ -177,10 +170,22 @@ func (d *Disk) closeSegment() error {
 	return err
 }
 
-func (d *Disk) NewExtent(sz int) Extent {
+func NewExtent(sz int) Extent {
 	return Extent{
 		blocks: sz,
 		data:   make([]byte, BlockSize*sz),
+	}
+}
+
+func ExtentView(blk []byte) Extent {
+	cnt := len(blk) / BlockSize
+	if cnt < 0 || len(blk)%BlockSize != 0 {
+		panic("invalid block data size for extent")
+	}
+
+	return Extent{
+		blocks: cnt,
+		data:   slices.Clone(blk),
 	}
 }
 
@@ -194,18 +199,6 @@ func (e Extent) SetBlock(blk int, data []byte) {
 	}
 
 	copy(e.data[BlockSize*blk:], data)
-}
-
-func ExtentView(blk []byte) Extent {
-	cnt := len(blk) / BlockSize
-	if cnt < 0 || len(blk)%BlockSize != 0 {
-		panic("invalid block data size for extent")
-	}
-
-	return Extent{
-		blocks: cnt,
-		data:   slices.Clone(blk),
-	}
 }
 
 type LBA uint64
@@ -307,11 +300,7 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		if err != nil {
 			return err
 		}
-
-		d.logCnt = 0
 	}
-
-	d.logCnt++
 
 	dw := d.activeLog // io.MultiWriter(d.activeLog, d.crc, d.bh)
 
@@ -342,12 +331,12 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 			return err
 		}
 
-		if n != d.BlockSize {
-			return fmt.Errorf("invalid write size (%d != %d)", n, d.BlockSize)
+		if n != BlockSize {
+			return fmt.Errorf("invalid write size (%d != %d)", n, BlockSize)
 		}
 
 		d.activeTLB[lba] = d.curOffset
-		d.curOffset += uint32(perBlockHeader + d.BlockSize)
+		d.curOffset += uint32(perBlockHeader + BlockSize)
 	}
 
 	return nil
@@ -451,7 +440,7 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 
 		d.lba2disk.Set(LBA(lba), cur)
 
-		cur.Offset += uint32(perBlockHeader + d.BlockSize)
+		cur.Offset += uint32(perBlockHeader + BlockSize)
 	}
 
 	return &hdr, nil
@@ -510,7 +499,7 @@ func (d *Disk) restoreActive() error {
 
 		d.activeTLB[LBA(lba)] = offset
 
-		offset += uint32(perBlockHeader + d.BlockSize)
+		offset += uint32(perBlockHeader + BlockSize)
 	}
 
 	return nil

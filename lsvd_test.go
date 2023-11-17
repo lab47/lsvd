@@ -75,7 +75,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := d.NewExtent(1)
+		data := NewExtent(1)
 
 		err = d.ReadExtent(0, data)
 		r.NoError(err)
@@ -96,7 +96,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(0, testExtent)
 		r.NoError(err)
 
-		d2 := d.NewExtent(1)
+		d2 := NewExtent(1)
 
 		err = d.ReadExtent(0, d2)
 		r.NoError(err)
@@ -142,12 +142,12 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(uint64(47), lba)
 
-		blk := d.NewExtent(1)
+		blk := NewExtent(1)
 
 		n, err := io.ReadFull(io.TeeReader(f, h), blk.BlockView(0))
 		r.NoError(err)
 
-		r.Equal(d.BlockSize, n)
+		r.Equal(BlockSize, n)
 
 		r.Equal(testExtent, blk)
 
@@ -180,7 +180,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NotEmpty(d.activeTLB)
 
-		d2 := d.NewExtent(1)
+		d2 := NewExtent(1)
 
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
@@ -207,7 +207,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.closeSegment())
 
-		d2 := d.NewExtent(1)
+		d2 := NewExtent(1)
 
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
@@ -244,7 +244,7 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(uint32(headerSize), pba.Offset)
 
-		d2 := d.NewExtent(1)
+		d2 := NewExtent(1)
 
 		err = d.ReadExtent(47, d2)
 		r.NoError(err)
@@ -351,21 +351,21 @@ func TestLSVD(t *testing.T) {
 			d, err := NewDisk(log, tmpdir)
 			r.NoError(err)
 
-			data := d.NewExtent(2)
+			data := NewExtent(2)
 			copy(data.BlockView(0), testData)
 			copy(data.BlockView(1), testData)
 
 			err = d.WriteExtent(0, data)
 			r.NoError(err)
 
-			d2 := d.NewExtent(1)
+			d2 := NewExtent(1)
 
 			err = d.ReadExtent(1, d2)
 			r.NoError(err)
 
 			blockEqual(t, d2.BlockView(0), testData)
 
-			d3 := d.NewExtent(1)
+			d3 := NewExtent(1)
 
 			d.l1cache.Purge()
 
@@ -385,14 +385,14 @@ func TestLSVD(t *testing.T) {
 			d, err := NewDisk(log, tmpdir)
 			r.NoError(err)
 
-			data := d.NewExtent(2)
+			data := NewExtent(2)
 			copy(data.BlockView(0), testData)
 			copy(data.BlockView(1), testData)
 
 			err = d.WriteExtent(0, data)
 			r.NoError(err)
 
-			d2 := d.NewExtent(2)
+			d2 := NewExtent(2)
 
 			err = d.ReadExtent(0, d2)
 			r.NoError(err)
@@ -400,7 +400,7 @@ func TestLSVD(t *testing.T) {
 			blockEqual(t, d2.BlockView(0), testData)
 			blockEqual(t, d2.BlockView(1), testData)
 
-			d3 := d.NewExtent(1)
+			d3 := NewExtent(1)
 
 			d.l1cache.Purge()
 
