@@ -2,7 +2,6 @@ package lsvd
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash/crc64"
 	"io"
@@ -12,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/igrmk/treemap/v2"
 	"github.com/mr-tron/base58"
+	"github.com/pkg/errors"
 	"lukechampine.com/blake3"
 )
 
@@ -145,6 +146,10 @@ func (d *Disk) nextLog(parent SegmentId) error {
 }
 
 func (d *Disk) CloseSegment() (SegmentId, error) {
+	if d.activeLog == nil {
+		return d.parent, nil
+	}
+
 	d.curOffset = 0
 
 	d.activeLog.Close()
@@ -231,7 +236,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 		} else if pba, ok := d.activeTLB[lba]; ok {
 			_, err := d.activeLog.ReadAt(view, int64(pba+perBlockHeader))
 			if err != nil {
-				return err
+				return errors.Wrapf(err, "attempting to read from active (%d)", pba)
 			}
 		} else if pba, ok := d.lba2disk.Get(lba); ok {
 			err := d.readPBA(lba, pba, view)
@@ -472,7 +477,19 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 			break
 		}
 
-		d.lba2disk.Set(LBA(lba), cur)
+		// Because we process the log segments from newest to oldest
+		// across segments, we normally want to skip an entry if we
+		// already have a mapping for the LBA...
+		if curPBA, ok := d.lba2disk.Get(LBA(lba)); ok {
+			// but if we're updating the mapping for the same segment, we take
+			// the new value because intra-segment, we're processing the entries
+			// from oldest to newest.
+			if curPBA.Segment == seg {
+				d.lba2disk.Set(LBA(lba), cur)
+			}
+		} else {
+			d.lba2disk.Set(LBA(lba), cur)
+		}
 
 		cur.Offset += uint32(perBlockHeader + BlockSize)
 	}
@@ -490,7 +507,10 @@ func (d *Disk) restoreActive() error {
 		return err
 	}
 
-	defer f.Close()
+	d.bh.Reset()
+
+	d.activeLog = f
+	d.logWriter = io.MultiWriter(f, d.bh)
 
 	var hdr SegmentHeader
 
@@ -521,10 +541,16 @@ func (d *Disk) restoreActive() error {
 			return err
 		}
 
-		_, err = io.ReadFull(f, view)
+		n, err := io.ReadFull(f, view)
 		if err != nil {
 			return err
 		}
+
+		if n != BlockSize {
+			return fmt.Errorf("block incorrect size in log.active (%d)", n)
+		}
+
+		spew.Dump(lba, offset)
 
 		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
 			d.log.Warn("detected mis-match crc reloading log", "offset", offset)
@@ -540,7 +566,12 @@ func (d *Disk) restoreActive() error {
 }
 
 func (d *Disk) Close() error {
-	err := d.saveLBAMap()
+	_, err := d.CloseSegment()
+	if err != nil {
+		return err
+	}
+
+	err = d.saveLBAMap()
 
 	d.openSegments.Purge()
 

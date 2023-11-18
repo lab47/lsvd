@@ -60,6 +60,16 @@ func blockEqual(t *testing.T, a, b []byte) {
 	//require.True(t, bytes.Equal(a, b), "blocks are not the same")
 }
 
+func extentEqual(t *testing.T, a, b Extent) {
+	t.Helper()
+
+	require.Equal(t, a.Blocks(), b.Blocks())
+
+	if !bytes.Equal(a.data, b.data) {
+		t.Error("blocks are not the same")
+	}
+}
+
 func TestLSVD(t *testing.T) {
 	log := hclog.New(&hclog.LoggerOptions{
 		Name:  "lsvdtest",
@@ -470,5 +480,190 @@ func TestLSVD(t *testing.T) {
 			blockEqual(t, d2.BlockView(1), testData)
 		})
 
+	})
+
+	t.Run("writes to the same block return the most recent", func(t *testing.T) {
+		t.Run("in the same instance", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			d2 := NewExtent(1)
+
+			err = d.ReadExtent(0, d2)
+			r.NoError(err)
+
+			r.Equal(d2, testExtent2)
+		})
+
+		t.Run("in a different instance", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			r.NoError(d.Close())
+
+			d2, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			x2 := NewExtent(1)
+
+			err = d2.ReadExtent(0, x2)
+			r.NoError(err)
+
+			extentEqual(t, x2, testExtent2)
+		})
+
+		t.Run("in a when recovering active", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			d2, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			x2 := NewExtent(1)
+
+			err = d2.ReadExtent(0, x2)
+			r.NoError(err)
+
+			extentEqual(t, x2, testExtent2)
+		})
+
+		t.Run("across segments", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			_, err = d.CloseSegment()
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			r.NoError(d.Close())
+
+			d2, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			x2 := NewExtent(1)
+
+			err = d2.ReadExtent(0, x2)
+			r.NoError(err)
+
+			extentEqual(t, x2, testExtent2)
+		})
+
+		t.Run("across segments without a lba map", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			_, err = d.CloseSegment()
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			r.NoError(d.Close())
+
+			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
+
+			d2, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			x2 := NewExtent(1)
+
+			err = d2.ReadExtent(0, x2)
+			r.NoError(err)
+
+			extentEqual(t, x2, testExtent2)
+		})
+
+		t.Run("across and within segments without a lba map", func(t *testing.T) {
+			r := require.New(t)
+
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
+
+			d, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent)
+			r.NoError(err)
+
+			_, err = d.CloseSegment()
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent2)
+			r.NoError(err)
+
+			err = d.WriteExtent(0, testExtent3)
+			r.NoError(err)
+
+			r.NoError(d.Close())
+
+			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
+
+			d2, err := NewDisk(log, tmpdir)
+			r.NoError(err)
+
+			x2 := NewExtent(1)
+
+			err = d2.ReadExtent(0, x2)
+			r.NoError(err)
+
+			extentEqual(t, x2, testExtent3)
+		})
 	})
 }
