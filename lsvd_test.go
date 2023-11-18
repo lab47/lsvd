@@ -122,7 +122,7 @@ func TestLSVD(t *testing.T) {
 
 		defer f.Close()
 
-		var hdr logHeader
+		var hdr SegmentHeader
 
 		r.NoError(binary.Read(f, binary.BigEndian, &hdr))
 
@@ -205,7 +205,8 @@ func TestLSVD(t *testing.T) {
 
 		r.NotEmpty(d.activeTLB)
 
-		r.NoError(d.closeSegment())
+		_, err = d.CloseSegment()
+		r.NoError(err)
 
 		d2 := NewExtent(1)
 
@@ -213,6 +214,57 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, d2.BlockView(0), testExtent.BlockView(0))
+	})
+
+	t.Run("segments contain the parent of their actual parent", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(47, testExtent)
+		r.NoError(err)
+
+		id, err := d.CloseSegment()
+		r.NoError(err)
+
+		r.Equal(id, d.parent)
+
+		err = d.WriteExtent(48, testExtent2)
+		r.NoError(err)
+
+		hdr, err := ReadSegmentHeader(filepath.Join(tmpdir, "log.active"))
+		r.NoError(err)
+
+		r.Equal(id, hdr.Parent)
+	})
+
+	t.Run("reuses the parent after a recovery", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(47, testExtent)
+		r.NoError(err)
+
+		id, err := d.CloseSegment()
+		r.NoError(err)
+
+		r.Equal(id, d.parent)
+
+		d2, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		r.Equal(id, d2.parent)
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -231,10 +283,13 @@ func TestLSVD(t *testing.T) {
 		d.l1cache.Purge()
 		d.lba2disk.Clear()
 
-		r.NoError(d.closeSegment())
+		_, err = d.CloseSegment()
+		r.NoError(err)
 
 		r.Empty(d.activeTLB)
 		d.lba2disk.Clear()
+
+		d.parent = empty
 
 		r.NoError(d.rebuild())
 		r.NotZero(d.lba2disk.Len())
@@ -265,7 +320,8 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		r.NoError(d.closeSegment())
+		_, err = d.CloseSegment()
+		r.NoError(err)
 
 		r.NoError(d.saveLBAMap())
 
@@ -274,7 +330,7 @@ func TestLSVD(t *testing.T) {
 
 		defer f.Close()
 
-		m, err := processLBAMap(f)
+		_, m, err := processLBAMap(f)
 		r.NoError(err)
 
 		pba, ok := m.Get(47)
@@ -303,7 +359,8 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		r.NoError(d.closeSegment())
+		_, err = d.CloseSegment()
+		r.NoError(err)
 
 		r.NoError(d.Close())
 
@@ -311,6 +368,7 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		r.NotZero(d2.lba2disk.Len())
+		r.Equal(d.parent, d2.parent)
 	})
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
@@ -326,7 +384,8 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		r.NoError(d.closeSegment())
+		_, err = d.CloseSegment()
+		r.NoError(err)
 
 		r.NoError(d.saveLBAMap())
 

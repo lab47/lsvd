@@ -29,6 +29,10 @@ type (
 	SegmentId [32]byte
 )
 
+func (s SegmentId) String() string {
+	return base58.Encode(s[:])
+}
+
 const BlockSize = 4 * 1024
 
 func (e Extent) Blocks() int {
@@ -91,6 +95,11 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		return nil, err
 	}
 
+	err = d.rebuild()
+	if err != nil {
+		return nil, err
+	}
+
 	err = d.restoreActive()
 	if err != nil {
 		return nil, err
@@ -99,13 +108,13 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	return d, nil
 }
 
-type logHeader struct {
+type SegmentHeader struct {
 	Parent    SegmentId
 	CreatedAt uint64
 }
 
 var (
-	headerSize = binary.Size(logHeader{})
+	headerSize = binary.Size(SegmentHeader{})
 	empty      SegmentId
 )
 
@@ -122,7 +131,7 @@ func (d *Disk) nextLog(parent SegmentId) error {
 
 	ts := uint64(time.Now().Unix())
 
-	err = binary.Write(d.logWriter, binary.BigEndian, logHeader{
+	err = binary.Write(d.logWriter, binary.BigEndian, SegmentHeader{
 		Parent:    parent,
 		CreatedAt: ts,
 	})
@@ -135,7 +144,7 @@ func (d *Disk) nextLog(parent SegmentId) error {
 	return nil
 }
 
-func (d *Disk) closeSegment() error {
+func (d *Disk) CloseSegment() (SegmentId, error) {
 	d.curOffset = 0
 
 	d.activeLog.Close()
@@ -146,28 +155,32 @@ func (d *Disk) closeSegment() error {
 
 	err := os.Rename(d.activeLog.Name(), newPath)
 	if err != nil {
-		return err
+		return empty, err
 	}
 
 	err = os.WriteFile(filepath.Join(d.path, "head"), []byte(base58.Encode(sum)), 0755)
 	if err != nil {
-		return err
+		return empty, err
 	}
 
 	d.bh.Reset()
 
 	d.activeLog = nil
 
+	segId := SegmentId(sum)
+
 	for lba, offset := range d.activeTLB {
 		d.lba2disk.Set(lba, PBA{
-			Segment: SegmentId(sum),
+			Segment: segId,
 			Offset:  offset,
 		})
 	}
 
 	clear(d.activeTLB)
 
-	return err
+	d.parent = segId
+
+	return segId, nil
 }
 
 func NewExtent(sz int) Extent {
@@ -345,10 +358,29 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 func (d *Disk) rebuild() error {
 	data, err := os.ReadFile(filepath.Join(d.path, "head"))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
 
 	path := filepath.Join(d.path, "log."+string(data))
+
+	segData, err := base58.Decode(string(data))
+	if err != nil {
+		return err
+	}
+
+	if len(segData) != 32 {
+		return fmt.Errorf("corrupt head value (%d != 32)", len(segData))
+	}
+
+	d.log.Debug("current parent", "parent", d.parent)
+
+	if SegmentId(segData) == d.parent {
+		d.log.Trace("head consistent with serialized map, no rebuild done")
+		return nil
+	}
 
 	for path != "" {
 		d.log.Debug("rebuilding TLB", "path", path)
@@ -357,12 +389,14 @@ func (d *Disk) rebuild() error {
 			return err
 		}
 
-		if hdr.Parent == empty {
+		if hdr.Parent == d.parent {
 			path = ""
 		} else {
 			path = filepath.Join(d.path, "log."+base58.Encode(hdr.Parent[:]))
 		}
 	}
+
+	d.parent = SegmentId(segData)
 
 	return nil
 }
@@ -385,7 +419,7 @@ func segmentFromName(name string) (SegmentId, bool) {
 	return empty, false
 }
 
-func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
+func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 	seg, ok := segmentFromName(path)
 	if !ok {
 		return nil, fmt.Errorf("bad segment name")
@@ -398,7 +432,7 @@ func (d *Disk) rebuildTLB(path string) (*logHeader, error) {
 
 	defer f.Close()
 
-	var hdr logHeader
+	var hdr SegmentHeader
 
 	err = binary.Read(f, binary.BigEndian, &hdr)
 	if err != nil {
@@ -458,7 +492,7 @@ func (d *Disk) restoreActive() error {
 
 	defer f.Close()
 
-	var hdr logHeader
+	var hdr SegmentHeader
 
 	err = binary.Read(f, binary.BigEndian, &hdr)
 	if err != nil {
@@ -521,7 +555,7 @@ func (d *Disk) saveLBAMap() error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.lba2disk, f)
+	return saveLBAMap(d.parent, d.lba2disk, f)
 }
 
 func (d *Disk) loadLBAMap() error {
@@ -536,17 +570,23 @@ func (d *Disk) loadLBAMap() error {
 
 	defer f.Close()
 
-	m, err := processLBAMap(f)
+	parent, m, err := processLBAMap(f)
 	if err != nil {
 		return err
 	}
 
+	d.parent = parent
 	d.lba2disk = m
 
 	return nil
 }
 
-func saveLBAMap(m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
+func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
+	err := binary.Write(f, binary.BigEndian, parent)
+	if err != nil {
+		return err
+	}
+
 	for it := m.Iterator(); it.Valid(); it.Next() {
 		err := binary.Write(f, binary.BigEndian, uint64(it.Key()))
 		if err != nil {
@@ -562,8 +602,15 @@ func saveLBAMap(m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, PBA], error) {
+func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, PBA], error) {
 	m := treemap.New[LBA, PBA]()
+
+	var segId SegmentId
+
+	err := binary.Read(f, binary.BigEndian, &segId)
+	if err != nil {
+		return empty, nil, err
+	}
 
 	for {
 		var (
@@ -577,16 +624,16 @@ func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, PBA], error) {
 				break
 			}
 
-			return nil, err
+			return empty, nil, err
 		}
 
 		err = binary.Read(f, binary.BigEndian, &pba)
 		if err != nil {
-			return nil, err
+			return empty, nil, err
 		}
 
 		m.Set(LBA(lba), pba)
 	}
 
-	return m, nil
+	return segId, m, nil
 }
