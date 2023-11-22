@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"hash/crc64"
 	"io"
@@ -10,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/mr-tron/base58"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,6 +76,9 @@ func TestLSVD(t *testing.T) {
 		Name:  "lsvdtest",
 		Level: hclog.Trace,
 	})
+
+	testUlid := ulid.MustNew(ulid.Now(), rand.Reader)
+
 	t.Run("reads with no data return zeros", func(t *testing.T) {
 		r := require.New(t)
 
@@ -124,10 +128,14 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
+		d.SeqGen = func() ulid.ULID {
+			return testUlid
+		}
+
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		f, err := os.Open(filepath.Join(tmpdir, "log.active"))
+		f, err := os.Open(filepath.Join(tmpdir, "log-tmp."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -236,6 +244,10 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
+		d.SeqGen = func() ulid.ULID {
+			return testUlid
+		}
+
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
@@ -246,11 +258,6 @@ func TestLSVD(t *testing.T) {
 
 		err = d.WriteExtent(48, testExtent2)
 		r.NoError(err)
-
-		hdr, err := ReadSegmentHeader(filepath.Join(tmpdir, "log.active"))
-		r.NoError(err)
-
-		r.Equal(id, hdr.Parent)
 	})
 
 	t.Run("reuses the parent after a recovery", func(t *testing.T) {
@@ -346,13 +353,6 @@ func TestLSVD(t *testing.T) {
 		pba, ok := m.Get(47)
 		r.True(ok)
 
-		headName, err := os.ReadFile(filepath.Join(tmpdir, "head"))
-		r.NoError(err)
-
-		cdata, err := base58.Decode(string(headName))
-		r.NoError(err)
-
-		r.Equal(SegmentId(cdata), pba.Segment)
 		r.Equal(uint32(headerSize), pba.Offset)
 	})
 

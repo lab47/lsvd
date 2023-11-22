@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"hash/crc64"
@@ -11,14 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/igrmk/treemap/v2"
-	"github.com/mr-tron/base58"
+	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
-	"lukechampine.com/blake3"
 )
 
 type (
@@ -27,12 +26,8 @@ type (
 		data   []byte
 	}
 
-	SegmentId [32]byte
+	SegmentId ulid.ULID
 )
-
-func (s SegmentId) String() string {
-	return base58.Encode(s[:])
-}
 
 const BlockSize = 4 * 1024
 
@@ -46,10 +41,12 @@ type segmentInfo struct {
 }
 
 type Disk struct {
+	SeqGen  func() ulid.ULID
 	log     hclog.Logger
 	path    string
 	l1cache *lru.Cache[LBA, []byte]
 
+	curSeq    ulid.ULID
 	activeLog *os.File
 	curOffset uint32
 	logWriter io.Writer
@@ -59,15 +56,12 @@ type Disk struct {
 	openSegments *lru.Cache[SegmentId, *segmentInfo]
 
 	parent SegmentId
-
-	bh *blake3.Hasher
 }
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
 		log:       log,
 		path:      path,
-		bh:        blake3.New(32, nil),
 		lba2disk:  treemap.New[LBA, PBA](),
 		activeTLB: make(map[LBA]uint32),
 		parent:    empty,
@@ -109,8 +103,22 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	return d, nil
 }
 
+var monoRead = ulid.Monotonic(rand.Reader, 2)
+
+func (d *Disk) nextSeq() (ulid.ULID, error) {
+	if d.SeqGen != nil {
+		return d.SeqGen(), nil
+	}
+
+	ul, err := ulid.New(ulid.Now(), monoRead)
+	if err != nil {
+		return ulid.ULID{}, err
+	}
+
+	return ul, nil
+}
+
 type SegmentHeader struct {
-	Parent    SegmentId
 	CreatedAt uint64
 }
 
@@ -120,20 +128,24 @@ var (
 )
 
 func (d *Disk) nextLog(parent SegmentId) error {
-	f, err := os.Create(filepath.Join(d.path, "log.active"))
+	seq, err := d.nextSeq()
 	if err != nil {
 		return err
 	}
 
-	d.bh.Reset()
+	d.curSeq = seq
+
+	f, err := os.Create(filepath.Join(d.path, "log-tmp."+seq.String()))
+	if err != nil {
+		return err
+	}
 
 	d.activeLog = f
-	d.logWriter = io.MultiWriter(f, d.bh)
+	d.logWriter = f
 
 	ts := uint64(time.Now().Unix())
 
 	err = binary.Write(d.logWriter, binary.BigEndian, SegmentHeader{
-		Parent:    parent,
 		CreatedAt: ts,
 	})
 	if err != nil {
@@ -154,25 +166,16 @@ func (d *Disk) CloseSegment() (SegmentId, error) {
 
 	d.activeLog.Close()
 
-	sum := d.bh.Sum(nil)
-
-	newPath := filepath.Join(d.path, "log."+base58.Encode(sum))
+	newPath := filepath.Join(d.path, "log."+d.curSeq.String())
 
 	err := os.Rename(d.activeLog.Name(), newPath)
 	if err != nil {
 		return empty, err
 	}
 
-	err = os.WriteFile(filepath.Join(d.path, "head"), []byte(base58.Encode(sum)), 0755)
-	if err != nil {
-		return empty, err
-	}
-
-	d.bh.Reset()
-
 	d.activeLog = nil
 
-	segId := SegmentId(sum)
+	segId := SegmentId(d.curSeq)
 
 	for lba, offset := range d.activeTLB {
 		d.lba2disk.Set(lba, PBA{
@@ -255,7 +258,7 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
 		f, err := os.Open(filepath.Join(d.path,
-			"log."+base58.Encode(addr.Segment[:])))
+			"log."+ulid.ULID(addr.Segment).String()))
 		if err != nil {
 			return err
 		}
@@ -320,7 +323,7 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		}
 	}
 
-	dw := d.activeLog // io.MultiWriter(d.activeLog, d.crc, d.bh)
+	dw := d.activeLog
 
 	crc64.New(crc64.MakeTable(crc64.ECMA))
 
@@ -361,47 +364,28 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 }
 
 func (d *Disk) rebuild() error {
-	data, err := os.ReadFile(filepath.Join(d.path, "head"))
+	entries, err := os.ReadDir(d.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		return err
+	}
+
+	for _, ent := range entries {
+		if !strings.HasPrefix(ent.Name(), "log.") {
+			continue
 		}
-		return err
-	}
 
-	path := filepath.Join(d.path, "log."+string(data))
+		path := filepath.Join(d.path, ent.Name())
 
-	segData, err := base58.Decode(string(data))
-	if err != nil {
-		return err
-	}
-
-	if len(segData) != 32 {
-		return fmt.Errorf("corrupt head value (%d != 32)", len(segData))
-	}
-
-	d.log.Debug("current parent", "parent", d.parent)
-
-	if SegmentId(segData) == d.parent {
-		d.log.Trace("head consistent with serialized map, no rebuild done")
-		return nil
-	}
-
-	for path != "" {
 		d.log.Debug("rebuilding TLB", "path", path)
-		hdr, err := d.rebuildTLB(path)
+		_, err := d.rebuildTLB(path)
 		if err != nil {
 			return err
 		}
-
-		if hdr.Parent == d.parent {
-			path = ""
-		} else {
-			path = filepath.Join(d.path, "log."+base58.Encode(hdr.Parent[:]))
-		}
 	}
 
-	d.parent = SegmentId(segData)
+	if len(entries) > 0 {
+		d.parent, _ = segmentFromName(entries[len(entries)-1].Name())
+	}
 
 	return nil
 }
@@ -412,16 +396,12 @@ func segmentFromName(name string) (SegmentId, bool) {
 		return empty, false
 	}
 
-	data, err := base58.Decode(intPart)
+	data, err := ulid.Parse(intPart)
 	if err != nil {
 		return empty, false
 	}
 
-	if len(data) == 32 {
-		return SegmentId(data), true
-	}
-
-	return empty, false
+	return SegmentId(data), true
 }
 
 func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
@@ -477,19 +457,7 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 			break
 		}
 
-		// Because we process the log segments from newest to oldest
-		// across segments, we normally want to skip an entry if we
-		// already have a mapping for the LBA...
-		if curPBA, ok := d.lba2disk.Get(LBA(lba)); ok {
-			// but if we're updating the mapping for the same segment, we take
-			// the new value because intra-segment, we're processing the entries
-			// from oldest to newest.
-			if curPBA.Segment == seg {
-				d.lba2disk.Set(LBA(lba), cur)
-			}
-		} else {
-			d.lba2disk.Set(LBA(lba), cur)
-		}
+		d.lba2disk.Set(LBA(lba), cur)
 
 		cur.Offset += uint32(perBlockHeader + BlockSize)
 	}
@@ -498,7 +466,20 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 }
 
 func (d *Disk) restoreActive() error {
-	f, err := os.Open(filepath.Join(d.path, "log.active"))
+	entries, err := filepath.Glob(filepath.Join(d.path, "log-tmp.*"))
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	if len(entries) > 1 {
+		return fmt.Errorf("multiple temporary logs found (%d)", len(entries))
+	}
+
+	f, err := os.Open(entries[0])
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -507,10 +488,8 @@ func (d *Disk) restoreActive() error {
 		return err
 	}
 
-	d.bh.Reset()
-
 	d.activeLog = f
-	d.logWriter = io.MultiWriter(f, d.bh)
+	d.logWriter = f
 
 	var hdr SegmentHeader
 
@@ -549,8 +528,6 @@ func (d *Disk) restoreActive() error {
 		if n != BlockSize {
 			return fmt.Errorf("block incorrect size in log.active (%d)", n)
 		}
-
-		spew.Dump(lba, offset)
 
 		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
 			d.log.Warn("detected mis-match crc reloading log", "offset", offset)
