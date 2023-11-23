@@ -645,3 +645,86 @@ func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, PBA], error) {
 
 	return segId, m, nil
 }
+
+func (d *Disk) GCOnce() (SegmentId, error) {
+	entries, err := os.ReadDir(d.path)
+	if err != nil {
+		return SegmentId{}, nil
+	}
+
+	if len(entries) == 0 {
+		return SegmentId{}, nil
+	}
+
+	for _, ent := range entries {
+		seg, ok := segmentFromName(ent.Name())
+		if !ok {
+			continue
+		}
+
+		err := d.copyLive(seg, filepath.Join(d.path, ent.Name()))
+		if err != nil {
+			return seg, err
+		}
+
+		return seg, nil
+	}
+	return SegmentId{}, nil
+}
+
+func (d *Disk) copyLive(seg SegmentId, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	var hdr SegmentHeader
+
+	err = binary.Read(f, binary.BigEndian, &hdr)
+	if err != nil {
+		return err
+	}
+
+	view := make([]byte, BlockSize)
+
+	for {
+		var crc, lba uint64
+
+		err = binary.Read(f, binary.BigEndian, &crc)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+
+		err = binary.Read(f, binary.BigEndian, &lba)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.ReadFull(f, view)
+		if err != nil {
+			return err
+		}
+
+		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
+			d.log.Warn("detected mis-match crc porting log")
+			break
+		}
+
+		pba, ok := d.lba2disk.Get(LBA(lba))
+		if ok && pba.Segment != seg {
+			continue
+		}
+
+		err = d.WriteExtent(LBA(lba), ExtentView(view))
+		if err != nil {
+			return err
+		}
+	}
+
+	return os.Remove(f.Name())
+}

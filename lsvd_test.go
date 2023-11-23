@@ -666,4 +666,63 @@ func TestLSVD(t *testing.T) {
 			extentEqual(t, x2, testExtent3)
 		})
 	})
+
+	t.Run("gc pulls still used blocks out of the oldest segment and moves them forward", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		origSeq := ulid.MustNew(ulid.Now(), monoRead)
+
+		d.SeqGen = func() ulid.ULID {
+			return origSeq
+		}
+
+		err = d.WriteExtent(0, testExtent)
+		r.NoError(err)
+
+		err = d.WriteExtent(1, testExtent2)
+		r.NoError(err)
+
+		d.SeqGen = nil
+
+		_, err = d.CloseSegment()
+		r.NoError(err)
+
+		err = d.WriteExtent(0, testExtent3)
+		r.NoError(err)
+
+		_, err = d.CloseSegment()
+		r.NoError(err)
+
+		gcSeg, err := d.GCOnce()
+		r.NoError(err)
+
+		r.Equal(SegmentId(origSeq), gcSeg)
+
+		_, err = os.Stat(filepath.Join(tmpdir, "log."+origSeq.String()))
+		r.ErrorIs(err, os.ErrNotExist)
+
+		d.Close()
+
+		d2, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		x2 := NewExtent(1)
+
+		err = d2.ReadExtent(0, x2)
+		r.NoError(err)
+
+		extentEqual(t, x2, testExtent3)
+
+		err = d2.ReadExtent(1, x2)
+		r.NoError(err)
+
+		extentEqual(t, x2, testExtent2)
+	})
 }
