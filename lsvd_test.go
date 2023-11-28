@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
+	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,6 +35,9 @@ var (
 	testExtent  Extent
 	testExtent2 Extent
 	testExtent3 Extent
+
+	testRand  = make([]byte, 4*1024)
+	testRandX Extent
 )
 
 func init() {
@@ -51,6 +56,9 @@ func init() {
 	testExtent = ExtentView(testData)
 	testExtent2 = ExtentView(testData2)
 	testExtent3 = ExtentView(testData3)
+
+	io.ReadFull(rand.Reader, testRand)
+	testRandX = ExtentView(testRand)
 }
 
 func blockEqual(t *testing.T, a, b []byte) {
@@ -135,7 +143,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		f, err := os.Open(filepath.Join(tmpdir, "log-tmp."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "writecache."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -179,6 +187,144 @@ func TestLSVD(t *testing.T) {
 			r.Equal(empty, pba.Segment)
 			r.Equal(uint32(headerSize), pba.Offset)
 		})
+	})
+
+	t.Run("writes written out to an object", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		d.SeqGen = func() ulid.ULID {
+			return testUlid
+		}
+
+		err = d.WriteExtent(47, testExtent)
+		r.NoError(err)
+
+		r.NoError(d.Close())
+
+		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		r.NoError(err)
+
+		defer f.Close()
+
+		br := bufio.NewReader(f)
+
+		var cnt uint32
+		err = binary.Read(br, binary.BigEndian, &cnt)
+		r.NoError(err)
+
+		r.Equal(uint32(1), cnt)
+
+		var hdrLen uint32
+		err = binary.Read(br, binary.BigEndian, &hdrLen)
+		r.NoError(err)
+
+		r.Equal(uint32(4+8), hdrLen)
+
+		lba, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(47), lba)
+
+		flags, err := br.ReadByte()
+		r.NoError(err)
+
+		r.Equal(byte(1), flags)
+
+		blkSize, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(0x3b), blkSize)
+
+		offset, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(0), offset)
+
+		_, err = f.Seek(int64(uint64(hdrLen)+offset), io.SeekStart)
+		r.NoError(err)
+
+		view := make([]byte, BlockSize)
+
+		_, err = io.ReadFull(lz4.NewReader(f), view)
+		r.NoError(err)
+
+		blockEqual(t, testData, view)
+	})
+
+	t.Run("objects that can't be compressed are flagged", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		d.SeqGen = func() ulid.ULID {
+			return testUlid
+		}
+
+		err = d.WriteExtent(47, testRandX)
+		r.NoError(err)
+
+		r.NoError(d.Close())
+
+		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		r.NoError(err)
+
+		defer f.Close()
+
+		br := bufio.NewReader(f)
+
+		var cnt uint32
+		err = binary.Read(br, binary.BigEndian, &cnt)
+		r.NoError(err)
+
+		r.Equal(uint32(1), cnt)
+
+		var hdrLen uint32
+		err = binary.Read(br, binary.BigEndian, &hdrLen)
+		r.NoError(err)
+
+		r.Equal(uint32(5+8), hdrLen)
+
+		lba, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(47), lba)
+
+		flags, err := br.ReadByte()
+		r.NoError(err)
+
+		r.Equal(byte(0), flags)
+
+		blkSize, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(BlockSize), blkSize)
+
+		offset, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(0), offset)
+
+		_, err = f.Seek(int64(uint64(hdrLen)+offset), io.SeekStart)
+		r.NoError(err)
+
+		view := make([]byte, BlockSize)
+
+		_, err = io.ReadFull(f, view)
+		r.NoError(err)
+
+		blockEqual(t, testRand, view)
 	})
 
 	t.Run("can access blocks from the log", func(t *testing.T) {
@@ -311,10 +457,8 @@ func TestLSVD(t *testing.T) {
 		r.NoError(d.rebuild())
 		r.NotZero(d.lba2disk.Len())
 
-		pba, ok := d.lba2disk.Get(47)
+		_, ok := d.lba2disk.Get(47)
 		r.True(ok)
-
-		r.Equal(uint32(headerSize), pba.Offset)
 
 		d2 := NewExtent(1)
 
@@ -350,10 +494,8 @@ func TestLSVD(t *testing.T) {
 		_, m, err := processLBAMap(f)
 		r.NoError(err)
 
-		pba, ok := m.Get(47)
+		_, ok := m.Get(47)
 		r.True(ok)
-
-		r.Equal(uint32(headerSize), pba.Offset)
 	})
 
 	t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
@@ -705,7 +847,7 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(SegmentId(origSeq), gcSeg)
 
-		_, err = os.Stat(filepath.Join(tmpdir, "log."+origSeq.String()))
+		_, err = os.Stat(filepath.Join(tmpdir, "object."+origSeq.String()))
 		r.ErrorIs(err, os.ErrNotExist)
 
 		d.Close()

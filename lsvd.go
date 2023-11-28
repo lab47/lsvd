@@ -1,6 +1,8 @@
 package lsvd
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/igrmk/treemap/v2"
 	"github.com/oklog/ulid/v2"
+	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
 
@@ -40,6 +43,13 @@ type segmentInfo struct {
 	m mmap.MMap
 }
 
+type objPBA struct {
+	PBA
+
+	Flags byte
+	Size  uint32
+}
+
 type Disk struct {
 	SeqGen  func() ulid.ULID
 	log     hclog.Logger
@@ -51,18 +61,21 @@ type Disk struct {
 	curOffset uint32
 	logWriter io.Writer
 
-	lba2disk     *treemap.TreeMap[LBA, PBA]
+	lba2disk     *treemap.TreeMap[LBA, objPBA]
+	readCache    *treemap.TreeMap[LBA, PBA]
 	activeTLB    map[LBA]uint32
 	openSegments *lru.Cache[SegmentId, *segmentInfo]
 
 	parent SegmentId
+
+	oc ObjectCreator
 }
 
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
 		log:       log,
 		path:      path,
-		lba2disk:  treemap.New[LBA, PBA](),
+		lba2disk:  treemap.New[LBA, objPBA](),
 		activeTLB: make(map[LBA]uint32),
 		parent:    empty,
 	}
@@ -135,7 +148,7 @@ func (d *Disk) nextLog(parent SegmentId) error {
 
 	d.curSeq = seq
 
-	f, err := os.Create(filepath.Join(d.path, "log-tmp."+seq.String()))
+	f, err := os.Create(filepath.Join(d.path, "writecache."+seq.String()))
 	if err != nil {
 		return err
 	}
@@ -166,25 +179,31 @@ func (d *Disk) CloseSegment() (SegmentId, error) {
 
 	d.activeLog.Close()
 
-	newPath := filepath.Join(d.path, "log."+d.curSeq.String())
+	defer os.Remove(d.activeLog.Name())
 
-	err := os.Rename(d.activeLog.Name(), newPath)
+	segId, err := d.FlushObject()
 	if err != nil {
-		return empty, err
+		return segId, err
 	}
 
 	d.activeLog = nil
 
+	clear(d.activeTLB)
+
+	d.parent = segId
+
+	return segId, nil
+}
+
+func (d *Disk) FlushObject() (SegmentId, error) {
+	newPath := filepath.Join(d.path, "object."+d.curSeq.String())
+
 	segId := SegmentId(d.curSeq)
 
-	for lba, offset := range d.activeTLB {
-		d.lba2disk.Set(lba, PBA{
-			Segment: segId,
-			Offset:  offset,
-		})
+	err := d.oc.Flush(newPath, segId, d.lba2disk)
+	if err != nil {
+		return SegmentId{}, err
 	}
-
-	clear(d.activeTLB)
 
 	d.parent = segId
 
@@ -254,11 +273,11 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 	return nil
 }
 
-func (d *Disk) readPBA(lba LBA, addr PBA, data []byte) error {
+func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
 		f, err := os.Open(filepath.Join(d.path,
-			"log."+ulid.ULID(addr.Segment).String()))
+			"object."+ulid.ULID(addr.Segment).String()))
 		if err != nil {
 			return err
 		}
@@ -276,7 +295,16 @@ func (d *Disk) readPBA(lba LBA, addr PBA, data []byte) error {
 		d.openSegments.Add(addr.Segment, ci)
 	}
 
-	copy(data, ci.m[addr.Offset+perBlockHeader:])
+	view := ci.m[addr.Offset : addr.Offset+addr.Size]
+
+	if addr.Flags == 1 {
+		_, err := lz4.NewReader(bytes.NewReader(view)).Read(data)
+		if err != nil {
+			return err
+		}
+	} else {
+		copy(data, ci.m[addr.Offset+perBlockHeader:])
+	}
 
 	return nil
 }
@@ -292,7 +320,7 @@ func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
 	}
 
 	p, ok := d.lba2disk.Get(addr)
-	return p, ok
+	return p.PBA, ok
 }
 
 var crcTable = crc64.MakeTable(crc64.ECMA)
@@ -315,7 +343,6 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 }
 
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
-
 	if d.activeLog == nil {
 		err := d.nextLog(d.parent)
 		if err != nil {
@@ -360,7 +387,7 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		d.curOffset += uint32(perBlockHeader + BlockSize)
 	}
 
-	return nil
+	return d.oc.WriteExtent(firstBlock, data)
 }
 
 func (d *Disk) rebuild() error {
@@ -370,16 +397,21 @@ func (d *Disk) rebuild() error {
 	}
 
 	for _, ent := range entries {
-		if !strings.HasPrefix(ent.Name(), "log.") {
-			continue
-		}
-
 		path := filepath.Join(d.path, ent.Name())
 
-		d.log.Debug("rebuilding TLB", "path", path)
-		_, err := d.rebuildTLB(path)
-		if err != nil {
-			return err
+		if strings.HasPrefix(ent.Name(), "log.") {
+			d.log.Debug("rebuilding TLB", "path", path)
+			_, err := d.rebuildTLB(path)
+			if err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(ent.Name(), "object.") {
+			d.log.Debug("rebuilding object", "path", path)
+			err := d.rebuildFromObject(path)
+			if err != nil {
+				return err
+			}
+
 		}
 	}
 
@@ -402,6 +434,67 @@ func segmentFromName(name string) (SegmentId, bool) {
 	}
 
 	return SegmentId(data), true
+}
+
+func (d *Disk) rebuildFromObject(path string) error {
+	seg, ok := segmentFromName(path)
+	if !ok {
+		return fmt.Errorf("bad segment name")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	br := bufio.NewReader(f)
+
+	var cnt, dataBegin uint32
+
+	err = binary.Read(br, binary.BigEndian, &cnt)
+	if err != nil {
+		return err
+	}
+
+	err = binary.Read(br, binary.BigEndian, &dataBegin)
+	if err != nil {
+		return err
+	}
+
+	for i := uint32(0); i < cnt; i++ {
+		lba, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
+		flags, err := br.ReadByte()
+		if err != nil {
+			return err
+		}
+
+		blkSize, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
+		blkOffset, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
+		d.lba2disk.Set(LBA(lba), objPBA{
+			PBA: PBA{
+				Segment: seg,
+				Offset:  dataBegin + uint32(blkOffset),
+			},
+			Flags: flags,
+			Size:  uint32(blkSize),
+		})
+	}
+
+	return nil
 }
 
 func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
@@ -457,7 +550,7 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 			break
 		}
 
-		d.lba2disk.Set(LBA(lba), cur)
+		d.readCache.Set(LBA(lba), cur)
 
 		cur.Offset += uint32(perBlockHeader + BlockSize)
 	}
@@ -466,7 +559,7 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 }
 
 func (d *Disk) restoreActive() error {
-	entries, err := filepath.Glob(filepath.Join(d.path, "log-tmp.*"))
+	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
 	if err != nil {
 		return err
 	}
@@ -534,6 +627,8 @@ func (d *Disk) restoreActive() error {
 			break
 		}
 
+		d.log.Trace("restoring mapping", "lba", lba, "offset", offset)
+
 		d.activeTLB[LBA(lba)] = offset
 
 		offset += uint32(perBlockHeader + BlockSize)
@@ -578,6 +673,8 @@ func (d *Disk) loadLBAMap() error {
 
 	defer f.Close()
 
+	d.log.Trace("reloading lba map from head.map")
+
 	parent, m, err := processLBAMap(f)
 	if err != nil {
 		return err
@@ -589,7 +686,7 @@ func (d *Disk) loadLBAMap() error {
 	return nil
 }
 
-func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, PBA], f io.Writer) error {
+func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
 	err := binary.Write(f, binary.BigEndian, parent)
 	if err != nil {
 		return err
@@ -610,8 +707,8 @@ func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, PBA], f io.Writer) err
 	return nil
 }
 
-func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, PBA], error) {
-	m := treemap.New[LBA, PBA]()
+func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, objPBA], error) {
+	m := treemap.New[LBA, objPBA]()
 
 	var segId SegmentId
 
@@ -623,7 +720,7 @@ func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, PBA], error) {
 	for {
 		var (
 			lba uint64
-			pba PBA
+			pba objPBA
 		)
 
 		err := binary.Read(f, binary.BigEndian, &lba)
@@ -662,6 +759,8 @@ func (d *Disk) GCOnce() (SegmentId, error) {
 			continue
 		}
 
+		d.log.Trace("copying live data from object", "path", ent.Name())
+
 		err := d.copyLive(seg, filepath.Join(d.path, ent.Name()))
 		if err != nil {
 			return seg, err
@@ -675,49 +774,69 @@ func (d *Disk) GCOnce() (SegmentId, error) {
 func (d *Disk) copyLive(seg SegmentId, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "opening local live object")
 	}
 
 	defer f.Close()
 
-	var hdr SegmentHeader
+	br := bufio.NewReader(f)
 
-	err = binary.Read(f, binary.BigEndian, &hdr)
+	var cnt, dataBegin uint32
+
+	err = binary.Read(br, binary.BigEndian, &cnt)
+	if err != nil {
+		return err
+	}
+
+	err = binary.Read(br, binary.BigEndian, &dataBegin)
 	if err != nil {
 		return err
 	}
 
 	view := make([]byte, BlockSize)
+	buf := make([]byte, BlockSize)
 
-	for {
-		var crc, lba uint64
-
-		err = binary.Read(f, binary.BigEndian, &crc)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return err
-		}
-
-		err = binary.Read(f, binary.BigEndian, &lba)
+	for i := uint32(0); i < cnt; i++ {
+		lba, err := binary.ReadUvarint(br)
 		if err != nil {
 			return err
 		}
 
-		_, err = io.ReadFull(f, view)
+		flags, err := br.ReadByte()
 		if err != nil {
 			return err
 		}
 
-		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
-			d.log.Warn("detected mis-match crc porting log")
-			break
+		blkSize, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
+		blkOffset, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
 		}
 
 		pba, ok := d.lba2disk.Get(LBA(lba))
 		if ok && pba.Segment != seg {
 			continue
+		}
+
+		if flags == 1 {
+			_, err = f.ReadAt(buf[:blkSize], int64(uint64(dataBegin)+blkOffset))
+			if err != nil {
+				return err
+			}
+
+			_, err := lz4.NewReader(bytes.NewBuffer(buf[:blkSize])).Read(view)
+			if err != nil {
+				return err
+			}
+		} else {
+			_, err = f.ReadAt(view[:blkSize], int64(blkOffset))
+			if err != nil {
+				return err
+			}
 		}
 
 		err = d.WriteExtent(LBA(lba), ExtentView(view))

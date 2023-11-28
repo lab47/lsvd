@@ -8,6 +8,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/igrmk/treemap/v2 v2.0.1
 	github.com/oklog/ulid/v2 v2.1.0
+	github.com/pierrec/lz4/v4 v4.1.18
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.4
 )
