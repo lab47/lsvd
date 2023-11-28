@@ -2,7 +2,6 @@ package lsvd
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -298,9 +297,13 @@ func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 	view := ci.m[addr.Offset : addr.Offset+addr.Size]
 
 	if addr.Flags == 1 {
-		_, err := lz4.NewReader(bytes.NewReader(view)).Read(data)
+		sz, err := lz4.UncompressBlock(view, data)
 		if err != nil {
 			return err
+		}
+
+		if sz != BlockSize {
+			return fmt.Errorf("compressed block uncompressed wrong size (%d != %d)", sz, BlockSize)
 		}
 	} else {
 		copy(data, ci.m[addr.Offset+perBlockHeader:])
@@ -828,9 +831,12 @@ func (d *Disk) copyLive(seg SegmentId, path string) error {
 				return err
 			}
 
-			_, err := lz4.NewReader(bytes.NewBuffer(buf[:blkSize])).Read(view)
+			sz, err := lz4.UncompressBlock(buf[:blkSize], view)
 			if err != nil {
 				return err
+			}
+			if sz != BlockSize {
+				return fmt.Errorf("block uncompressed to wrong size (%d != %d)", sz, BlockSize)
 			}
 		} else {
 			_, err = f.ReadAt(view[:blkSize], int64(blkOffset))

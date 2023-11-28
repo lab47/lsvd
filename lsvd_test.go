@@ -240,7 +240,7 @@ func TestLSVD(t *testing.T) {
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0x3b), blkSize)
+		r.Equal(uint64(0x28), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -252,8 +252,15 @@ func TestLSVD(t *testing.T) {
 
 		view := make([]byte, BlockSize)
 
-		_, err = io.ReadFull(lz4.NewReader(f), view)
+		buf := make([]byte, blkSize)
+
+		_, err = io.ReadFull(f, buf)
 		r.NoError(err)
+
+		sz, err := lz4.UncompressBlock(buf, view)
+		r.NoError(err)
+
+		view = view[:sz]
 
 		blockEqual(t, testData, view)
 	})

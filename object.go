@@ -22,31 +22,29 @@ type ObjectCreator struct {
 	offset uint64
 	blocks []ocBlock
 
-	header  bytes.Buffer
-	body    bytes.Buffer
-	compBuf bytes.Buffer
+	buf    []byte
+	header bytes.Buffer
+	body   bytes.Buffer
 }
 
 func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
+	if o.buf == nil {
+		o.buf = make([]byte, 2*BlockSize)
+	}
 	for i := 0; i < ext.Blocks(); i++ {
 		lba := firstBlock + LBA(i)
 
 		var flags byte
 
-		o.compBuf.Reset()
-
-		c := lz4.NewWriter(&o.compBuf)
-		c.Apply(lz4.BlockSizeOption(lz4.Block64Kb))
-		c.Write(ext.BlockView(i))
-		err := c.Close()
+		sz, err := lz4.CompressBlock(ext.BlockView(i), o.buf, nil)
 		if err != nil {
 			return err
 		}
 
 		body := ext.BlockView(i)
 
-		if o.compBuf.Len() < BlockSize {
-			body = o.compBuf.Bytes()
+		if sz > 0 && sz < BlockSize {
+			body = o.buf[:sz]
 			flags = 1
 		}
 
