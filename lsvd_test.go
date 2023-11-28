@@ -38,6 +38,9 @@ var (
 
 	testRand  = make([]byte, 4*1024)
 	testRandX Extent
+
+	testEmpty  = make([]byte, BlockSize)
+	testEmptyX Extent
 )
 
 func init() {
@@ -59,6 +62,8 @@ func init() {
 
 	io.ReadFull(rand.Reader, testRand)
 	testRandX = ExtentView(testRand)
+
+	testEmptyX = ExtentView(testEmpty)
 }
 
 func blockEqual(t *testing.T, a, b []byte) {
@@ -332,6 +337,108 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, testRand, view)
+	})
+
+	t.Run("empty blocks are flagged specially", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		d.SeqGen = func() ulid.ULID {
+			return testUlid
+		}
+
+		err = d.WriteExtent(47, testEmptyX)
+		r.NoError(err)
+
+		r.NoError(d.Close())
+
+		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		r.NoError(err)
+
+		defer f.Close()
+
+		br := bufio.NewReader(f)
+
+		var cnt uint32
+		err = binary.Read(br, binary.BigEndian, &cnt)
+		r.NoError(err)
+
+		r.Equal(uint32(1), cnt)
+
+		var hdrLen uint32
+		err = binary.Read(br, binary.BigEndian, &hdrLen)
+		r.NoError(err)
+
+		r.Equal(uint32(4+8), hdrLen)
+
+		lba, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(47), lba)
+
+		flags, err := br.ReadByte()
+		r.NoError(err)
+
+		r.Equal(byte(2), flags)
+
+		blkSize, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(0), blkSize)
+
+		offset, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(0), offset)
+	})
+
+	t.Run("reads empty from a previous empty write", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		data := NewExtent(1)
+		data.SetBlock(0, testRand)
+
+		err = d.WriteExtent(0, testEmptyX)
+		r.NoError(err)
+
+		err = d.ReadExtent(0, data)
+		r.NoError(err)
+
+		r.True(isEmpty(data.BlockView(0)))
+
+		d.l1cache.Purge()
+
+		data.SetBlock(0, testRand)
+
+		err = d.ReadExtent(0, data)
+		r.NoError(err)
+
+		r.True(isEmpty(data.BlockView(0)))
+
+		r.NoError(d.Close())
+
+		d, err = NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		data.SetBlock(0, testRand)
+
+		err = d.ReadExtent(0, data)
+		r.NoError(err)
+
+		r.True(isEmpty(data.BlockView(0)))
 	})
 
 	t.Run("can access blocks from the log", func(t *testing.T) {

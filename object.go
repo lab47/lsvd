@@ -27,6 +27,16 @@ type ObjectCreator struct {
 	body   bytes.Buffer
 }
 
+func emptyBytes(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 	if o.buf == nil {
 		o.buf = make([]byte, 2*BlockSize)
@@ -35,6 +45,16 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 		lba := firstBlock + LBA(i)
 
 		var flags byte
+
+		if emptyBytes(ext.BlockView(i)) {
+			o.cnt++
+
+			o.blocks = append(o.blocks, ocBlock{
+				lba:   lba,
+				flags: 2,
+			})
+			continue
+		}
 
 		sz, err := lz4.CompressBlock(ext.BlockView(i), o.buf, nil)
 		if err != nil {

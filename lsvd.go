@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc64"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -244,6 +245,8 @@ type LBA uint64
 
 const perBlockHeader = 16
 
+var emptyBlock = make([]byte, BlockSize)
+
 func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 	numBlocks := data.Blocks()
 
@@ -255,9 +258,13 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 		if cacheData, ok := d.l1cache.Get(lba); ok {
 			copy(view, cacheData)
 		} else if pba, ok := d.activeTLB[lba]; ok {
-			_, err := d.activeLog.ReadAt(view, int64(pba+perBlockHeader))
-			if err != nil {
-				return errors.Wrapf(err, "attempting to read from active (%d)", pba)
+			if pba == math.MaxUint32 {
+				clear(view)
+			} else {
+				_, err := d.activeLog.ReadAt(view, int64(pba+perBlockHeader))
+				if err != nil {
+					return errors.Wrapf(err, "attempting to read from active (%d)", pba)
+				}
 			}
 		} else if pba, ok := d.lba2disk.Get(lba); ok {
 			err := d.readPBA(lba, pba, view)
@@ -296,7 +303,10 @@ func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 
 	view := ci.m[addr.Offset : addr.Offset+addr.Size]
 
-	if addr.Flags == 1 {
+	switch addr.Flags {
+	case 0:
+		copy(data, ci.m[addr.Offset+perBlockHeader:])
+	case 1:
 		sz, err := lz4.UncompressBlock(view, data)
 		if err != nil {
 			return err
@@ -305,8 +315,10 @@ func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 		if sz != BlockSize {
 			return fmt.Errorf("compressed block uncompressed wrong size (%d != %d)", sz, BlockSize)
 		}
-	} else {
-		copy(data, ci.m[addr.Offset+perBlockHeader:])
+	case 2:
+		clear(data[:BlockSize])
+	default:
+		return fmt.Errorf("unknown flag value: %x", addr.Flags)
 	}
 
 	return nil
@@ -362,6 +374,23 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		lba := firstBlock + LBA(i)
 
 		view := data.BlockView(i)
+
+		if emptyBytes(view) {
+			d.l1cache.Add(lba, emptyBlock)
+			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
+			if err != nil {
+				return err
+			}
+
+			err = binary.Write(dw, binary.BigEndian, uint64(lba))
+			if err != nil {
+				return err
+			}
+
+			d.activeTLB[lba] = math.MaxUint32
+
+			continue
+		}
 
 		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
 
