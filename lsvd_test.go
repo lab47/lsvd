@@ -982,3 +982,41 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, x2, testExtent2)
 	})
 }
+
+func emptyBytesI(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+
+	return true
+}
+func BenchmarkEmptyInline(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		emptyBytesI(emptyBlock)
+	}
+}
+
+func emptyBytes2(b []byte) bool {
+	y := byte(0)
+	for _, x := range b {
+		y |= x
+	}
+
+	return y == 0
+}
+
+func BenchmarkEmptyInline2(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		emptyBytes2(emptyBlock)
+	}
+}
+
+var local = make([]byte, BlockSize)
+
+func BenchmarkEmptyEqual(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		bytes.Equal(local, emptyBlock)
+	}
+}

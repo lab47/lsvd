@@ -28,13 +28,7 @@ type ObjectCreator struct {
 }
 
 func emptyBytes(b []byte) bool {
-	for _, x := range b {
-		if x != 0 {
-			return false
-		}
-	}
-
-	return true
+	return bytes.Equal(b, emptyBlock)
 }
 
 func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
