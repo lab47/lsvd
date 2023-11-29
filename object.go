@@ -3,6 +3,7 @@ package lsvd
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 
@@ -166,4 +167,52 @@ func (o *ObjectCreator) Flush(path string, seg SegmentId, m *treemap.TreeMap[LBA
 	}
 
 	return nil
+}
+
+type ObjectReader interface {
+	io.ReaderAt
+	io.Closer
+
+	ReadAtCompressed(b []byte, off, compSize int64) (int, error)
+}
+
+type LocalFile struct {
+	f *os.File
+}
+
+func (l *LocalFile) ReadAt(b []byte, off int64) (int, error) {
+	return l.f.ReadAt(b, off)
+}
+
+func (l *LocalFile) ReadAtCompressed(dest []byte, off, compSize int64) (int, error) {
+	buf := make([]byte, compSize)
+
+	_, err := l.f.ReadAt(buf, off)
+	if err != nil {
+		return 0, err
+	}
+
+	sz, err := lz4.UncompressBlock(buf, dest)
+	if err != nil {
+		return 0, err
+	}
+
+	if sz != BlockSize {
+		return 0, fmt.Errorf("compressed block uncompressed wrong size (%d != %d)", sz, BlockSize)
+	}
+
+	return len(dest), nil
+}
+
+func OpenLocalFile(path string) (*LocalFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LocalFile{f: f}, nil
+}
+
+func (l *LocalFile) Close() error {
+	return l.f.Close()
 }

@@ -373,6 +373,16 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, testRand, view)
+
+		d2, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		x1 := NewExtent(1)
+
+		err = d2.ReadExtent(47, x1)
+		r.NoError(err)
+
+		extentEqual(t, testRandX, x1)
 	})
 
 	t.Run("empty blocks are flagged specially", func(t *testing.T) {

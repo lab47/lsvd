@@ -39,7 +39,7 @@ func (e Extent) Blocks() int {
 }
 
 type segmentInfo struct {
-	f *os.File
+	f ObjectReader
 	m mmap.MMap
 }
 
@@ -62,7 +62,7 @@ type Disk struct {
 
 	lba2obj      *treemap.TreeMap[LBA, objPBA]
 	readCache    *DiskCache
-	openSegments *lru.Cache[SegmentId, *segmentInfo]
+	openSegments *lru.Cache[SegmentId, ObjectReader]
 
 	oc ObjectCreator
 }
@@ -83,10 +83,9 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		wcOffsets: make(map[LBA]uint32),
 	}
 
-	openSegments, err := lru.NewWithEvict[SegmentId, *segmentInfo](
-		256, func(key SegmentId, value *segmentInfo) {
-			value.m.Unmap()
-			value.f.Close()
+	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
+		256, func(key SegmentId, value ObjectReader) {
+			value.Close()
 		})
 	if err != nil {
 		return nil, err
@@ -274,38 +273,27 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
-		f, err := os.Open(filepath.Join(d.path,
+		lf, err := OpenLocalFile(filepath.Join(d.path,
 			"object."+ulid.ULID(addr.Segment).String()))
 		if err != nil {
 			return err
 		}
 
-		mm, err := mmap.Map(f, os.O_RDONLY, 0)
-		if err != nil {
-			return err
-		}
-
-		ci = &segmentInfo{
-			f: f,
-			m: mm,
-		}
+		ci = lf
 
 		d.openSegments.Add(addr.Segment, ci)
 	}
 
-	view := ci.m[addr.Offset : addr.Offset+addr.Size]
-
 	switch addr.Flags {
 	case 0:
-		copy(data, ci.m[addr.Offset+perBlockHeader:])
-	case 1:
-		sz, err := lz4.UncompressBlock(view, data)
+		_, err := ci.ReadAt(data, int64(addr.Offset))
 		if err != nil {
 			return err
 		}
-
-		if sz != BlockSize {
-			return fmt.Errorf("compressed block uncompressed wrong size (%d != %d)", sz, BlockSize)
+	case 1:
+		_, err := ci.ReadAtCompressed(data, int64(addr.Offset), int64(addr.Size))
+		if err != nil {
+			return err
 		}
 	case 2:
 		clear(data[:BlockSize])
@@ -511,65 +499,6 @@ func (d *Disk) rebuildFromObject(path string) error {
 	}
 
 	return nil
-}
-
-func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
-	seg, ok := segmentFromName(path)
-	if !ok {
-		return nil, fmt.Errorf("bad segment name")
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	defer f.Close()
-
-	var hdr SegmentHeader
-
-	err = binary.Read(f, binary.BigEndian, &hdr)
-	if err != nil {
-		return nil, err
-	}
-
-	cur := PBA{
-		Segment: seg,
-		Offset:  uint32(headerSize),
-	}
-
-	view := make([]byte, BlockSize)
-
-	for {
-		var crc, lba uint64
-
-		err = binary.Read(f, binary.BigEndian, &crc)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, err
-		}
-
-		err = binary.Read(f, binary.BigEndian, &lba)
-		if err != nil {
-			return nil, err
-		}
-
-		_, err = io.ReadFull(f, view)
-		if err != nil {
-			return nil, err
-		}
-
-		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
-			d.log.Warn("detected mis-match crc reloading log", "offset", cur.Offset)
-			break
-		}
-
-		cur.Offset += uint32(perBlockHeader + BlockSize)
-	}
-
-	return &hdr, nil
 }
 
 func (d *Disk) restoreWriteCache() error {
