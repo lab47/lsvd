@@ -64,15 +64,26 @@ type Disk struct {
 	readCache    *DiskCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
 
+	sa SegmentAccess
 	oc ObjectCreator
 }
 
 const diskCacheSize = 4096 // 16MB read cache
 
-func NewDisk(log hclog.Logger, path string) (*Disk, error) {
+func NewDisk(log hclog.Logger, path string, options ...Option) (*Disk, error) {
 	dc, err := NewDiskCache(filepath.Join(path, "readcache"), diskCacheSize)
 	if err != nil {
 		return nil, err
+	}
+
+	var o opts
+
+	for _, opt := range options {
+		opt(&o)
+	}
+
+	if o.sa == nil {
+		o.sa = &LocalFileAccess{Dir: path}
 	}
 
 	d := &Disk{
@@ -81,6 +92,7 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		lba2obj:   treemap.New[LBA, objPBA](),
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
+		sa:        o.sa,
 	}
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
@@ -273,8 +285,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
-		lf, err := OpenLocalFile(filepath.Join(d.path,
-			"object."+ulid.ULID(addr.Segment).String()))
+		lf, err := d.sa.OpenSegment(addr.Segment)
 		if err != nil {
 			return err
 		}
@@ -405,21 +416,15 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 }
 
 func (d *Disk) rebuildFromObjects() error {
-	entries, err := os.ReadDir(d.path)
+	entries, err := d.sa.ListSegments()
 	if err != nil {
 		return err
 	}
 
 	for _, ent := range entries {
-		path := filepath.Join(d.path, ent.Name())
-
-		if strings.HasPrefix(ent.Name(), "object.") {
-			d.log.Debug("rebuilding object", "path", path)
-			err := d.rebuildFromObject(path)
-			if err != nil {
-				return err
-			}
-
+		err := d.rebuildFromObject(ent)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -440,20 +445,15 @@ func segmentFromName(name string) (SegmentId, bool) {
 	return SegmentId(data), true
 }
 
-func (d *Disk) rebuildFromObject(path string) error {
-	seg, ok := segmentFromName(path)
-	if !ok {
-		return fmt.Errorf("bad segment name")
-	}
-
-	f, err := os.Open(path)
+func (d *Disk) rebuildFromObject(seg SegmentId) error {
+	f, err := d.sa.OpenSegment(seg)
 	if err != nil {
 		return err
 	}
 
 	defer f.Close()
 
-	br := bufio.NewReader(f)
+	br := bufio.NewReader(ToReader(f))
 
 	var cnt, dataBegin uint32
 
@@ -593,7 +593,7 @@ func (d *Disk) Close() error {
 }
 
 func (d *Disk) saveLBAMap() error {
-	f, err := os.Create(filepath.Join(d.path, "head.map"))
+	f, err := d.sa.WriteMetadata("head.map")
 	if err != nil {
 		return err
 	}
@@ -604,7 +604,7 @@ func (d *Disk) saveLBAMap() error {
 }
 
 func (d *Disk) loadLBAMap() error {
-	f, err := os.Open(filepath.Join(d.path, "head.map"))
+	f, err := d.sa.ReadMetadata("head.map")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -701,14 +701,14 @@ func (d *Disk) GCOnce() (SegmentId, error) {
 }
 
 func (d *Disk) copyLive(seg SegmentId, path string) error {
-	f, err := os.Open(path)
+	f, err := d.sa.OpenSegment(seg)
 	if err != nil {
 		return errors.Wrapf(err, "opening local live object")
 	}
 
 	defer f.Close()
 
-	br := bufio.NewReader(f)
+	br := bufio.NewReader(ToReader(f))
 
 	var cnt, dataBegin uint32
 
@@ -777,5 +777,5 @@ func (d *Disk) copyLive(seg SegmentId, path string) error {
 		}
 	}
 
-	return os.Remove(f.Name())
+	return d.sa.RemoveSegment(seg)
 }

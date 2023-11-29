@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/igrmk/treemap/v2"
+	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -215,4 +218,73 @@ func OpenLocalFile(path string) (*LocalFile, error) {
 
 func (l *LocalFile) Close() error {
 	return l.f.Close()
+}
+
+type LocalFileAccess struct {
+	Dir string
+}
+
+func (l *LocalFileAccess) OpenSegment(seg SegmentId) (ObjectReader, error) {
+	return OpenLocalFile(filepath.Join(l.Dir,
+		"object."+ulid.ULID(seg).String()))
+}
+
+func (l *LocalFileAccess) ListSegments() ([]SegmentId, error) {
+	entries, err := os.ReadDir(l.Dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []SegmentId
+
+	for _, ent := range entries {
+		if strings.HasPrefix(ent.Name(), "object.") {
+			seg, ok := segmentFromName(ent.Name())
+			if ok {
+				out = append(out, seg)
+			}
+		}
+	}
+
+	return out, nil
+}
+
+func (l *LocalFileAccess) WriteMetadata(name string) (io.WriteCloser, error) {
+	f, err := os.Create(filepath.Join(l.Dir, name))
+	return f, err
+}
+
+func (l *LocalFileAccess) ReadMetadata(name string) (io.ReadCloser, error) {
+	f, err := os.Open(filepath.Join(l.Dir, name))
+	return f, err
+}
+
+func (l *LocalFileAccess) RemoveSegment(seg SegmentId) error {
+	return os.Remove(
+		filepath.Join(l.Dir, "object."+ulid.ULID(seg).String()))
+}
+
+type SegmentAccess interface {
+	OpenSegment(seg SegmentId) (ObjectReader, error)
+	ListSegments() ([]SegmentId, error)
+	WriteMetadata(name string) (io.WriteCloser, error)
+	ReadMetadata(name string) (io.ReadCloser, error)
+	RemoveSegment(seg SegmentId) error
+}
+
+type ReaderAtAsReader struct {
+	f   io.ReaderAt
+	off int64
+}
+
+func (r *ReaderAtAsReader) Read(b []byte) (int, error) {
+	n, err := r.f.ReadAt(b, r.off)
+	r.off += int64(n)
+	return n, err
+}
+
+func ToReader(ra io.ReaderAt) io.Reader {
+	return &ReaderAtAsReader{
+		f: ra,
+	}
 }
