@@ -51,19 +51,17 @@ type objPBA struct {
 }
 
 type Disk struct {
-	SeqGen  func() ulid.ULID
-	log     hclog.Logger
-	path    string
-	l1cache *lru.Cache[LBA, []byte]
+	SeqGen func() ulid.ULID
+	log    hclog.Logger
+	path   string
 
-	curSeq    ulid.ULID
-	activeLog *os.File
-	curOffset uint32
-	logWriter io.Writer
+	curSeq     ulid.ULID
+	writeCache *os.File
+	wcOffsets  map[LBA]uint32
+	curOffset  uint32
 
-	lba2disk     *treemap.TreeMap[LBA, objPBA]
+	lba2obj      *treemap.TreeMap[LBA, objPBA]
 	readCache    *DiskCache
-	activeTLB    map[LBA]uint32
 	openSegments *lru.Cache[SegmentId, *segmentInfo]
 
 	oc ObjectCreator
@@ -80,17 +78,10 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 	d := &Disk{
 		log:       log,
 		path:      path,
-		lba2disk:  treemap.New[LBA, objPBA](),
+		lba2obj:   treemap.New[LBA, objPBA](),
 		readCache: dc,
-		activeTLB: make(map[LBA]uint32),
+		wcOffsets: make(map[LBA]uint32),
 	}
-
-	l1cache, err := lru.New[LBA, []byte](4096)
-	if err != nil {
-		return nil, err
-	}
-
-	d.l1cache = l1cache
 
 	openSegments, err := lru.NewWithEvict[SegmentId, *segmentInfo](
 		256, func(key SegmentId, value *segmentInfo) {
@@ -108,12 +99,12 @@ func NewDisk(log hclog.Logger, path string) (*Disk, error) {
 		return nil, err
 	}
 
-	err = d.rebuild()
+	err = d.rebuildFromObjects()
 	if err != nil {
 		return nil, err
 	}
 
-	err = d.restoreActive()
+	err = d.restoreWriteCache()
 	if err != nil {
 		return nil, err
 	}
@@ -158,12 +149,11 @@ func (d *Disk) nextLog() error {
 		return err
 	}
 
-	d.activeLog = f
-	d.logWriter = f
+	d.writeCache = f
 
 	ts := uint64(time.Now().Unix())
 
-	err = binary.Write(d.logWriter, binary.BigEndian, SegmentHeader{
+	err = binary.Write(f, binary.BigEndian, SegmentHeader{
 		CreatedAt: ts,
 	})
 	if err != nil {
@@ -176,24 +166,24 @@ func (d *Disk) nextLog() error {
 }
 
 func (d *Disk) CloseSegment() error {
-	if d.activeLog == nil {
+	if d.writeCache == nil {
 		return nil
 	}
 
 	d.curOffset = 0
 
-	d.activeLog.Close()
+	d.writeCache.Close()
 
-	defer os.Remove(d.activeLog.Name())
+	defer os.Remove(d.writeCache.Name())
 
 	_, err := d.FlushObject()
 	if err != nil {
 		return err
 	}
 
-	d.activeLog = nil
+	d.writeCache = nil
 
-	clear(d.activeTLB)
+	clear(d.wcOffsets)
 
 	return nil
 }
@@ -203,7 +193,7 @@ func (d *Disk) FlushObject() (SegmentId, error) {
 
 	segId := SegmentId(d.curSeq)
 
-	err := d.oc.Flush(newPath, segId, d.lba2disk)
+	err := d.oc.Flush(newPath, segId, d.lba2obj)
 	if err != nil {
 		return SegmentId{}, err
 	}
@@ -256,11 +246,11 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 
 		view := data.BlockView(i)
 
-		if pba, ok := d.activeTLB[lba]; ok {
+		if pba, ok := d.wcOffsets[lba]; ok {
 			if pba == math.MaxUint32 {
 				clear(view)
 			} else {
-				_, err := d.activeLog.ReadAt(view, int64(pba+perBlockHeader))
+				_, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
 				if err != nil {
 					return errors.Wrapf(err, "attempting to read from active (%d)", pba)
 				}
@@ -268,7 +258,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 		} else if err := d.readCache.ReadBlock(lba, view); err == nil {
 			d.log.Trace("found block in read cache", "lba", lba)
 			// got it!
-		} else if pba, ok := d.lba2disk.Get(lba); ok {
+		} else if pba, ok := d.lba2obj.Get(lba); ok {
 			err := d.readPBA(lba, pba, view)
 			if err != nil {
 				return err
@@ -337,11 +327,11 @@ type PBA struct {
 }
 
 func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
-	if offset, ok := d.activeTLB[addr]; ok {
+	if offset, ok := d.wcOffsets[addr]; ok {
 		return PBA{Offset: offset}, true
 	}
 
-	p, ok := d.lba2disk.Get(addr)
+	p, ok := d.lba2obj.Get(addr)
 	return p.PBA, ok
 }
 
@@ -365,14 +355,14 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 }
 
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
-	if d.activeLog == nil {
+	if d.writeCache == nil {
 		err := d.nextLog()
 		if err != nil {
 			return err
 		}
 	}
 
-	dw := d.activeLog
+	dw := d.writeCache
 
 	crc64.New(crc64.MakeTable(crc64.ECMA))
 
@@ -383,7 +373,6 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		view := data.BlockView(i)
 
 		if emptyBytes(view) {
-			d.l1cache.Add(lba, emptyBlock)
 			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
 			if err != nil {
 				return err
@@ -394,14 +383,12 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 				return err
 			}
 
-			d.activeTLB[lba] = math.MaxUint32
+			d.wcOffsets[lba] = math.MaxUint32
 
 			continue
 		}
 
 		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
-
-		d.l1cache.Add(lba, slices.Clone(view))
 
 		err := binary.Write(dw, binary.BigEndian, crc)
 		if err != nil {
@@ -422,14 +409,14 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 			return fmt.Errorf("invalid write size (%d != %d)", n, BlockSize)
 		}
 
-		d.activeTLB[lba] = d.curOffset
+		d.wcOffsets[lba] = d.curOffset
 		d.curOffset += uint32(perBlockHeader + BlockSize)
 	}
 
 	return d.oc.WriteExtent(firstBlock, data)
 }
 
-func (d *Disk) rebuild() error {
+func (d *Disk) rebuildFromObjects() error {
 	entries, err := os.ReadDir(d.path)
 	if err != nil {
 		return err
@@ -438,13 +425,7 @@ func (d *Disk) rebuild() error {
 	for _, ent := range entries {
 		path := filepath.Join(d.path, ent.Name())
 
-		if strings.HasPrefix(ent.Name(), "log.") {
-			d.log.Debug("rebuilding TLB", "path", path)
-			_, err := d.rebuildTLB(path)
-			if err != nil {
-				return err
-			}
-		} else if strings.HasPrefix(ent.Name(), "object.") {
+		if strings.HasPrefix(ent.Name(), "object.") {
 			d.log.Debug("rebuilding object", "path", path)
 			err := d.rebuildFromObject(path)
 			if err != nil {
@@ -519,7 +500,7 @@ func (d *Disk) rebuildFromObject(path string) error {
 			return err
 		}
 
-		d.lba2disk.Set(LBA(lba), objPBA{
+		d.lba2obj.Set(LBA(lba), objPBA{
 			PBA: PBA{
 				Segment: seg,
 				Offset:  dataBegin + uint32(blkOffset),
@@ -591,7 +572,7 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 	return &hdr, nil
 }
 
-func (d *Disk) restoreActive() error {
+func (d *Disk) restoreWriteCache() error {
 	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
 	if err != nil {
 		return err
@@ -614,8 +595,7 @@ func (d *Disk) restoreActive() error {
 		return err
 	}
 
-	d.activeLog = f
-	d.logWriter = f
+	d.writeCache = f
 
 	var hdr SegmentHeader
 
@@ -662,7 +642,7 @@ func (d *Disk) restoreActive() error {
 
 		d.log.Trace("restoring mapping", "lba", lba, "offset", offset)
 
-		d.activeTLB[LBA(lba)] = offset
+		d.wcOffsets[LBA(lba)] = offset
 
 		offset += uint32(perBlockHeader + BlockSize)
 	}
@@ -691,7 +671,7 @@ func (d *Disk) saveLBAMap() error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.lba2disk, f)
+	return saveLBAMap(d.lba2obj, f)
 }
 
 func (d *Disk) loadLBAMap() error {
@@ -713,7 +693,7 @@ func (d *Disk) loadLBAMap() error {
 		return err
 	}
 
-	d.lba2disk = m
+	d.lba2obj = m
 
 	return nil
 }
@@ -837,7 +817,7 @@ func (d *Disk) copyLive(seg SegmentId, path string) error {
 			return err
 		}
 
-		pba, ok := d.lba2disk.Get(LBA(lba))
+		pba, ok := d.lba2obj.Get(LBA(lba))
 		if ok && pba.Segment != seg {
 			continue
 		}

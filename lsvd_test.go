@@ -455,8 +455,6 @@ func TestLSVD(t *testing.T) {
 
 		r.True(isEmpty(data.BlockView(0)))
 
-		d.l1cache.Purge()
-
 		data.SetBlock(0, testRand)
 
 		err = d.ReadExtent(0, data)
@@ -490,9 +488,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		d.l1cache.Purge()
-
-		r.NotEmpty(d.activeTLB)
+		r.NotEmpty(d.wcOffsets)
 
 		d2 := NewExtent(1)
 
@@ -515,9 +511,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		d.l1cache.Purge()
-
-		r.NotEmpty(d.activeTLB)
+		r.NotEmpty(d.wcOffsets)
 
 		err = d.CloseSegment()
 		r.NoError(err)
@@ -567,19 +561,18 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		d.l1cache.Purge()
-		d.lba2disk.Clear()
+		d.lba2obj.Clear()
 
 		err = d.CloseSegment()
 		r.NoError(err)
 
-		r.Empty(d.activeTLB)
-		d.lba2disk.Clear()
+		r.Empty(d.wcOffsets)
+		d.lba2obj.Clear()
 
-		r.NoError(d.rebuild())
-		r.NotZero(d.lba2disk.Len())
+		r.NoError(d.rebuildFromObjects())
+		r.NotZero(d.lba2obj.Len())
 
-		_, ok := d.lba2disk.Get(47)
+		_, ok := d.lba2obj.Get(47)
 		r.True(ok)
 
 		d2 := NewExtent(1)
@@ -641,7 +634,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		r.NotZero(d2.lba2disk.Len())
+		r.NotZero(d2.lba2obj.Len())
 	})
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
@@ -667,9 +660,9 @@ func TestLSVD(t *testing.T) {
 		disk2, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		r.NotEmpty(disk2.activeTLB)
+		r.NotEmpty(disk2.wcOffsets)
 
-		r.Equal(uint32(headerSize), disk2.activeTLB[48])
+		r.Equal(uint32(headerSize), disk2.wcOffsets[48])
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {
@@ -698,8 +691,6 @@ func TestLSVD(t *testing.T) {
 			blockEqual(t, d2.BlockView(0), testData)
 
 			d3 := NewExtent(1)
-
-			d.l1cache.Purge()
 
 			err = d.ReadExtent(1, d3)
 			r.NoError(err)
@@ -733,8 +724,6 @@ func TestLSVD(t *testing.T) {
 			blockEqual(t, d2.BlockView(1), testData)
 
 			d3 := NewExtent(1)
-
-			d.l1cache.Purge()
 
 			err = d.ReadExtent(0, d3)
 			r.NoError(err)
