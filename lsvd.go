@@ -62,22 +62,27 @@ type Disk struct {
 	logWriter io.Writer
 
 	lba2disk     *treemap.TreeMap[LBA, objPBA]
-	readCache    *treemap.TreeMap[LBA, PBA]
+	readCache    *DiskCache
 	activeTLB    map[LBA]uint32
 	openSegments *lru.Cache[SegmentId, *segmentInfo]
-
-	parent SegmentId
 
 	oc ObjectCreator
 }
 
+const diskCacheSize = 4096 // 16MB read cache
+
 func NewDisk(log hclog.Logger, path string) (*Disk, error) {
+	dc, err := NewDiskCache(filepath.Join(path, "readcache"), diskCacheSize)
+	if err != nil {
+		return nil, err
+	}
+
 	d := &Disk{
 		log:       log,
 		path:      path,
 		lba2disk:  treemap.New[LBA, objPBA](),
+		readCache: dc,
 		activeTLB: make(map[LBA]uint32),
-		parent:    empty,
 	}
 
 	l1cache, err := lru.New[LBA, []byte](4096)
@@ -140,7 +145,7 @@ var (
 	empty      SegmentId
 )
 
-func (d *Disk) nextLog(parent SegmentId) error {
+func (d *Disk) nextLog() error {
 	seq, err := d.nextSeq()
 	if err != nil {
 		return err
@@ -170,9 +175,9 @@ func (d *Disk) nextLog(parent SegmentId) error {
 	return nil
 }
 
-func (d *Disk) CloseSegment() (SegmentId, error) {
+func (d *Disk) CloseSegment() error {
 	if d.activeLog == nil {
-		return d.parent, nil
+		return nil
 	}
 
 	d.curOffset = 0
@@ -181,18 +186,16 @@ func (d *Disk) CloseSegment() (SegmentId, error) {
 
 	defer os.Remove(d.activeLog.Name())
 
-	segId, err := d.FlushObject()
+	_, err := d.FlushObject()
 	if err != nil {
-		return segId, err
+		return err
 	}
 
 	d.activeLog = nil
 
 	clear(d.activeTLB)
 
-	d.parent = segId
-
-	return segId, nil
+	return nil
 }
 
 func (d *Disk) FlushObject() (SegmentId, error) {
@@ -204,8 +207,6 @@ func (d *Disk) FlushObject() (SegmentId, error) {
 	if err != nil {
 		return SegmentId{}, err
 	}
-
-	d.parent = segId
 
 	return segId, nil
 }
@@ -255,9 +256,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 
 		view := data.BlockView(i)
 
-		if cacheData, ok := d.l1cache.Get(lba); ok {
-			copy(view, cacheData)
-		} else if pba, ok := d.activeTLB[lba]; ok {
+		if pba, ok := d.activeTLB[lba]; ok {
 			if pba == math.MaxUint32 {
 				clear(view)
 			} else {
@@ -266,6 +265,9 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 					return errors.Wrapf(err, "attempting to read from active (%d)", pba)
 				}
 			}
+		} else if err := d.readCache.ReadBlock(lba, view); err == nil {
+			d.log.Trace("found block in read cache", "lba", lba)
+			// got it!
 		} else if pba, ok := d.lba2disk.Get(lba); ok {
 			err := d.readPBA(lba, pba, view)
 			if err != nil {
@@ -321,6 +323,11 @@ func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
 		return fmt.Errorf("unknown flag value: %x", addr.Flags)
 	}
 
+	err := d.readCache.WriteBlock(lba, data)
+	if err != nil {
+		d.log.Error("error populating read cache from object", "error", err, "lba", lba)
+	}
+
 	return nil
 }
 
@@ -359,7 +366,7 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	if d.activeLog == nil {
-		err := d.nextLog(d.parent)
+		err := d.nextLog()
 		if err != nil {
 			return err
 		}
@@ -445,10 +452,6 @@ func (d *Disk) rebuild() error {
 			}
 
 		}
-	}
-
-	if len(entries) > 0 {
-		d.parent, _ = segmentFromName(entries[len(entries)-1].Name())
 	}
 
 	return nil
@@ -582,8 +585,6 @@ func (d *Disk) rebuildTLB(path string) (*SegmentHeader, error) {
 			break
 		}
 
-		d.readCache.Set(LBA(lba), cur)
-
 		cur.Offset += uint32(perBlockHeader + BlockSize)
 	}
 
@@ -670,7 +671,7 @@ func (d *Disk) restoreActive() error {
 }
 
 func (d *Disk) Close() error {
-	_, err := d.CloseSegment()
+	err := d.CloseSegment()
 	if err != nil {
 		return err
 	}
@@ -690,7 +691,7 @@ func (d *Disk) saveLBAMap() error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.parent, d.lba2disk, f)
+	return saveLBAMap(d.lba2disk, f)
 }
 
 func (d *Disk) loadLBAMap() error {
@@ -707,23 +708,17 @@ func (d *Disk) loadLBAMap() error {
 
 	d.log.Trace("reloading lba map from head.map")
 
-	parent, m, err := processLBAMap(f)
+	m, err := processLBAMap(f)
 	if err != nil {
 		return err
 	}
 
-	d.parent = parent
 	d.lba2disk = m
 
 	return nil
 }
 
-func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
-	err := binary.Write(f, binary.BigEndian, parent)
-	if err != nil {
-		return err
-	}
-
+func saveLBAMap(m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
 	for it := m.Iterator(); it.Valid(); it.Next() {
 		err := binary.Write(f, binary.BigEndian, uint64(it.Key()))
 		if err != nil {
@@ -739,15 +734,8 @@ func saveLBAMap(parent SegmentId, m *treemap.TreeMap[LBA, objPBA], f io.Writer) 
 	return nil
 }
 
-func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, objPBA], error) {
+func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, objPBA], error) {
 	m := treemap.New[LBA, objPBA]()
-
-	var segId SegmentId
-
-	err := binary.Read(f, binary.BigEndian, &segId)
-	if err != nil {
-		return empty, nil, err
-	}
 
 	for {
 		var (
@@ -761,18 +749,18 @@ func processLBAMap(f io.Reader) (SegmentId, *treemap.TreeMap[LBA, objPBA], error
 				break
 			}
 
-			return empty, nil, err
+			return nil, err
 		}
 
 		err = binary.Read(f, binary.BigEndian, &pba)
 		if err != nil {
-			return empty, nil, err
+			return nil, err
 		}
 
 		m.Set(LBA(lba), pba)
 	}
 
-	return segId, m, nil
+	return m, nil
 }
 
 func (d *Disk) GCOnce() (SegmentId, error) {

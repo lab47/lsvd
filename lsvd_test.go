@@ -128,7 +128,43 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(0, d2)
 		r.NoError(err)
 
-		r.Equal(d2, testExtent)
+		extentEqual(t, d2, testExtent)
+	})
+
+	t.Run("stale reads aren't returned", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(0, testExtent)
+		r.NoError(err)
+
+		r.NoError(d.Close())
+
+		d, err = NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		d2 := NewExtent(1)
+
+		err = d.ReadExtent(0, d2)
+		r.NoError(err)
+
+		extentEqual(t, d2, testExtent)
+
+		err = d.WriteExtent(0, testExtent2)
+		r.NoError(err)
+
+		d3 := NewExtent(1)
+
+		err = d.ReadExtent(0, d3)
+		r.NoError(err)
+
+		extentEqual(t, d3, testExtent2)
 	})
 
 	t.Run("writes are written to a log file", func(t *testing.T) {
@@ -483,7 +519,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NotEmpty(d.activeTLB)
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		d2 := NewExtent(1)
@@ -511,37 +547,11 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		id, err := d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
-
-		r.Equal(id, d.parent)
 
 		err = d.WriteExtent(48, testExtent2)
 		r.NoError(err)
-	})
-
-	t.Run("reuses the parent after a recovery", func(t *testing.T) {
-		r := require.New(t)
-
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
-
-		d, err := NewDisk(log, tmpdir)
-		r.NoError(err)
-
-		err = d.WriteExtent(47, testExtent)
-		r.NoError(err)
-
-		id, err := d.CloseSegment()
-		r.NoError(err)
-
-		r.Equal(id, d.parent)
-
-		d2, err := NewDisk(log, tmpdir)
-		r.NoError(err)
-
-		r.Equal(id, d2.parent)
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -560,13 +570,11 @@ func TestLSVD(t *testing.T) {
 		d.l1cache.Purge()
 		d.lba2disk.Clear()
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		r.Empty(d.activeTLB)
 		d.lba2disk.Clear()
-
-		d.parent = empty
 
 		r.NoError(d.rebuild())
 		r.NotZero(d.lba2disk.Len())
@@ -595,7 +603,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		r.NoError(d.saveLBAMap())
@@ -605,7 +613,7 @@ func TestLSVD(t *testing.T) {
 
 		defer f.Close()
 
-		_, m, err := processLBAMap(f)
+		m, err := processLBAMap(f)
 		r.NoError(err)
 
 		_, ok := m.Get(47)
@@ -625,7 +633,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		r.NoError(d.Close())
@@ -634,7 +642,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		r.NotZero(d2.lba2disk.Len())
-		r.Equal(d.parent, d2.parent)
 	})
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
@@ -650,7 +657,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(47, testExtent)
 		r.NoError(err)
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		r.NoError(d.saveLBAMap())
@@ -760,7 +767,7 @@ func TestLSVD(t *testing.T) {
 			err = d.ReadExtent(0, d2)
 			r.NoError(err)
 
-			r.Equal(d2, testExtent2)
+			extentEqual(t, d2, testExtent2)
 		})
 
 		t.Run("in a different instance", func(t *testing.T) {
@@ -832,7 +839,7 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(0, testExtent)
 			r.NoError(err)
 
-			_, err = d.CloseSegment()
+			err = d.CloseSegment()
 			r.NoError(err)
 
 			err = d.WriteExtent(0, testExtent2)
@@ -864,7 +871,7 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(0, testExtent)
 			r.NoError(err)
 
-			_, err = d.CloseSegment()
+			err = d.CloseSegment()
 			r.NoError(err)
 
 			err = d.WriteExtent(0, testExtent2)
@@ -898,7 +905,7 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(0, testExtent)
 			r.NoError(err)
 
-			_, err = d.CloseSegment()
+			err = d.CloseSegment()
 			r.NoError(err)
 
 			err = d.WriteExtent(0, testExtent2)
@@ -947,13 +954,13 @@ func TestLSVD(t *testing.T) {
 
 		d.SeqGen = nil
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		err = d.WriteExtent(0, testExtent3)
 		r.NoError(err)
 
-		_, err = d.CloseSegment()
+		err = d.CloseSegment()
 		r.NoError(err)
 
 		gcSeg, err := d.GCOnce()

@@ -40,8 +40,7 @@ type DiskCache struct {
 	nextEntry  uint32
 	left       int
 
-	freelist []uint32
-	lru      *lru.Cache[LBA, uint32]
+	lru *lru.Cache[LBA, uint32]
 }
 
 const entrySize = 12
@@ -52,11 +51,7 @@ func NewDiskCache(path string, blocks int) (*DiskCache, error) {
 		return nil, err
 	}
 
-	freelist := make([]uint32, 0)
-
-	l, err := lru.NewWithEvict[LBA, uint32](blocks, func(key LBA, value uint32) {
-		freelist = append(freelist, value)
-	})
+	l, err := lru.New[LBA, uint32](blocks)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +114,12 @@ func (d *DiskCache) ReadBlock(lba LBA, block []byte) error {
 		ent := LBA(binary.BigEndian.Uint64(h))
 		off := binary.BigEndian.Uint32(h[8:])
 
+		// 0 offset means the entry isn't in use, since
+		// 0 is an invalid offset.
+		if off == 0 {
+			break
+		}
+
 		if lba == ent {
 			d.lru.Add(ent, off)
 			copy(block, d.m[off:])
@@ -137,6 +138,10 @@ func (d *DiskCache) scanForEntry(lba LBA) (uint32, bool) {
 	for i := 0; i < d.blocks; i++ {
 		ent := LBA(binary.BigEndian.Uint64(h))
 		off := binary.BigEndian.Uint32(h[8:])
+
+		if off == 0 {
+			break
+		}
 
 		if lba == ent {
 			return off, true
