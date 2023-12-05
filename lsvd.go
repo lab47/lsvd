@@ -233,6 +233,18 @@ func ExtentView(blk []byte) Extent {
 	}
 }
 
+func ExtentOverlay(blk []byte) (Extent, error) {
+	cnt := len(blk) / BlockSize
+	if cnt < 0 || len(blk)%BlockSize != 0 {
+		return Extent{}, fmt.Errorf("invalid extent length, not block sized")
+	}
+
+	return Extent{
+		blocks: cnt,
+		data:   blk,
+	}, nil
+}
+
 func (e Extent) BlockView(cnt int) []byte {
 	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
 }
@@ -263,10 +275,13 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 			if pba == math.MaxUint32 {
 				clear(view)
 			} else {
-				_, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
+				n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
 				if err != nil {
+					d.log.Error("error reading data from write cache", "error", err, "pba", pba)
 					return errors.Wrapf(err, "attempting to read from active (%d)", pba)
 				}
+
+				d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
 			}
 		} else if err := d.readCache.ReadBlock(lba, view); err == nil {
 			d.log.Trace("found block in read cache", "lba", lba)
@@ -365,6 +380,8 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 
 	dw := d.writeCache
 
+	defer dw.Sync()
+
 	crc64.New(crc64.MakeTable(crc64.ECMA))
 
 	numBlocks := data.Blocks()
@@ -412,6 +429,7 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 			return fmt.Errorf("invalid write size (%d != %d)", n, BlockSize)
 		}
 
+		d.log.Trace("wrote block to write cache", "block", lba, "pba", d.curOffset)
 		d.wcOffsets[lba] = d.curOffset
 		d.curOffset += uint32(perBlockHeader + BlockSize)
 	}
