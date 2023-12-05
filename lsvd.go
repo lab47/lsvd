@@ -32,6 +32,10 @@ type (
 	SegmentId ulid.ULID
 )
 
+func (s SegmentId) String() string {
+	return ulid.ULID(s).String()
+}
+
 const BlockSize = 4 * 1024
 
 func (e Extent) Blocks() int {
@@ -670,35 +674,36 @@ func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, objPBA], error) {
 	return m, nil
 }
 
+func (d *Disk) pickSegmentToGC(segments []SegmentId) (SegmentId, bool) {
+	if len(segments) == 0 {
+		return SegmentId{}, false
+	}
+
+	return segments[0], true
+}
+
 func (d *Disk) GCOnce() (SegmentId, error) {
-	entries, err := os.ReadDir(d.path)
+	segments, err := d.sa.ListSegments()
 	if err != nil {
 		return SegmentId{}, nil
 	}
 
-	if len(entries) == 0 {
+	toGC, ok := d.pickSegmentToGC(segments)
+	if !ok {
 		return SegmentId{}, nil
 	}
 
-	for _, ent := range entries {
-		seg, ok := segmentFromName(ent.Name())
-		if !ok {
-			continue
-		}
+	d.log.Trace("copying live data from object", "seg", toGC)
 
-		d.log.Trace("copying live data from object", "path", ent.Name())
-
-		err := d.copyLive(seg, filepath.Join(d.path, ent.Name()))
-		if err != nil {
-			return seg, err
-		}
-
-		return seg, nil
+	err = d.copyLive(toGC)
+	if err != nil {
+		return toGC, err
 	}
-	return SegmentId{}, nil
+
+	return toGC, nil
 }
 
-func (d *Disk) copyLive(seg SegmentId, path string) error {
+func (d *Disk) copyLive(seg SegmentId) error {
 	f, err := d.sa.OpenSegment(seg)
 	if err != nil {
 		return errors.Wrapf(err, "opening local live object")
