@@ -384,6 +384,8 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 				return err
 			}
 
+			d.curOffset += perBlockHeader
+
 			d.wcOffsets[lba] = math.MaxUint32
 
 			continue

@@ -102,12 +102,16 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		data := NewExtent(1)
+		data := NewExtent(4)
 
-		err = d.ReadExtent(0, data)
+		for i := range data.data {
+			data.data[i] = 8
+		}
+
+		err = d.ReadExtent(1, data)
 		r.NoError(err)
 
-		r.True(isEmpty(data.BlockView(0)))
+		r.True(isEmpty(data.data))
 	})
 
 	t.Run("writes are returned by next read", func(t *testing.T) {
@@ -120,7 +124,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(log, tmpdir)
 		r.NoError(err)
 
-		err = d.WriteExtent(0, testExtent)
+		err = d.WriteExtent(0, testRandX)
 		r.NoError(err)
 
 		d2 := NewExtent(1)
@@ -128,7 +132,30 @@ func TestLSVD(t *testing.T) {
 		err = d.ReadExtent(0, d2)
 		r.NoError(err)
 
-		extentEqual(t, d2, testExtent)
+		extentEqual(t, d2, testRandX)
+	})
+
+	t.Run("writes to clear blocks don't corrupt the cache", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(log, tmpdir)
+		r.NoError(err)
+
+		r.NoError(d.WriteExtent(47, testEmptyX))
+
+		err = d.WriteExtent(0, testRandX)
+		r.NoError(err)
+
+		d2 := NewExtent(1)
+
+		err = d.ReadExtent(0, d2)
+		r.NoError(err)
+
+		extentEqual(t, d2, testRandX)
 	})
 
 	t.Run("stale reads aren't returned", func(t *testing.T) {
