@@ -86,6 +86,70 @@ func TestS3(t *testing.T) {
 		r.Equal("this is a segment", string(buf[:n]))
 	})
 
+	t.Run("can write a segment", func(t *testing.T) {
+		r := require.New(t)
+
+		seg, err := ulid.New(ulid.Now(), monoRead)
+		r.NoError(err)
+
+		objName := "object." + ulid.ULID(seg).String()
+
+		defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: &bucketName,
+			Key:    &objName,
+		})
+
+		s, err := NewS3Access(log, host, bucketName, cfg)
+		r.NoError(err)
+
+		w, err := s.WriteSegment(SegmentId(seg))
+		r.NoError(err)
+
+		fmt.Fprintln(w, "this is a segment")
+
+		r.NoError(w.Close())
+
+		or, err := s.OpenSegment(SegmentId(seg))
+		r.NoError(err)
+
+		buf := make([]byte, 1024)
+
+		n, err := or.ReadAt(buf, 0)
+		r.NoError(err)
+
+		r.Equal("this is a segment\n", string(buf[:n]))
+	})
+
+	t.Run("can remove a segment", func(t *testing.T) {
+		r := require.New(t)
+
+		seg, err := ulid.New(ulid.Now(), monoRead)
+		r.NoError(err)
+
+		objName := "object." + ulid.ULID(seg).String()
+
+		_, err = sc.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: &bucketName,
+			Key:    &objName,
+			Body:   strings.NewReader("this is a segment"),
+		})
+		r.NoError(err)
+
+		defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: &bucketName,
+			Key:    &objName,
+		})
+
+		s, err := NewS3Access(log, host, bucketName, cfg)
+		r.NoError(err)
+
+		err = s.RemoveSegment(SegmentId(seg))
+		r.NoError(err)
+
+		_, err = s.OpenSegment(SegmentId(seg))
+		r.Error(err)
+	})
+
 	t.Run("lists objects", func(t *testing.T) {
 		r := require.New(t)
 
@@ -127,14 +191,21 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		w, err := s.WriteMetadata("head")
+		key := "head"
+
+		defer s.sc.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: &bucketName,
+			Key:    &key,
+		})
+
+		w, err := s.WriteMetadata(key)
 		r.NoError(err)
 
 		_, err = fmt.Fprintln(w, "this is metadata")
 		r.NoError(err)
 		r.NoError(w.Close())
 
-		mr, err := s.ReadMetadata("head")
+		mr, err := s.ReadMetadata(key)
 		r.NoError(err)
 
 		data, err := io.ReadAll(mr)

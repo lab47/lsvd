@@ -94,7 +94,7 @@ func (o *ObjectCreator) Reset() {
 	o.body.Reset()
 }
 
-func (o *ObjectCreator) Flush(path string, seg SegmentId, m *treemap.TreeMap[LBA, objPBA]) error {
+func (o *ObjectCreator) Flush(sa SegmentAccess, seg SegmentId, m *treemap.TreeMap[LBA, objPBA]) error {
 	defer o.Reset()
 
 	buf := make([]byte, 16)
@@ -140,7 +140,8 @@ func (o *ObjectCreator) Flush(path string, seg SegmentId, m *treemap.TreeMap[LBA
 
 	}
 
-	f, err := os.Create(path)
+	f, err := sa.WriteSegment(seg)
+	//f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -264,8 +265,14 @@ func (l *LocalFileAccess) RemoveSegment(seg SegmentId) error {
 		filepath.Join(l.Dir, "object."+ulid.ULID(seg).String()))
 }
 
+func (l *LocalFileAccess) WriteSegment(seg SegmentId) (io.WriteCloser, error) {
+	path := filepath.Join(l.Dir, "object."+ulid.ULID(seg).String())
+	return os.Create(path)
+}
+
 type SegmentAccess interface {
 	OpenSegment(seg SegmentId) (ObjectReader, error)
+	WriteSegment(seg SegmentId) (io.WriteCloser, error)
 	ListSegments() ([]SegmentId, error)
 	WriteMetadata(name string) (io.WriteCloser, error)
 	ReadMetadata(name string) (io.ReadCloser, error)

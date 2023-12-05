@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
@@ -48,8 +48,6 @@ func (s *S3ObjectReader) Close() error {
 
 func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 	rng := fmt.Sprintf("bytes=%d-%d", off, int(off)+len(dest))
-
-	spew.Dump(s.buk, s.key, rng)
 
 	r, err := s.sc.GetObject(context.TODO(), &s3.GetObjectInput{
 		Bucket: &s.buk,
@@ -93,11 +91,22 @@ func (s *S3ObjectReader) ReadAtCompressed(dest []byte, off, compSize int64) (int
 }
 
 func (s *S3Access) OpenSegment(seg SegmentId) (ObjectReader, error) {
+	key := "object." + ulid.ULID(seg).String()
+
+	// Validate the object exists.
+	_, err := s.sc.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return &S3ObjectReader{
 		sc:  s.sc,
 		seg: seg,
 		buk: s.bucket,
-		key: "object." + ulid.ULID(seg).String(),
+		key: key,
 	}, nil
 }
 
@@ -155,6 +164,57 @@ func (m *mdWriter) Close() error {
 	})
 
 	return err
+}
+
+type bgWriter struct {
+	io.Writer
+
+	bw  *bufio.Writer
+	w   *io.PipeWriter
+	ctx context.Context
+	err error
+
+	sc     *manager.Uploader
+	bucket string
+	key    string
+}
+
+func (b *bgWriter) Close() error {
+	b.bw.Flush()
+	b.w.Close()
+
+	<-b.ctx.Done()
+
+	return b.err
+}
+
+func (s *S3Access) WriteSegment(seg SegmentId) (io.WriteCloser, error) {
+	r, w := io.Pipe()
+
+	bw := bufio.NewWriter(w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	bg := &bgWriter{
+		Writer: bw,
+		bw:     bw,
+		w:      w,
+		ctx:    ctx,
+	}
+
+	key := "object." + ulid.ULID(seg).String()
+
+	go func() {
+		defer cancel()
+		_, err := s.uploader.Upload(ctx, &s3.PutObjectInput{
+			Bucket: &s.bucket,
+			Key:    &key,
+			Body:   r,
+		})
+		bg.err = err
+	}()
+
+	return bg, nil
 }
 
 func (s *S3Access) WriteMetadata(name string) (io.WriteCloser, error) {

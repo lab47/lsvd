@@ -200,11 +200,9 @@ func (d *Disk) CloseSegment() error {
 }
 
 func (d *Disk) FlushObject() (SegmentId, error) {
-	newPath := filepath.Join(d.path, "object."+d.curSeq.String())
-
 	segId := SegmentId(d.curSeq)
 
-	err := d.oc.Flush(newPath, segId, d.lba2obj)
+	err := d.oc.Flush(d.sa, segId, d.lba2obj)
 	if err != nil {
 		return SegmentId{}, err
 	}
