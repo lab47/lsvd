@@ -581,11 +581,18 @@ func (d *Disk) restoreWriteCache() error {
 		return nil
 	}
 
-	if len(entries) > 1 {
-		return fmt.Errorf("multiple temporary logs found (%d)", len(entries))
+	for _, ent := range entries {
+		err := d.restoreWriteCacheFile(ent)
+		if err != nil {
+			return err
+		}
 	}
 
-	f, err := os.OpenFile(entries[0], os.O_RDWR, 0644)
+	return nil
+}
+
+func (d *Disk) restoreWriteCacheFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
