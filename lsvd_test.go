@@ -1017,6 +1017,30 @@ func TestLSVD(t *testing.T) {
 
 		extentEqual(t, x2, testExtent2)
 	})
+
+	t.Run("zero blocks works like an empty write", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, 0, testRandX)
+		r.NoError(err)
+
+		err = d.ZeroBlocks(ctx, 0, 1)
+		r.NoError(err)
+
+		d2 := NewExtent(1)
+
+		err = d.ReadExtent(ctx, 0, d2)
+		r.NoError(err)
+
+		extentEqual(t, d2, testEmptyX)
+	})
 }
 
 func emptyBytesI(b []byte) bool {
