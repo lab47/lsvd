@@ -115,17 +115,21 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	err = d.loadLBAMap(ctx)
+	goodMap, err := d.loadLBAMap(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = d.rebuildFromObjects(ctx)
-	if err != nil {
-		return nil, err
+	if goodMap {
+		log.Info("reusing serialized LBA map", "blocks", d.lba2obj.Len())
+	} else {
+		err = d.rebuildFromObjects(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	err = d.restoreWriteCache()
+	err = d.restoreWriteCache(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -561,6 +565,8 @@ func segmentFromName(name string) (SegmentId, bool) {
 }
 
 func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
+	d.log.Info("rebuilding mappings from object", "id", seg)
+
 	f, err := d.sa.OpenSegment(ctx, seg)
 	if err != nil {
 		return err
@@ -750,14 +756,14 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 	return saveLBAMap(d.lba2obj, f)
 }
 
-func (d *Disk) loadLBAMap(ctx context.Context) error {
+func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	f, err := d.sa.ReadMetadata(ctx, "head.map")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
 
-		return err
+		return false, err
 	}
 
 	defer f.Close()
@@ -766,12 +772,12 @@ func (d *Disk) loadLBAMap(ctx context.Context) error {
 
 	m, err := processLBAMap(f)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	d.lba2obj = m
 
-	return nil
+	return true, nil
 }
 
 func saveLBAMap(m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
