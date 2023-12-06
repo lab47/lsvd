@@ -62,6 +62,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	defer d.Close(ctx)
+
 	l, err := net.Listen("tcp", *fAddr)
 	if err != nil {
 		log.Error("error listening on addr", "error", err, "addr", *fAddr)
