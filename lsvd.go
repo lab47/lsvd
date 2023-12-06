@@ -373,7 +373,7 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 	return crc64.Update(crc, crcTable, a[:])
 }
 
-func (d *Disk) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
+func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) error {
 	if d.writeCache == nil {
 		err := d.nextLog()
 		if err != nil {
@@ -413,7 +413,7 @@ func (d *Disk) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 	return d.oc.ZeroBlocks(firstBlock, numBlocks)
 }
 
-func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
+func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) error {
 	if d.writeCache == nil {
 		err := d.nextLog()
 		if err != nil {
@@ -858,7 +858,7 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 			}
 		}
 
-		err = d.WriteExtent(LBA(lba), ExtentView(view))
+		err = d.WriteExtent(ctx, LBA(lba), ExtentView(view))
 		if err != nil {
 			return err
 		}
