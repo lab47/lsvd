@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/igrmk/treemap/v2"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
@@ -22,6 +23,7 @@ type ocBlock struct {
 }
 
 type ObjectCreator struct {
+	log hclog.Logger
 	cnt int
 
 	offset uint64
@@ -145,6 +147,12 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	dataBegin := uint32(o.header.Len() + 8)
 
+	o.log.Debug("object constructed",
+		"header-size", o.header.Len(),
+		"body-size", o.offset,
+		"blocks", len(o.blocks),
+	)
+
 	for _, blk := range o.blocks {
 		m.Set(blk.lba, objPBA{
 			PBA: PBA{
@@ -158,7 +166,6 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	}
 
 	f, err := sa.WriteSegment(ctx, seg)
-	//f, err := os.Create(path)
 	if err != nil {
 		return err
 	}

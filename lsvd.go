@@ -55,6 +55,8 @@ type objPBA struct {
 	Size  uint32
 }
 
+const flushThreshHold = 5 * 1024 * 1024
+
 type Disk struct {
 	SeqGen func() ulid.ULID
 	log    hclog.Logger
@@ -100,6 +102,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
 	}
+
+	d.oc.log = log
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
 		256, func(key SegmentId, value ObjectReader) {
@@ -213,6 +217,8 @@ func (d *Disk) FlushObject(ctx context.Context) (SegmentId, error) {
 	if err != nil {
 		return SegmentId{}, err
 	}
+
+	d.log.Info("flushed segment as object", "id", segId)
 
 	return segId, nil
 }
@@ -373,6 +379,27 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 	return crc64.Update(crc, crcTable, a[:])
 }
 
+func (d *Disk) blockIsEmpty(lba LBA) bool {
+	// We skip any blocks that are unused currently since we'll
+	// return them as zero when asked later.
+	if pba, tracking := d.wcOffsets[lba]; tracking {
+		// If we're tracking it and it has a valid offset in the write cache,
+		// then it's not empty.
+		if pba != math.MaxUint32 {
+			return false
+		}
+	}
+
+	if addr, tracking := d.lba2obj.Get(lba); tracking {
+		// If it's present in an object as empty already, then yeah, it's empty.
+		if addr.Flags != 2 {
+			return true
+		}
+	}
+
+	return true
+}
+
 func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) error {
 	if d.writeCache == nil {
 		err := d.nextLog()
@@ -387,12 +414,10 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 	for i := int64(0); i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
 
-		// We skip any blocks that are unused currently since we'll
-		// return them as zero when asked later.
-		if _, tracking := d.wcOffsets[lba]; !tracking {
-			if _, tracking := d.lba2obj.Get(lba); !tracking {
-				continue
-			}
+		// We skip any blocks that are currently empty since we don't need
+		// to re-zero them.
+		if d.blockIsEmpty(lba) {
+			continue
 		}
 
 		err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
@@ -408,9 +433,16 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 		d.curOffset += perBlockHeader
 
 		d.wcOffsets[lba] = math.MaxUint32
+
+		// Zero them one at a time in the object so that we take into account
+		// the above tracking logic to omit zeroing blocks that are already zero.
+		err = d.oc.ZeroBlocks(lba, 1)
+		if err != nil {
+			return err
+		}
 	}
 
-	return d.oc.ZeroBlocks(firstBlock, numBlocks)
+	return nil
 }
 
 func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) error {
@@ -422,7 +454,6 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 	}
 
 	dw := d.wcBufWrite
-	defer d.wcBufWrite.Flush()
 
 	numBlocks := data.Blocks()
 	for i := 0; i < numBlocks; i++ {
@@ -433,10 +464,8 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 		if emptyBytes(view) {
 			// We skip any blocks that are unused currently since we'll
 			// return them as zero when asked later.
-			if _, tracking := d.wcOffsets[lba]; !tracking {
-				if _, tracking := d.lba2obj.Get(lba); !tracking {
-					continue
-				}
+			if d.blockIsEmpty(lba) {
+				continue
 			}
 
 			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
@@ -482,7 +511,23 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 		d.curOffset += uint32(perBlockHeader + BlockSize)
 	}
 
-	return d.oc.WriteExtent(firstBlock, data)
+	err := d.wcBufWrite.Flush()
+	if err != nil {
+		d.log.Error("error flushing write cache buffer", "error", err)
+	}
+
+	err = d.oc.WriteExtent(firstBlock, data)
+	if err != nil {
+		d.log.Error("error write extents to object creator", "error", err)
+		return err
+	}
+
+	if d.curOffset >= flushThreshHold {
+		d.log.Debug("flushing object", "write-cache-size", d.curOffset)
+		return d.CloseSegment(ctx)
+	}
+
+	return nil
 }
 
 func (d *Disk) rebuildFromObjects(ctx context.Context) error {
@@ -571,7 +616,8 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 	return nil
 }
 
-func (d *Disk) restoreWriteCache() error {
+func (d *Disk) restoreWriteCache(ctx context.Context) error {
+	d.log.Info("restoring write cache")
 	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
 	if err != nil {
 		return err
@@ -582,7 +628,7 @@ func (d *Disk) restoreWriteCache() error {
 	}
 
 	for _, ent := range entries {
-		err := d.restoreWriteCacheFile(ent)
+		err := d.restoreWriteCacheFile(ctx, ent)
 		if err != nil {
 			return err
 		}
@@ -591,7 +637,7 @@ func (d *Disk) restoreWriteCache() error {
 	return nil
 }
 
-func (d *Disk) restoreWriteCacheFile(path string) error {
+func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -599,6 +645,10 @@ func (d *Disk) restoreWriteCacheFile(path string) error {
 		}
 
 		return err
+	}
+
+	if d.writeCache != nil {
+		d.writeCache.Close()
 	}
 
 	d.writeCache = f
@@ -668,6 +718,10 @@ func (d *Disk) restoreWriteCacheFile(path string) error {
 	}
 
 	d.log.Info("restored data from write cache", "blocks", numBlocks, "zero-blocks", zeroBlocks)
+
+	if d.curOffset >= flushThreshHold {
+		return d.CloseSegment(ctx)
+	}
 
 	return nil
 }

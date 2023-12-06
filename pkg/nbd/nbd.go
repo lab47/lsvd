@@ -108,7 +108,7 @@ nego:
 				return err
 			}
 
-			log.Debug("looking for export", "name", exportName)
+			log.Debug("looking for export", "name", string(exportName))
 
 			for _, candidate := range exports {
 				if candidate.Name == string(exportName) {
