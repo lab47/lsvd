@@ -63,6 +63,7 @@ type Disk struct {
 	writeCache *os.File
 	wcOffsets  map[LBA]uint32
 	curOffset  uint32
+	wcBufWrite *bufio.Writer
 
 	lba2obj      *treemap.TreeMap[LBA, objPBA]
 	readCache    *DiskCache
@@ -165,6 +166,7 @@ func (d *Disk) nextLog() error {
 	}
 
 	d.writeCache = f
+	d.wcBufWrite = bufio.NewWriter(f)
 
 	ts := uint64(time.Now().Unix())
 
@@ -370,6 +372,46 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 	return crc64.Update(crc, crcTable, a[:])
 }
 
+func (d *Disk) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
+	if d.writeCache == nil {
+		err := d.nextLog()
+		if err != nil {
+			return err
+		}
+	}
+
+	dw := d.wcBufWrite
+	defer d.wcBufWrite.Flush()
+
+	for i := int64(0); i < numBlocks; i++ {
+		lba := firstBlock + LBA(i)
+
+		// We skip any blocks that are unused currently since we'll
+		// return them as zero when asked later.
+		if _, tracking := d.wcOffsets[lba]; !tracking {
+			if _, tracking := d.lba2obj.Get(lba); !tracking {
+				continue
+			}
+		}
+
+		err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
+		if err != nil {
+			return err
+		}
+
+		err = binary.Write(dw, binary.BigEndian, uint64(lba))
+		if err != nil {
+			return err
+		}
+
+		d.curOffset += perBlockHeader
+
+		d.wcOffsets[lba] = math.MaxUint32
+	}
+
+	return d.oc.ZeroBlocks(firstBlock, numBlocks)
+}
+
 func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	if d.writeCache == nil {
 		err := d.nextLog()
@@ -378,11 +420,8 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		}
 	}
 
-	dw := d.writeCache
-
-	defer dw.Sync()
-
-	crc64.New(crc64.MakeTable(crc64.ECMA))
+	dw := d.wcBufWrite
+	defer d.wcBufWrite.Flush()
 
 	numBlocks := data.Blocks()
 	for i := 0; i < numBlocks; i++ {
@@ -547,6 +586,7 @@ func (d *Disk) restoreWriteCache() error {
 	}
 
 	d.writeCache = f
+	d.wcBufWrite = bufio.NewWriter(f)
 
 	var hdr SegmentHeader
 

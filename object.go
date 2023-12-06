@@ -35,6 +35,21 @@ func emptyBytes(b []byte) bool {
 	return bytes.Equal(b, emptyBlock)
 }
 
+func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
+	for i := 0; i < int(numBlocks); i++ {
+		lba := firstBlock + LBA(i)
+
+		o.cnt++
+
+		o.blocks = append(o.blocks, ocBlock{
+			lba:   lba,
+			flags: 2,
+		})
+	}
+
+	return nil
+}
+
 func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 	if o.buf == nil {
 		o.buf = make([]byte, 2*BlockSize)
