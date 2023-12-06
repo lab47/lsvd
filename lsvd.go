@@ -561,6 +561,8 @@ func (d *Disk) restoreWriteCache() error {
 
 	view := make([]byte, BlockSize)
 
+	var numBlocks, zeroBlocks int
+
 	for {
 		var lba, crc uint64
 
@@ -575,6 +577,17 @@ func (d *Disk) restoreWriteCache() error {
 		err = binary.Read(f, binary.BigEndian, &lba)
 		if err != nil {
 			return err
+		}
+
+		numBlocks++
+
+		// This indicates that it's an empty block
+		if crc == math.MaxUint64 {
+			zeroBlocks++
+			offset += perBlockHeader
+			d.wcOffsets[LBA(lba)] = math.MaxUint32
+
+			continue
 		}
 
 		n, err := io.ReadFull(f, view)
@@ -597,6 +610,8 @@ func (d *Disk) restoreWriteCache() error {
 
 		offset += uint32(perBlockHeader + BlockSize)
 	}
+
+	d.log.Info("restored data from write cache", "blocks", numBlocks, "zero-blocks", zeroBlocks)
 
 	return nil
 }
