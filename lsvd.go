@@ -537,7 +537,7 @@ func (d *Disk) restoreWriteCache() error {
 		return fmt.Errorf("multiple temporary logs found (%d)", len(entries))
 	}
 
-	f, err := os.Open(entries[0])
+	f, err := os.OpenFile(entries[0], os.O_RDWR, 0644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
