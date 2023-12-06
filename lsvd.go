@@ -430,6 +430,14 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 		view := data.BlockView(i)
 
 		if emptyBytes(view) {
+			// We skip any blocks that are unused currently since we'll
+			// return them as zero when asked later.
+			if _, tracking := d.wcOffsets[lba]; !tracking {
+				if _, tracking := d.lba2obj.Get(lba); !tracking {
+					continue
+				}
+			}
+
 			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
 			if err != nil {
 				return err
