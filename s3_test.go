@@ -75,7 +75,7 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		or, err := s.OpenSegment(SegmentId(seg))
+		or, err := s.OpenSegment(ctx, SegmentId(seg))
 		r.NoError(err)
 
 		buf := make([]byte, 1024)
@@ -102,14 +102,14 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		w, err := s.WriteSegment(SegmentId(seg))
+		w, err := s.WriteSegment(ctx, SegmentId(seg))
 		r.NoError(err)
 
 		fmt.Fprintln(w, "this is a segment")
 
 		r.NoError(w.Close())
 
-		or, err := s.OpenSegment(SegmentId(seg))
+		or, err := s.OpenSegment(ctx, SegmentId(seg))
 		r.NoError(err)
 
 		buf := make([]byte, 1024)
@@ -143,10 +143,10 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		err = s.RemoveSegment(SegmentId(seg))
+		err = s.RemoveSegment(ctx, SegmentId(seg))
 		r.NoError(err)
 
-		_, err = s.OpenSegment(SegmentId(seg))
+		_, err = s.OpenSegment(ctx, SegmentId(seg))
 		r.Error(err)
 	})
 
@@ -179,7 +179,7 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		segs, err := s.ListSegments()
+		segs, err := s.ListSegments(ctx)
 		r.NoError(err)
 
 		r.Equal(expected, segs)
@@ -198,14 +198,14 @@ func TestS3(t *testing.T) {
 			Key:    &key,
 		})
 
-		w, err := s.WriteMetadata(key)
+		w, err := s.WriteMetadata(ctx, key)
 		r.NoError(err)
 
 		_, err = fmt.Fprintln(w, "this is metadata")
 		r.NoError(err)
 		r.NoError(w.Close())
 
-		mr, err := s.ReadMetadata(key)
+		mr, err := s.ReadMetadata(ctx, key)
 		r.NoError(err)
 
 		data, err := io.ReadAll(mr)

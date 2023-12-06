@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -75,7 +76,7 @@ type Disk struct {
 
 const diskCacheSize = 4096 // 16MB read cache
 
-func NewDisk(log hclog.Logger, path string, options ...Option) (*Disk, error) {
+func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
 	dc, err := NewDiskCache(filepath.Join(path, "readcache"), diskCacheSize)
 	if err != nil {
 		return nil, err
@@ -110,12 +111,12 @@ func NewDisk(log hclog.Logger, path string, options ...Option) (*Disk, error) {
 
 	d.openSegments = openSegments
 
-	err = d.loadLBAMap()
+	err = d.loadLBAMap(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = d.rebuildFromObjects()
+	err = d.rebuildFromObjects(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +183,7 @@ func (d *Disk) nextLog() error {
 	return nil
 }
 
-func (d *Disk) CloseSegment() error {
+func (d *Disk) CloseSegment(ctx context.Context) error {
 	if d.writeCache == nil {
 		return nil
 	}
@@ -193,7 +194,7 @@ func (d *Disk) CloseSegment() error {
 
 	defer os.Remove(d.writeCache.Name())
 
-	_, err := d.FlushObject()
+	_, err := d.FlushObject(ctx)
 	if err != nil {
 		return err
 	}
@@ -205,10 +206,10 @@ func (d *Disk) CloseSegment() error {
 	return nil
 }
 
-func (d *Disk) FlushObject() (SegmentId, error) {
+func (d *Disk) FlushObject(ctx context.Context) (SegmentId, error) {
 	segId := SegmentId(d.curSeq)
 
-	err := d.oc.Flush(d.sa, segId, d.lba2obj)
+	err := d.oc.Flush(ctx, d.sa, segId, d.lba2obj)
 	if err != nil {
 		return SegmentId{}, err
 	}
@@ -265,7 +266,7 @@ const perBlockHeader = 16
 
 var emptyBlock = make([]byte, BlockSize)
 
-func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
+func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) error {
 	numBlocks := data.Blocks()
 
 	for i := 0; i < numBlocks; i++ {
@@ -289,7 +290,7 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 			d.log.Trace("found block in read cache", "lba", lba)
 			// got it!
 		} else if pba, ok := d.lba2obj.Get(lba); ok {
-			err := d.readPBA(lba, pba, view)
+			err := d.readPBA(ctx, lba, pba, view)
 			if err != nil {
 				return err
 			}
@@ -301,10 +302,10 @@ func (d *Disk) ReadExtent(firstBlock LBA, data Extent) error {
 	return nil
 }
 
-func (d *Disk) readPBA(lba LBA, addr objPBA, data []byte) error {
+func (d *Disk) readPBA(ctx context.Context, lba LBA, addr objPBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
-		lf, err := d.sa.OpenSegment(addr.Segment)
+		lf, err := d.sa.OpenSegment(ctx, addr.Segment)
 		if err != nil {
 			return err
 		}
@@ -484,14 +485,14 @@ func (d *Disk) WriteExtent(firstBlock LBA, data Extent) error {
 	return d.oc.WriteExtent(firstBlock, data)
 }
 
-func (d *Disk) rebuildFromObjects() error {
-	entries, err := d.sa.ListSegments()
+func (d *Disk) rebuildFromObjects(ctx context.Context) error {
+	entries, err := d.sa.ListSegments(ctx)
 	if err != nil {
 		return err
 	}
 
 	for _, ent := range entries {
-		err := d.rebuildFromObject(ent)
+		err := d.rebuildFromObject(ctx, ent)
 		if err != nil {
 			return err
 		}
@@ -514,8 +515,8 @@ func segmentFromName(name string) (SegmentId, bool) {
 	return SegmentId(data), true
 }
 
-func (d *Disk) rebuildFromObject(seg SegmentId) error {
-	f, err := d.sa.OpenSegment(seg)
+func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
+	f, err := d.sa.OpenSegment(ctx, seg)
 	if err != nil {
 		return err
 	}
@@ -664,21 +665,21 @@ func (d *Disk) restoreWriteCache() error {
 	return nil
 }
 
-func (d *Disk) Close() error {
-	err := d.CloseSegment()
+func (d *Disk) Close(ctx context.Context) error {
+	err := d.CloseSegment(ctx)
 	if err != nil {
 		return err
 	}
 
-	err = d.saveLBAMap()
+	err = d.saveLBAMap(ctx)
 
 	d.openSegments.Purge()
 
 	return err
 }
 
-func (d *Disk) saveLBAMap() error {
-	f, err := d.sa.WriteMetadata("head.map")
+func (d *Disk) saveLBAMap(ctx context.Context) error {
+	f, err := d.sa.WriteMetadata(ctx, "head.map")
 	if err != nil {
 		return err
 	}
@@ -688,8 +689,8 @@ func (d *Disk) saveLBAMap() error {
 	return saveLBAMap(d.lba2obj, f)
 }
 
-func (d *Disk) loadLBAMap() error {
-	f, err := d.sa.ReadMetadata("head.map")
+func (d *Disk) loadLBAMap(ctx context.Context) error {
+	f, err := d.sa.ReadMetadata(ctx, "head.map")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -765,8 +766,8 @@ func (d *Disk) pickSegmentToGC(segments []SegmentId) (SegmentId, bool) {
 	return segments[0], true
 }
 
-func (d *Disk) GCOnce() (SegmentId, error) {
-	segments, err := d.sa.ListSegments()
+func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
+	segments, err := d.sa.ListSegments(ctx)
 	if err != nil {
 		return SegmentId{}, nil
 	}
@@ -778,7 +779,7 @@ func (d *Disk) GCOnce() (SegmentId, error) {
 
 	d.log.Trace("copying live data from object", "seg", toGC)
 
-	err = d.copyLive(toGC)
+	err = d.copyLive(ctx, toGC)
 	if err != nil {
 		return toGC, err
 	}
@@ -786,8 +787,8 @@ func (d *Disk) GCOnce() (SegmentId, error) {
 	return toGC, nil
 }
 
-func (d *Disk) copyLive(seg SegmentId) error {
-	f, err := d.sa.OpenSegment(seg)
+func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
+	f, err := d.sa.OpenSegment(ctx, seg)
 	if err != nil {
 		return errors.Wrapf(err, "opening local live object")
 	}
@@ -863,5 +864,5 @@ func (d *Disk) copyLive(seg SegmentId) error {
 		}
 	}
 
-	return d.sa.RemoveSegment(seg)
+	return d.sa.RemoveSegment(ctx, seg)
 }

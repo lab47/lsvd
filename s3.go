@@ -36,6 +36,7 @@ func NewS3Access(log hclog.Logger, host, bucket string, cfg aws.Config) (*S3Acce
 }
 
 type S3ObjectReader struct {
+	ctx context.Context
 	sc  *s3.Client
 	buk string
 	key string
@@ -49,7 +50,7 @@ func (s *S3ObjectReader) Close() error {
 func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 	rng := fmt.Sprintf("bytes=%d-%d", off, int(off)+len(dest))
 
-	r, err := s.sc.GetObject(context.TODO(), &s3.GetObjectInput{
+	r, err := s.sc.GetObject(s.ctx, &s3.GetObjectInput{
 		Bucket: &s.buk,
 		Key:    &s.key,
 		Range:  &rng,
@@ -90,11 +91,11 @@ func (s *S3ObjectReader) ReadAtCompressed(dest []byte, off, compSize int64) (int
 	return len(dest), nil
 }
 
-func (s *S3Access) OpenSegment(seg SegmentId) (ObjectReader, error) {
+func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
 	key := "object." + ulid.ULID(seg).String()
 
 	// Validate the object exists.
-	_, err := s.sc.HeadObject(context.TODO(), &s3.HeadObjectInput{
+	_, err := s.sc.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
 	})
@@ -104,13 +105,14 @@ func (s *S3Access) OpenSegment(seg SegmentId) (ObjectReader, error) {
 
 	return &S3ObjectReader{
 		sc:  s.sc,
+		ctx: ctx,
 		seg: seg,
 		buk: s.bucket,
 		key: key,
 	}, nil
 }
 
-func (s *S3Access) ListSegments() ([]SegmentId, error) {
+func (s *S3Access) ListSegments(ctx context.Context) ([]SegmentId, error) {
 	var (
 		token    *string
 		segments []SegmentId
@@ -119,7 +121,7 @@ func (s *S3Access) ListSegments() ([]SegmentId, error) {
 	)
 
 	for {
-		out, err := s.sc.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		out, err := s.sc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            &s.bucket,
 			ContinuationToken: token,
 			MaxKeys:           &per,
@@ -145,6 +147,7 @@ func (s *S3Access) ListSegments() ([]SegmentId, error) {
 }
 
 type mdWriter struct {
+	ctx    context.Context
 	sc     *manager.Uploader
 	bucket string
 	key    string
@@ -157,7 +160,7 @@ func (m *mdWriter) Write(b []byte) (int, error) {
 }
 
 func (m *mdWriter) Close() error {
-	_, err := m.sc.Upload(context.TODO(), &s3.PutObjectInput{
+	_, err := m.sc.Upload(m.ctx, &s3.PutObjectInput{
 		Bucket: &m.bucket,
 		Key:    &m.key,
 		Body:   &m.buf,
@@ -188,7 +191,7 @@ func (b *bgWriter) Close() error {
 	return b.err
 }
 
-func (s *S3Access) WriteSegment(seg SegmentId) (io.WriteCloser, error) {
+func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
 	r, w := io.Pipe()
 
 	bw := bufio.NewWriter(w)
@@ -217,8 +220,9 @@ func (s *S3Access) WriteSegment(seg SegmentId) (io.WriteCloser, error) {
 	return bg, nil
 }
 
-func (s *S3Access) WriteMetadata(name string) (io.WriteCloser, error) {
+func (s *S3Access) WriteMetadata(ctx context.Context, name string) (io.WriteCloser, error) {
 	var mw mdWriter
+	mw.ctx = ctx
 	mw.sc = s.uploader
 	mw.bucket = s.bucket
 	mw.key = name
@@ -226,8 +230,8 @@ func (s *S3Access) WriteMetadata(name string) (io.WriteCloser, error) {
 	return &mw, nil
 }
 
-func (s *S3Access) ReadMetadata(name string) (io.ReadCloser, error) {
-	out, err := s.sc.GetObject(context.TODO(), &s3.GetObjectInput{
+func (s *S3Access) ReadMetadata(ctx context.Context, name string) (io.ReadCloser, error) {
+	out, err := s.sc.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
 		Key:    &name,
 	})
@@ -239,13 +243,15 @@ func (s *S3Access) ReadMetadata(name string) (io.ReadCloser, error) {
 	return out.Body, nil
 }
 
-func (s *S3Access) RemoveSegment(seg SegmentId) error {
+func (s *S3Access) RemoveSegment(ctx context.Context, seg SegmentId) error {
 	key := "object." + ulid.ULID(seg).String()
 
-	_, err := s.sc.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+	_, err := s.sc.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
 	})
 
 	return err
 }
+
+var _ SegmentAccess = (*S3Access)(nil)

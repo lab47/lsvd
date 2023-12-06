@@ -53,7 +53,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	d, err := lsvd.NewDisk(log, path)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	defer cancel()
+
+	d, err := lsvd.NewDisk(ctx, log, path)
 	if err != nil {
 		log.Error("error creating new disk", "error", err)
 		os.Exit(1)
@@ -65,9 +68,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
-	defer cancel()
-
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down")
@@ -78,7 +78,7 @@ func main() {
 		{
 			Name:        "lsvd",
 			Description: "disk",
-			Backend:     lsvd.NBDWrapper(log, d),
+			Backend:     lsvd.NBDWrapper(ctx, log, d),
 		},
 	}
 

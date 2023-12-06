@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -109,7 +110,8 @@ func (o *ObjectCreator) Reset() {
 	o.body.Reset()
 }
 
-func (o *ObjectCreator) Flush(sa SegmentAccess, seg SegmentId, m *treemap.TreeMap[LBA, objPBA]) error {
+func (o *ObjectCreator) Flush(ctx context.Context,
+	sa SegmentAccess, seg SegmentId, m *treemap.TreeMap[LBA, objPBA]) error {
 	defer o.Reset()
 
 	buf := make([]byte, 16)
@@ -155,7 +157,7 @@ func (o *ObjectCreator) Flush(sa SegmentAccess, seg SegmentId, m *treemap.TreeMa
 
 	}
 
-	f, err := sa.WriteSegment(seg)
+	f, err := sa.WriteSegment(ctx, seg)
 	//f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -240,12 +242,12 @@ type LocalFileAccess struct {
 	Dir string
 }
 
-func (l *LocalFileAccess) OpenSegment(seg SegmentId) (ObjectReader, error) {
+func (l *LocalFileAccess) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
 	return OpenLocalFile(filepath.Join(l.Dir,
 		"object."+ulid.ULID(seg).String()))
 }
 
-func (l *LocalFileAccess) ListSegments() ([]SegmentId, error) {
+func (l *LocalFileAccess) ListSegments(ctx context.Context) ([]SegmentId, error) {
 	entries, err := os.ReadDir(l.Dir)
 	if err != nil {
 		return nil, err
@@ -265,34 +267,36 @@ func (l *LocalFileAccess) ListSegments() ([]SegmentId, error) {
 	return out, nil
 }
 
-func (l *LocalFileAccess) WriteMetadata(name string) (io.WriteCloser, error) {
+func (l *LocalFileAccess) WriteMetadata(ctx context.Context, name string) (io.WriteCloser, error) {
 	f, err := os.Create(filepath.Join(l.Dir, name))
 	return f, err
 }
 
-func (l *LocalFileAccess) ReadMetadata(name string) (io.ReadCloser, error) {
+func (l *LocalFileAccess) ReadMetadata(ctx context.Context, name string) (io.ReadCloser, error) {
 	f, err := os.Open(filepath.Join(l.Dir, name))
 	return f, err
 }
 
-func (l *LocalFileAccess) RemoveSegment(seg SegmentId) error {
+func (l *LocalFileAccess) RemoveSegment(ctx context.Context, seg SegmentId) error {
 	return os.Remove(
 		filepath.Join(l.Dir, "object."+ulid.ULID(seg).String()))
 }
 
-func (l *LocalFileAccess) WriteSegment(seg SegmentId) (io.WriteCloser, error) {
+func (l *LocalFileAccess) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
 	path := filepath.Join(l.Dir, "object."+ulid.ULID(seg).String())
 	return os.Create(path)
 }
 
 type SegmentAccess interface {
-	OpenSegment(seg SegmentId) (ObjectReader, error)
-	WriteSegment(seg SegmentId) (io.WriteCloser, error)
-	ListSegments() ([]SegmentId, error)
-	WriteMetadata(name string) (io.WriteCloser, error)
-	ReadMetadata(name string) (io.ReadCloser, error)
-	RemoveSegment(seg SegmentId) error
+	OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error)
+	WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error)
+	ListSegments(ctx context.Context) ([]SegmentId, error)
+	WriteMetadata(ctx context.Context, name string) (io.WriteCloser, error)
+	ReadMetadata(ctx context.Context, name string) (io.ReadCloser, error)
+	RemoveSegment(ctx context.Context, seg SegmentId) error
 }
+
+var _ SegmentAccess = (*LocalFileAccess)(nil)
 
 type ReaderAtAsReader struct {
 	f   io.ReaderAt

@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"context"
 	"crypto/sha256"
 
 	"github.com/hashicorp/go-hclog"
@@ -10,13 +11,14 @@ import (
 
 type nbdWrapper struct {
 	log hclog.Logger
+	ctx context.Context
 	d   *Disk
 }
 
 var _ nbd.Backend = &nbdWrapper{}
 
-func NBDWrapper(log hclog.Logger, d *Disk) nbd.Backend {
-	return &nbdWrapper{log, d}
+func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
+	return &nbdWrapper{log, ctx, d}
 }
 
 func blkSum(b []byte) string {
@@ -45,7 +47,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 	blk := LBA(off / BlockSize)
 
-	err = n.d.ReadExtent(blk, ext)
+	err = n.d.ReadExtent(n.ctx, blk, ext)
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err
