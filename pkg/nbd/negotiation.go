@@ -27,6 +27,18 @@ const (
 
 	NEGOTIATION_REPLY_FLAGS_HAS_FLAGS      = uint16((1 << 0))
 	NEGOTIATION_REPLY_FLAGS_CAN_MULTI_CONN = uint16((1 << 8))
+
+	NEGO_FLAG_READONLY          = uint16(1 << 1)
+	NEGO_FLAG_SEND_FLUSH        = uint16(1 << 2)
+	NEGO_FLAG_SEND_FUA          = uint16(1 << 3)
+	NEGO_FLAG_ROTATIONAL        = uint16(1 << 4)
+	NEGO_FLAG_SEND_TRIM         = uint16(1 << 5)
+	NEGO_FLAG_SEND_WRITE_ZEROES = uint16(1 << 6)
+	NEGO_FLAG_SEND_DF           = uint16(1 << 7)
+	NEGO_FLAG_SEND_RESIZE       = uint16(1 << 9)
+	NEGO_FLAG_SEND_CACHE        = uint16(1 << 10)
+	NEGO_FLAG_FAST_ZERO         = uint16(1 << 11)
+	NEGO_FLAG_BLOCK_STATUS      = uint16(1 << 12)
 )
 
 type NegotiationNewstyleHeader struct {

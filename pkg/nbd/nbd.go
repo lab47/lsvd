@@ -160,10 +160,16 @@ nego:
 			log.Debug("reporting device size", "size", size)
 
 			{
-				transmissionFlags := uint16(0)
+				transmissionFlags := NEGOTIATION_REPLY_FLAGS_HAS_FLAGS |
+					NEGO_FLAG_SEND_WRITE_ZEROES |
+					NEGO_FLAG_SEND_FLUSH |
+					NEGO_FLAG_SEND_TRIM
+
 				if options.SupportsMultiConn {
-					transmissionFlags = NEGOTIATION_REPLY_FLAGS_HAS_FLAGS | NEGOTIATION_REPLY_FLAGS_CAN_MULTI_CONN
+					transmissionFlags |= NEGOTIATION_REPLY_FLAGS_CAN_MULTI_CONN
 				}
+
+				log.Debug("sending transmission flags", "flags", uint64(transmissionFlags))
 
 				info := &bytes.Buffer{}
 				if err := binary.Write(info, binary.BigEndian, NegotiationReplyInfo{
@@ -358,12 +364,15 @@ nego:
 		}
 
 		length := requestHeader.Length
-		if length > defaultMaximumRequestSize {
-			return ErrInvalidBlocksize
-		}
 
-		if length != uint32(len(b)) {
-			b = make([]byte, length)
+		if requestHeader.Type != TRANSMISSION_TYPE_REQUEST_TRIM {
+			if length > defaultMaximumRequestSize {
+				return ErrInvalidBlocksize
+			}
+
+			if length > uint32(len(b)) {
+				b = make([]byte, length)
+			}
 		}
 
 		switch requestHeader.Type {
@@ -409,6 +418,78 @@ nego:
 
 			if _, err := export.Backend.WriteAt(b[:n], int64(requestHeader.Offset)); err != nil {
 				return err
+			}
+
+			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
+				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
+				Error:      0,
+				Handle:     requestHeader.Handle,
+			}); err != nil {
+				return err
+			}
+		case TRANSMISSION_TYPE_REQUEST_WRITEZ:
+			if options.ReadOnly {
+				_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the write command's data
+				if err != nil {
+					return err
+				}
+
+				if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
+					ReplyMagic: TRANSMISSION_MAGIC_REPLY,
+					Error:      TRANSMISSION_ERROR_EPERM,
+					Handle:     requestHeader.Handle,
+				}); err != nil {
+					return err
+				}
+
+				break
+			}
+
+			if err := export.Backend.ZeroAt(int64(requestHeader.Offset), int64(length)); err != nil {
+				return err
+			}
+
+			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
+				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
+				Error:      0,
+				Handle:     requestHeader.Handle,
+			}); err != nil {
+				return err
+			}
+		case TRANSMISSION_TYPE_REQUEST_TRIM:
+			if options.ReadOnly {
+				_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the write command's data
+				if err != nil {
+					return err
+				}
+
+				if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
+					ReplyMagic: TRANSMISSION_MAGIC_REPLY,
+					Error:      TRANSMISSION_ERROR_EPERM,
+					Handle:     requestHeader.Handle,
+				}); err != nil {
+					return err
+				}
+
+				break
+			}
+
+			if err := export.Backend.Trim(int64(requestHeader.Offset), int64(length)); err != nil {
+				return err
+			}
+
+			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
+				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
+				Error:      0,
+				Handle:     requestHeader.Handle,
+			}); err != nil {
+				return err
+			}
+		case TRANSMISSION_TYPE_REQUEST_FLUSH:
+			if !options.ReadOnly {
+				if err := export.Backend.Sync(); err != nil {
+					return err
+				}
 			}
 
 			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{

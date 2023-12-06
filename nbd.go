@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/pkg/nbd"
 	"github.com/mr-tron/base58"
-	"github.com/pojntfx/go-nbd/pkg/backend"
 )
 
 type nbdWrapper struct {
@@ -13,9 +13,9 @@ type nbdWrapper struct {
 	d   *Disk
 }
 
-var _ backend.Backend = &nbdWrapper{}
+var _ nbd.Backend = &nbdWrapper{}
 
-func NBDWrapper(log hclog.Logger, d *Disk) backend.Backend {
+func NBDWrapper(log hclog.Logger, d *Disk) nbd.Backend {
 	return &nbdWrapper{log, d}
 }
 
@@ -75,6 +75,38 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	return len(b), nil
 }
 
+func (n *nbdWrapper) ZeroAt(off, size int64) error {
+	n.log.Trace("nbd zero-at", "size", size, "offset", off)
+
+	blk := LBA(off / BlockSize)
+
+	numBlocks := size / BlockSize
+
+	err := n.d.ZeroBlocks(blk, numBlocks)
+	if err != nil {
+		n.log.Error("nbd write-at error", "error", err, "block", blk)
+		return err
+	}
+
+	return nil
+}
+
+func (n *nbdWrapper) Trim(off, size int64) error {
+	n.log.Trace("nbd trim", "size", size, "offset", off)
+
+	blk := LBA(off / BlockSize)
+
+	numBlocks := size / BlockSize
+
+	err := n.d.ZeroBlocks(blk, numBlocks)
+	if err != nil {
+		n.log.Error("nbd trim error", "error", err, "block", blk)
+		return err
+	}
+
+	return nil
+}
+
 const maxSize = 1024 * 1024 * 1024 * 100 // 100GB
 
 func (n *nbdWrapper) Size() (int64, error) {
@@ -82,5 +114,6 @@ func (n *nbdWrapper) Size() (int64, error) {
 }
 
 func (n *nbdWrapper) Sync() error {
+	n.log.Trace("nbd sync")
 	return nil
 }
