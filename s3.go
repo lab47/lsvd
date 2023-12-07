@@ -48,7 +48,7 @@ func (s *S3ObjectReader) Close() error {
 }
 
 func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
-	rng := fmt.Sprintf("bytes=%d-%d", off, int(off)+len(dest))
+	rng := fmt.Sprintf("bytes=%d-%d", off, int(off)+len(dest)-1)
 
 	r, err := s.sc.GetObject(s.ctx, &s3.GetObjectInput{
 		Bucket: &s.buk,
@@ -61,7 +61,7 @@ func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 
 	defer r.Body.Close()
 
-	n, err := r.Body.Read(dest)
+	n, err := io.ReadFull(r.Body, dest)
 	if err != nil {
 		if n > 0 {
 			return n, nil
