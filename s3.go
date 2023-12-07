@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
@@ -196,7 +199,7 @@ func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteClo
 
 	bw := bufio.NewWriter(w)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 
 	bg := &bgWriter{
 		Writer: bw,
@@ -237,6 +240,12 @@ func (s *S3Access) ReadMetadata(ctx context.Context, name string) (io.ReadCloser
 	})
 
 	if err != nil {
+		var serr smithy.APIError
+
+		if errors.As(err, &serr) && serr.ErrorCode() == "NoSuchKey" {
+			return nil, os.ErrNotExist
+		}
+
 		return nil, err
 	}
 
