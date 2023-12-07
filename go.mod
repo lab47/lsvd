@@ -11,17 +11,20 @@ require (
 	github.com/edsrzf/mmap-go v1.1.0
 	github.com/hashicorp/go-hclog v1.5.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/hashicorp/hcl/v2 v2.19.1
 	github.com/igrmk/treemap/v2 v2.0.1
 	github.com/mr-tron/base58 v1.2.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pierrec/lz4/v4 v4.1.18
 	github.com/pkg/errors v0.9.1
-	github.com/pojntfx/go-nbd v0.3.2
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/sys v0.13.0
 )
 
 require (
+	github.com/agext/levenshtein v1.2.1 // indirect
+	github.com/apparentlymart/go-textseg/v13 v13.0.0 // indirect
+	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.5.3 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.14.9 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.2.8 // indirect
@@ -38,10 +41,14 @@ require (
 	github.com/aws/smithy-go v1.18.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect
+	github.com/google/go-cmp v0.5.8 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/zclconf/go-cty v1.13.0 // indirect
 	golang.org/x/exp v0.0.0-20220317015231-48e79f11773a // indirect
+	golang.org/x/text v0.11.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -9,15 +9,17 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/pkg/nbd"
 )
 
 var (
-	fPath    = flag.String("path", "./data", "path to store objects in")
 	fAddr    = flag.String("addr", ":8989", "address to listen on")
 	fProfile = flag.Bool("profile", false, "enable profiling")
+	fConfig  = flag.String("config", "lsvd.hcl", "path to configuration")
 )
 
 func main() {
@@ -47,7 +49,13 @@ func main() {
 		pprof.StartCPUProfile(f)
 	}
 
-	path, err := filepath.Abs(*fPath)
+	cfg, err := lsvd.LoadConfig(*fConfig)
+	if err != nil {
+		log.Error("error loading configuration", "error", err)
+		os.Exit(1)
+	}
+
+	path, err := filepath.Abs(cfg.CachePath)
 	if err != nil {
 		log.Error("error resolving path", "error", err)
 		os.Exit(1)
@@ -56,7 +64,45 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
-	d, err := lsvd.NewDisk(ctx, log, path)
+	var sa lsvd.SegmentAccess
+
+	if cfg.Storage.FilePath != "" {
+		if cfg.Storage.S3.Bucket != "" {
+			log.Error("storage is either filepath, or s3, not both")
+			os.Exit(1)
+		}
+
+		storagePath, err := filepath.Abs(cfg.Storage.FilePath)
+		if err != nil {
+			log.Error("error resolving file path to store objects", "error", err)
+			os.Exit(1)
+		}
+
+		sa = &lsvd.LocalFileAccess{Dir: storagePath}
+	} else if cfg.Storage.S3.Bucket != "" {
+		awsCfg, err := config.LoadDefaultConfig(ctx, func(lo *config.LoadOptions) error {
+			lo.Region = cfg.Storage.S3.Region
+
+			if cfg.Storage.S3.AccessKey != "" {
+				lo.Credentials = credentials.NewStaticCredentialsProvider(
+					cfg.Storage.S3.AccessKey, cfg.Storage.S3.SecretKey, "",
+				)
+			}
+			return nil
+		})
+		if err != nil {
+			log.Error("error initializing S3 configuration", "error", err)
+			os.Exit(1)
+		}
+
+		sa, err = lsvd.NewS3Access(log, cfg.Storage.S3.URL, cfg.Storage.S3.Bucket, awsCfg)
+		if err != nil {
+			log.Error("error initializing S3 access", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, path, lsvd.WithSegmentAccess(sa))
 	if err != nil {
 		log.Error("error creating new disk", "error", err)
 		os.Exit(1)
