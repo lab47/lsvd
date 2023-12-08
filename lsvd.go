@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/edsrzf/mmap-go"
@@ -62,18 +63,22 @@ type Disk struct {
 	log    hclog.Logger
 	path   string
 
+	lastWC      *os.File
+	lastOffsets map[LBA]uint32
+
 	curSeq     ulid.ULID
 	writeCache *os.File
 	wcOffsets  map[LBA]uint32
 	curOffset  uint32
 	wcBufWrite *bufio.Writer
 
+	lbaMu        sync.RWMutex
 	lba2obj      *treemap.TreeMap[LBA, objPBA]
 	readCache    *DiskCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
 
-	sa SegmentAccess
-	oc ObjectCreator
+	sa    SegmentAccess
+	curOC *ObjectCreator
 }
 
 const diskCacheSize = 4096 // 16MB read cache
@@ -101,9 +106,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
+		curOC:     &ObjectCreator{log: log},
 	}
-
-	d.oc.log = log
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
 		256, func(key SegmentId, value ObjectReader) {
@@ -191,40 +195,82 @@ func (d *Disk) nextLog() error {
 	return nil
 }
 
-func (d *Disk) CloseSegment(ctx context.Context) error {
+func (d *Disk) CloseSegmentAsync(ctx context.Context) (chan struct{}, error) {
+	d.lbaMu.Lock()
+	defer d.lbaMu.Unlock()
+
 	if d.writeCache == nil {
-		return nil
+		return nil, nil
 	}
 
+	segId := SegmentId(d.curSeq)
+
+	oc := d.curOC
+
+	d.curOC = &ObjectCreator{log: d.log}
+
+	d.lastWC = d.writeCache
+	d.lastOffsets = d.wcOffsets
+
 	d.curOffset = 0
+	d.wcOffsets = make(map[LBA]uint32)
+	d.writeCache = nil
 
-	d.writeCache.Close()
+	done := make(chan struct{})
 
-	defer os.Remove(d.writeCache.Name())
+	go func() {
+		defer close(done)
 
-	_, err := d.FlushObject(ctx)
-	if err != nil {
+		var (
+			entries []objectEntry
+			err     error
+		)
+
+		for {
+			entries, err = oc.Flush(ctx, d.sa, segId)
+			if err != nil {
+				d.log.Error("error flushing data to object, retrying", "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			break
+		}
+
+		d.log.Debug("object published, resetting write cache")
+
+		d.lbaMu.Lock()
+		defer d.lbaMu.Unlock()
+
+		for _, ent := range entries {
+			d.lba2obj.Set(ent.lba, ent.pba)
+		}
+
+		d.lastWC.Close()
+
+		defer os.Remove(d.lastWC.Name())
+
+		d.lastWC = nil
+		d.lastOffsets = nil
+
+		d.log.Debug("finished background object flush")
+	}()
+
+	return done, nil
+}
+
+func (d *Disk) CloseSegment(ctx context.Context) error {
+	ch, err := d.CloseSegmentAsync(ctx)
+	if ch == nil || err != nil {
 		return err
 	}
 
-	d.writeCache = nil
-
-	clear(d.wcOffsets)
-
-	return nil
-}
-
-func (d *Disk) FlushObject(ctx context.Context) (SegmentId, error) {
-	segId := SegmentId(d.curSeq)
-
-	err := d.oc.Flush(ctx, d.sa, segId, d.lba2obj)
-	if err != nil {
-		return SegmentId{}, err
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-
-	d.log.Info("flushed segment as object", "id", segId)
-
-	return segId, nil
 }
 
 func NewExtent(sz int) Extent {
@@ -276,19 +322,28 @@ const perBlockHeader = 16
 
 var emptyBlock = make([]byte, BlockSize)
 
-func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) error {
-	numBlocks := data.Blocks()
+func (d *Disk) readBlock(ctx context.Context, lba LBA, view []byte) error {
+	if pba, ok := d.wcOffsets[lba]; ok {
+		if pba == math.MaxUint32 {
+			clear(view)
+		} else {
+			n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
+			if err != nil {
+				d.log.Error("error reading data from write cache", "error", err, "pba", pba)
+				return errors.Wrapf(err, "attempting to read from active (%d)", pba)
+			}
 
-	for i := 0; i < numBlocks; i++ {
-		lba := firstBlock + LBA(i)
+			d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
+		}
+		return nil
+	}
 
-		view := data.BlockView(i)
-
-		if pba, ok := d.wcOffsets[lba]; ok {
+	if d.lastWC != nil {
+		if pba, ok := d.lastOffsets[lba]; ok {
 			if pba == math.MaxUint32 {
 				clear(view)
 			} else {
-				n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
+				n, err := d.lastWC.ReadAt(view, int64(pba+perBlockHeader))
 				if err != nil {
 					d.log.Error("error reading data from write cache", "error", err, "pba", pba)
 					return errors.Wrapf(err, "attempting to read from active (%d)", pba)
@@ -296,16 +351,39 @@ func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) erro
 
 				d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
 			}
-		} else if err := d.readCache.ReadBlock(lba, view); err == nil {
-			d.log.Trace("found block in read cache", "lba", lba)
-			// got it!
-		} else if pba, ok := d.lba2obj.Get(lba); ok {
-			err := d.readPBA(ctx, lba, pba, view)
-			if err != nil {
-				return err
-			}
-		} else {
-			clear(view)
+			return nil
+		}
+	}
+
+	if err := d.readCache.ReadBlock(lba, view); err == nil {
+		// got it!
+		d.log.Trace("found block in read cache", "lba", lba)
+		return nil
+	}
+
+	if pba, ok := d.lba2obj.Get(lba); ok {
+		return d.readPBA(ctx, lba, pba, view)
+	}
+
+	clear(view)
+
+	return nil
+}
+
+func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) error {
+	d.lbaMu.RLock()
+	defer d.lbaMu.RUnlock()
+
+	numBlocks := data.Blocks()
+
+	for i := 0; i < numBlocks; i++ {
+		lba := firstBlock + LBA(i)
+
+		view := data.BlockView(i)
+
+		err := d.readBlock(ctx, lba, view)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -440,7 +518,7 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 
 		// Zero them one at a time in the object so that we take into account
 		// the above tracking logic to omit zeroing blocks that are already zero.
-		err = d.oc.ZeroBlocks(lba, 1)
+		err = d.curOC.ZeroBlocks(lba, 1)
 		if err != nil {
 			return err
 		}
@@ -520,7 +598,7 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 		d.log.Error("error flushing write cache buffer", "error", err)
 	}
 
-	err = d.oc.WriteExtent(firstBlock, data)
+	err = d.curOC.WriteExtent(firstBlock, data)
 	if err != nil {
 		d.log.Error("error write extents to object creator", "error", err)
 		return err
@@ -528,7 +606,8 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 
 	if d.curOffset >= flushThreshHold {
 		d.log.Debug("flushing object", "write-cache-size", d.curOffset)
-		return d.CloseSegment(ctx)
+		_, err = d.CloseSegmentAsync(ctx)
+		return err
 	}
 
 	return nil
@@ -623,7 +702,6 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 }
 
 func (d *Disk) restoreWriteCache(ctx context.Context) error {
-	d.log.Info("restoring write cache")
 	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
 	if err != nil {
 		return err
@@ -632,6 +710,8 @@ func (d *Disk) restoreWriteCache(ctx context.Context) error {
 	if len(entries) == 0 {
 		return nil
 	}
+
+	d.log.Info("restoring write cache")
 
 	for _, ent := range entries {
 		err := d.restoreWriteCacheFile(ctx, ent)
@@ -726,7 +806,8 @@ func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
 	d.log.Info("restored data from write cache", "blocks", numBlocks, "zero-blocks", zeroBlocks)
 
 	if d.curOffset >= flushThreshHold {
-		return d.CloseSegment(ctx)
+		_, err = d.CloseSegmentAsync(ctx)
+		return err
 	}
 
 	return nil
@@ -739,6 +820,9 @@ func (d *Disk) Close(ctx context.Context) error {
 	}
 
 	err = d.saveLBAMap(ctx)
+	if err != nil {
+		d.log.Error("error saving LBA cached map", "error", err)
+	}
 
 	d.openSegments.Purge()
 

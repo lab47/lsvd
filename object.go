@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/igrmk/treemap/v2"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
 )
@@ -112,8 +111,14 @@ func (o *ObjectCreator) Reset() {
 	o.body.Reset()
 }
 
+type objectEntry struct {
+	lba LBA
+	pba objPBA
+}
+
 func (o *ObjectCreator) Flush(ctx context.Context,
-	sa SegmentAccess, seg SegmentId, m *treemap.TreeMap[LBA, objPBA]) error {
+	sa SegmentAccess, seg SegmentId,
+) ([]objectEntry, error) {
 	defer o.Reset()
 
 	buf := make([]byte, 16)
@@ -124,24 +129,24 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		sz := binary.PutUvarint(buf, uint64(lba))
 		_, err := o.header.Write(buf[:sz])
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		err = o.header.WriteByte(blk.flags)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		sz = binary.PutUvarint(buf, blk.size)
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		sz = binary.PutUvarint(buf, blk.offset)
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -153,21 +158,25 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		"blocks", len(o.blocks),
 	)
 
-	for _, blk := range o.blocks {
-		m.Set(blk.lba, objPBA{
-			PBA: PBA{
-				Segment: seg,
-				Offset:  dataBegin + uint32(blk.offset),
-			},
-			Flags: blk.flags,
-			Size:  uint32(blk.size),
-		})
+	entries := make([]objectEntry, len(o.blocks))
 
+	for i, blk := range o.blocks {
+		entries[i] = objectEntry{
+			lba: blk.lba,
+			pba: objPBA{
+				PBA: PBA{
+					Segment: seg,
+					Offset:  dataBegin + uint32(blk.offset),
+				},
+				Flags: blk.flags,
+				Size:  uint32(blk.size),
+			},
+		}
 	}
 
 	f, err := sa.WriteSegment(ctx, seg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	defer f.Close()
@@ -175,26 +184,26 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	binary.BigEndian.PutUint32(buf, uint32(o.cnt))
 	_, err = f.Write(buf[:4])
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	binary.BigEndian.PutUint32(buf, dataBegin)
 	_, err = f.Write(buf[:4])
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = io.Copy(f, &o.header)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	_, err = io.Copy(f, &o.body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return entries, nil
 }
 
 type ObjectReader interface {

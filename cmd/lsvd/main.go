@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -108,7 +109,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	defer d.Close(ctx)
+	defer func() {
+		log.Info("closing disk", "timeout", "5m")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		d.Close(ctx)
+	}()
 
 	l, err := net.Listen("tcp", *fAddr)
 	if err != nil {
@@ -129,6 +136,8 @@ func main() {
 			Backend:     lsvd.NBDWrapper(ctx, log, d),
 		},
 	}
+
+	log.Info("listening for connections", "addr", *fAddr)
 
 	opts := &nbd.Options{
 		MinimumBlockSize:   4096,
