@@ -770,6 +770,16 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 	return nil
 }
 
+func (d *Disk) SyncWriteCache() error {
+	iops.Inc()
+
+	if d.writeCache != nil {
+		return d.writeCache.Sync()
+	}
+
+	return nil
+}
+
 func (d *Disk) restoreWriteCache(ctx context.Context) error {
 	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
 	if err != nil {

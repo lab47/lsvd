@@ -117,5 +117,5 @@ func (n *nbdWrapper) Size() (int64, error) {
 
 func (n *nbdWrapper) Sync() error {
 	n.log.Trace("nbd sync")
-	return nil
+	return n.d.SyncWriteCache()
 }
