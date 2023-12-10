@@ -235,6 +235,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 	go func() {
 		defer close(done)
+		defer segmentsWritten.Inc()
 
 		var (
 			entries []objectEntry
@@ -418,10 +419,17 @@ func (d *Disk) readBlock(ctx context.Context, lba LBA, view []byte) error {
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) error {
-	d.lbaMu.RLock()
-	defer d.lbaMu.RUnlock()
+	start := time.Now()
+
+	defer func() {
+		blocksReadLatency.Observe(time.Since(start).Seconds())
+	}()
+
+	iops.Inc()
 
 	numBlocks := data.Blocks()
+
+	blocksRead.Add(float64(numBlocks))
 
 	for i := 0; i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
@@ -530,6 +538,9 @@ func (d *Disk) blockIsEmpty(lba LBA) bool {
 }
 
 func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) error {
+	iops.Inc()
+	blocksWritten.Add(float64(numBlocks))
+
 	if d.writeCache == nil {
 		err := d.nextLog()
 		if err != nil {
@@ -575,6 +586,14 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 }
 
 func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) error {
+	start := time.Now()
+
+	defer func() {
+		blocksWriteLatency.Observe(time.Since(start).Seconds())
+	}()
+
+	iops.Inc()
+
 	if d.writeCache == nil {
 		err := d.nextLog()
 		if err != nil {
@@ -585,6 +604,9 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 	dw := d.wcBufWrite
 
 	numBlocks := data.Blocks()
+
+	blocksWritten.Add(float64(numBlocks))
+
 	for i := 0; i < numBlocks; i++ {
 		lba := firstBlock + LBA(i)
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
@@ -121,6 +122,11 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 ) ([]objectEntry, error) {
 	defer o.Reset()
 
+	start := time.Now()
+	defer func() {
+		segmentTime.Observe(time.Since(start).Seconds())
+	}()
+
 	buf := make([]byte, 16)
 
 	for _, blk := range o.blocks {
@@ -157,6 +163,8 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		"body-size", o.offset,
 		"blocks", len(o.blocks),
 	)
+
+	segmentsBytes.Add(float64(o.header.Len() + int(o.offset)))
 
 	entries := make([]objectEntry, len(o.blocks))
 

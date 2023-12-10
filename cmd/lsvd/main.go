@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,12 +16,14 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/pkg/nbd"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
 	fAddr    = flag.String("addr", ":8989", "address to listen on")
 	fProfile = flag.Bool("profile", false, "enable profiling")
 	fConfig  = flag.String("config", "lsvd.hcl", "path to configuration")
+	fMetrics = flag.String("metrics", ":2121", "path to serve metrics on")
 )
 
 func main() {
@@ -144,6 +147,9 @@ func main() {
 		PreferredBlockSize: 4096,
 		MaximumBlockSize:   4096,
 	}
+
+	http.Handle("/metrics", promhttp.Handler())
+	go http.ListenAndServe(*fMetrics, nil)
 
 	for {
 		c, err := l.Accept()
