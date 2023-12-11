@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -95,7 +98,7 @@ func (s *S3ObjectReader) ReadAtCompressed(dest []byte, off, compSize int64) (int
 }
 
 func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
-	key := "object." + ulid.ULID(seg).String()
+	key := "objects/object." + ulid.ULID(seg).String()
 
 	// Validate the object exists.
 	_, err := s.sc.HeadObject(ctx, &s3.HeadObjectInput{
@@ -115,38 +118,23 @@ func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader
 	}, nil
 }
 
-func (s *S3Access) ListSegments(ctx context.Context) ([]SegmentId, error) {
-	var (
-		token    *string
-		segments []SegmentId
+func (s *S3Access) ListSegments(ctx context.Context, vol string) ([]SegmentId, error) {
+	name := filepath.Join("volumes", vol, "objects")
 
-		per = int32(100)
-	)
-
-	for {
-		out, err := s.sc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            &s.bucket,
-			ContinuationToken: token,
-			MaxKeys:           &per,
-		})
-		if err != nil {
-			return nil, err
+	out, err := s.sc.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &s.bucket,
+		Key:    &name,
+	})
+	if err != nil {
+		if s.isNoSuchKey(err) {
+			return nil, nil
 		}
-
-		token = out.NextContinuationToken
-
-		for _, c := range out.Contents {
-			if seg, ok := segmentFromName(*c.Key); ok {
-				segments = append(segments, seg)
-			}
-		}
-
-		if token == nil {
-			break
-		}
+		return nil, err
 	}
 
-	return segments, nil
+	defer out.Body.Close()
+
+	return ReadSegments(out.Body)
 }
 
 type mdWriter struct {
@@ -208,7 +196,7 @@ func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteClo
 		ctx:    ctx,
 	}
 
-	key := "object." + ulid.ULID(seg).String()
+	key := "objects/object." + ulid.ULID(seg).String()
 
 	go func() {
 		defer cancel()
@@ -223,26 +211,31 @@ func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteClo
 	return bg, nil
 }
 
-func (s *S3Access) WriteMetadata(ctx context.Context, name string) (io.WriteCloser, error) {
+func (s *S3Access) WriteMetadata(ctx context.Context, volName, name string) (io.WriteCloser, error) {
 	var mw mdWriter
 	mw.ctx = ctx
 	mw.sc = s.uploader
 	mw.bucket = s.bucket
-	mw.key = name
+	mw.key = filepath.Join("volumes", volName, name)
 
 	return &mw, nil
 }
 
-func (s *S3Access) ReadMetadata(ctx context.Context, name string) (io.ReadCloser, error) {
+func (s *S3Access) isNoSuchKey(err error) bool {
+	var serr smithy.APIError
+	return errors.As(err, &serr) && serr.ErrorCode() == "NoSuchKey"
+}
+
+func (s *S3Access) ReadMetadata(ctx context.Context, volName, name string) (io.ReadCloser, error) {
+	key := filepath.Join("volumes", volName, name)
+
 	out, err := s.sc.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
-		Key:    &name,
+		Key:    &key,
 	})
 
 	if err != nil {
-		var serr smithy.APIError
-
-		if errors.As(err, &serr) && serr.ErrorCode() == "NoSuchKey" {
+		if s.isNoSuchKey(err) {
 			return nil, os.ErrNotExist
 		}
 
@@ -253,7 +246,7 @@ func (s *S3Access) ReadMetadata(ctx context.Context, name string) (io.ReadCloser
 }
 
 func (s *S3Access) RemoveSegment(ctx context.Context, seg SegmentId) error {
-	key := "object." + ulid.ULID(seg).String()
+	key := "objects/object." + ulid.ULID(seg).String()
 
 	_, err := s.sc.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
@@ -261,6 +254,101 @@ func (s *S3Access) RemoveSegment(ctx context.Context, seg SegmentId) error {
 	})
 
 	return err
+}
+
+func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error {
+	segments, err := s.ListSegments(ctx, vol)
+	if err != nil {
+		return err
+	}
+
+	slices.DeleteFunc(segments, func(si SegmentId) bool { return si == seg })
+
+	var buf bytes.Buffer
+
+	for _, seg := range segments {
+		buf.Write(seg[:])
+	}
+
+	name := filepath.Join("volumes", vol, "objects")
+
+	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
+		Key:    &name,
+		Body:   &buf,
+	})
+	return err
+}
+
+func (s *S3Access) AppendToObjects(ctx context.Context, vol string, seg SegmentId) error {
+	segments, err := s.ListSegments(ctx, vol)
+	if err != nil {
+		return err
+	}
+
+	segments = append(segments, seg)
+
+	var buf bytes.Buffer
+
+	for _, seg := range segments {
+		buf.Write(seg[:])
+	}
+
+	name := filepath.Join("volumes", vol, "objects")
+
+	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
+		Key:    &name,
+		Body:   &buf,
+	})
+	return err
+}
+
+func (s *S3Access) InitContainer(ctx context.Context) error {
+	return nil
+}
+
+func (s *S3Access) InitVolume(ctx context.Context, vol *VolumeInfo) error {
+	return nil
+}
+
+func (s *S3Access) ListVolumes(ctx context.Context) ([]string, error) {
+	prefix := "volumes/"
+
+	var (
+		token   *string
+		volumes []string
+	)
+
+	for {
+		out, err := s.sc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            &s.bucket,
+			Prefix:            &prefix,
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, obj := range out.Contents {
+			key := *obj.Key
+
+			key = key[len(prefix):]
+
+			if idx := strings.IndexByte(key, '/'); idx != -1 {
+				volumes = append(volumes, key[:idx])
+			} else {
+				volumes = append(volumes, key)
+			}
+		}
+		if out.IsTruncated != nil && *out.IsTruncated {
+			token = out.NextContinuationToken
+		} else {
+			break
+		}
+	}
+
+	return volumes, nil
 }
 
 var _ SegmentAccess = (*S3Access)(nil)

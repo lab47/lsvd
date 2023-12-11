@@ -58,7 +58,7 @@ func TestS3(t *testing.T) {
 		seg, err := ulid.New(ulid.Now(), monoRead)
 		r.NoError(err)
 
-		objName := "object." + ulid.ULID(seg).String()
+		objName := "objects/object." + ulid.ULID(seg).String()
 
 		_, err = sc.PutObject(ctx, &s3.PutObjectInput{
 			Bucket: &bucketName,
@@ -155,31 +155,27 @@ func TestS3(t *testing.T) {
 
 		var expected []SegmentId
 
+		s, err := NewS3Access(log, host, bucketName, cfg)
+		r.NoError(err)
+
+		objName := "volumes/default/objects"
+
+		defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: &bucketName,
+			Key:    &objName,
+		})
+
 		for i := 0; i < 3; i++ {
 			seg, err := ulid.New(ulid.Now(), monoRead)
 			r.NoError(err)
 
 			expected = append(expected, SegmentId(seg))
 
-			objName := "object." + ulid.ULID(seg).String()
-
-			_, err = sc.PutObject(ctx, &s3.PutObjectInput{
-				Bucket: &bucketName,
-				Key:    &objName,
-				Body:   strings.NewReader("this is a segment"),
-			})
+			err = s.AppendToObjects(ctx, "default", SegmentId(seg))
 			r.NoError(err)
-
-			defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
-				Bucket: &bucketName,
-				Key:    &objName,
-			})
 		}
 
-		s, err := NewS3Access(log, host, bucketName, cfg)
-		r.NoError(err)
-
-		segs, err := s.ListSegments(ctx)
+		segs, err := s.ListSegments(ctx, "default")
 		r.NoError(err)
 
 		r.Equal(expected, segs)
@@ -198,14 +194,14 @@ func TestS3(t *testing.T) {
 			Key:    &key,
 		})
 
-		w, err := s.WriteMetadata(ctx, key)
+		w, err := s.WriteMetadata(ctx, "default", key)
 		r.NoError(err)
 
 		_, err = fmt.Fprintln(w, "this is metadata")
 		r.NoError(err)
 		r.NoError(w.Close())
 
-		mr, err := s.ReadMetadata(ctx, key)
+		mr, err := s.ReadMetadata(ctx, "default", key)
 		r.NoError(err)
 
 		data, err := io.ReadAll(mr)

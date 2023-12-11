@@ -72,6 +72,8 @@ type Disk struct {
 	log    hclog.Logger
 	path   string
 
+	volName string
+
 	prevCacheMu sync.Mutex
 	prevCache   list.List[*writeCache]
 
@@ -109,6 +111,20 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		o.sa = &LocalFileAccess{Dir: path}
 	}
 
+	if o.volName == "" {
+		o.volName = "default"
+	}
+
+	err = o.sa.InitContainer(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = o.sa.InitVolume(ctx, &VolumeInfo{Name: o.volName})
+	if err != nil {
+		return nil, err
+	}
+
 	d := &Disk{
 		log:       log,
 		path:      path,
@@ -116,7 +132,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
-		curOC:     &ObjectCreator{log: log},
+		volName:   o.volName,
+		curOC:     &ObjectCreator{log: log, volName: o.volName},
 	}
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
@@ -214,7 +231,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 	oc := d.curOC
 
-	d.curOC = &ObjectCreator{log: d.log}
+	d.curOC = &ObjectCreator{log: d.log, volName: d.volName}
 
 	d.writeCache.Sync()
 
@@ -683,7 +700,7 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) err
 }
 
 func (d *Disk) rebuildFromObjects(ctx context.Context) error {
-	entries, err := d.sa.ListSegments(ctx)
+	entries, err := d.sa.ListSegments(ctx, d.volName)
 	if err != nil {
 		return err
 	}
@@ -909,7 +926,7 @@ func (d *Disk) Close(ctx context.Context) error {
 }
 
 func (d *Disk) saveLBAMap(ctx context.Context) error {
-	f, err := d.sa.WriteMetadata(ctx, "head.map")
+	f, err := d.sa.WriteMetadata(ctx, d.volName, "head.map")
 	if err != nil {
 		return err
 	}
@@ -920,7 +937,7 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
-	f, err := d.sa.ReadMetadata(ctx, "head.map")
+	f, err := d.sa.ReadMetadata(ctx, d.volName, "head.map")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -997,7 +1014,7 @@ func (d *Disk) pickSegmentToGC(segments []SegmentId) (SegmentId, bool) {
 }
 
 func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
-	segments, err := d.sa.ListSegments(ctx)
+	segments, err := d.sa.ListSegments(ctx, d.volName)
 	if err != nil {
 		return SegmentId{}, nil
 	}
@@ -1094,5 +1111,33 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 		}
 	}
 
+	d.log.Debug("removing segment from volume", "volume", d.volName, "segment", seg)
+	err = d.sa.RemoveSegmentFromVolume(ctx, d.volName, seg)
+	if err != nil {
+		return err
+	}
+
+	return d.removeSegmentIfPossible(ctx, seg)
+}
+
+func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error {
+	volumes, err := d.sa.ListVolumes(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, vol := range volumes {
+		segments, err := d.sa.ListSegments(ctx, vol)
+		if err != nil {
+			return err
+		}
+
+		if slices.Index(segments, seg) != -1 {
+			// ok, someone holding on to it, return early
+			return nil
+		}
+	}
+
+	// ok, no volume has it, we can remove it.
 	return d.sa.RemoveSegment(ctx, seg)
 }

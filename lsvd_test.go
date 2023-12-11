@@ -279,7 +279,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -334,6 +334,20 @@ func TestLSVD(t *testing.T) {
 		view = view[:sz]
 
 		blockEqual(t, testData, view)
+
+		g, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "objects"))
+		r.NoError(err)
+
+		defer g.Close()
+
+		gbr := bufio.NewReader(g)
+
+		var iseg SegmentId
+
+		_, err = gbr.Read(iseg[:])
+		r.NoError(err)
+
+		r.Equal(ulid.ULID(iseg), testUlid)
 	})
 
 	t.Run("objects that can't be compressed are flagged", func(t *testing.T) {
@@ -355,7 +369,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -434,7 +448,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -641,7 +655,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.saveLBAMap(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
+		f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
 		r.NoError(err)
 
 		defer f.Close()
@@ -908,7 +922,7 @@ func TestLSVD(t *testing.T) {
 
 			r.NoError(d.Close(ctx))
 
-			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
+			r.NoError(os.Remove(filepath.Join(tmpdir, "volumes", "default", "head.map")))
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
@@ -945,7 +959,7 @@ func TestLSVD(t *testing.T) {
 
 			r.NoError(d.Close(ctx))
 
-			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
+			r.NoError(os.Remove(filepath.Join(tmpdir, "volumes", "default", "head.map")))
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
@@ -997,7 +1011,7 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(SegmentId(origSeq), gcSeg)
 
-		_, err = os.Stat(filepath.Join(tmpdir, "object."+origSeq.String()))
+		_, err = os.Stat(filepath.Join(tmpdir, "objects", "object."+origSeq.String()))
 		r.ErrorIs(err, os.ErrNotExist)
 
 		d.Close(ctx)

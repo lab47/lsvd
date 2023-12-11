@@ -31,7 +31,7 @@ func main() {
 
 	log := hclog.New(&hclog.LoggerOptions{
 		Name:  "lsvd",
-		Level: hclog.Trace,
+		Level: hclog.Info,
 		Color: hclog.AutoColor,
 
 		ColorHeaderAndFields: true,
