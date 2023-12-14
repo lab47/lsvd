@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -309,7 +310,20 @@ func (s *S3Access) InitContainer(ctx context.Context) error {
 }
 
 func (s *S3Access) InitVolume(ctx context.Context, vol *VolumeInfo) error {
-	return nil
+	key := filepath.Join("volumes", vol.Name, "info.json")
+
+	data, err := json.Marshal(vol)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+		Body:   bytes.NewReader(data),
+	})
+
+	return err
 }
 
 func (s *S3Access) ListVolumes(ctx context.Context) ([]string, error) {
@@ -318,6 +332,7 @@ func (s *S3Access) ListVolumes(ctx context.Context) ([]string, error) {
 	var (
 		token   *string
 		volumes []string
+		seen    = map[string]struct{}{}
 	)
 
 	for {
@@ -336,8 +351,11 @@ func (s *S3Access) ListVolumes(ctx context.Context) ([]string, error) {
 			key = key[len(prefix):]
 
 			if idx := strings.IndexByte(key, '/'); idx != -1 {
-				volumes = append(volumes, key[:idx])
-			} else {
+				key = key[:idx]
+			}
+
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
 				volumes = append(volumes, key)
 			}
 		}
@@ -349,6 +367,31 @@ func (s *S3Access) ListVolumes(ctx context.Context) ([]string, error) {
 	}
 
 	return volumes, nil
+}
+
+func (s *S3Access) GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error) {
+	key := filepath.Join("volumes", vol, "info.json")
+
+	out, err := s.sc.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		if s.isNoSuchKey(err) {
+			return &VolumeInfo{Name: vol}, nil
+		}
+		return nil, err
+	}
+
+	defer out.Body.Close()
+
+	var vi VolumeInfo
+	err = json.NewDecoder(out.Body).Decode(&vi)
+	if err != nil {
+		return nil, err
+	}
+
+	return &vi, nil
 }
 
 var _ SegmentAccess = (*S3Access)(nil)

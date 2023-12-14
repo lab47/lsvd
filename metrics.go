@@ -48,4 +48,9 @@ var (
 		Help:    "The total number of segments bytes written",
 		Buckets: prometheus.DefBuckets,
 	})
+
+	openSegments = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "lsvd_segments_open",
+		Help: "The total number of open segments",
+	})
 )

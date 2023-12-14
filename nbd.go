@@ -40,14 +40,16 @@ func blkSum(b []byte) string {
 }
 
 func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
-	ext, err := ExtentOverlay(b)
+	blk := LBA(off / BlockSize)
+	blocks := uint32(len(b) / BlockSize)
+
+	data, err := n.d.ReadExtent(n.ctx, Extent{LBA: blk, Blocks: blocks})
 	if err != nil {
+		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err
 	}
 
-	blk := LBA(off / BlockSize)
-
-	err = n.d.ReadExtent(n.ctx, blk, ext)
+	err = data.CopyTo(b)
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err
@@ -109,10 +111,20 @@ func (n *nbdWrapper) Trim(off, size int64) error {
 	return nil
 }
 
-const maxSize = 1024 * 1024 * 1024 * 100 // 100GB
+var maxSize = RoundToBlockSize(1024 * 1024 * 1024 * 100) // 100GB
 
 func (n *nbdWrapper) Size() (int64, error) {
-	return maxSize, nil
+	sz := n.d.Size()
+	if sz == 0 {
+		n.log.Warn("no size configured on disk, reporting default 100GB")
+		// Use our default size
+		return maxSize, nil
+	}
+
+	sz = RoundToBlockSize(sz)
+
+	n.log.Info("reporting size to nbd", "size", sz)
+	return sz, nil
 }
 
 func (n *nbdWrapper) Sync() error {

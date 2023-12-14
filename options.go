@@ -1,8 +1,9 @@
 package lsvd
 
 type opts struct {
-	sa      SegmentAccess
-	volName string
+	sa         SegmentAccess
+	volName    string
+	autoCreate bool
 }
 
 type Option func(o *opts)
@@ -16,5 +17,11 @@ func WithSegmentAccess(sa SegmentAccess) Option {
 func WithVolumeName(name string) Option {
 	return func(o *opts) {
 		o.volName = name
+	}
+}
+
+func AutoCreate(ok bool) Option {
+	return func(o *opts) {
+		o.autoCreate = ok
 	}
 }

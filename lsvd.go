@@ -28,9 +28,14 @@ import (
 )
 
 type (
-	Extent struct {
+	BlockData struct {
 		blocks int
 		data   []byte
+	}
+
+	Extent struct {
+		LBA    LBA
+		Blocks uint32
 	}
 
 	SegmentId ulid.ULID
@@ -42,8 +47,13 @@ func (s SegmentId) String() string {
 
 const BlockSize = 4 * 1024
 
-func (e Extent) Blocks() int {
+func (e BlockData) Blocks() int {
 	return e.blocks
+}
+
+func (e *BlockData) CopyTo(data []byte) error {
+	copy(data, e.data)
+	return nil
 }
 
 type segmentInfo struct {
@@ -67,11 +77,18 @@ type writeCache struct {
 	next *writeCache
 }
 
+type OPBA struct {
+	Segment SegmentId
+	Offset  uint32
+	Size    uint32
+}
+
 type Disk struct {
 	SeqGen func() ulid.ULID
 	log    hclog.Logger
 	path   string
 
+	size    int64
 	volName string
 
 	prevCacheMu sync.Mutex
@@ -85,6 +102,7 @@ type Disk struct {
 
 	lbaMu   sync.Mutex
 	lba2obj *treemap.TreeMap[LBA, objPBA]
+	ext2pba *treemap.TreeMap[Extent, OPBA]
 
 	readCache    *DiskCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
@@ -95,6 +113,19 @@ type Disk struct {
 
 const diskCacheSize = 4096 // 16MB read cache
 
+func RoundToBlockSize(sz int64) int64 {
+	diff := sz % BlockSize
+	if diff == 0 {
+		return sz
+	}
+
+	return sz - diff
+}
+
+func (d *Disk) resolve(ext BlockData) []BlockData {
+	return nil
+}
+
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
 	dc, err := NewDiskCache(filepath.Join(path, "readcache"), diskCacheSize)
 	if err != nil {
@@ -102,6 +133,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	}
 
 	var o opts
+	o.autoCreate = true
 
 	for _, opt := range options {
 		opt(&o)
@@ -120,15 +152,50 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		return nil, err
 	}
 
-	err = o.sa.InitVolume(ctx, &VolumeInfo{Name: o.volName})
-	if err != nil {
-		return nil, err
+	var sz int64
+
+	vi, err := o.sa.GetVolumeInfo(ctx, o.volName)
+	if err != nil || vi.Name == "" {
+		if !o.autoCreate {
+			return nil, fmt.Errorf("unknown volume: %s", o.volName)
+		}
+
+		err = o.sa.InitVolume(ctx, &VolumeInfo{Name: o.volName})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sz = vi.Size
 	}
+
+	log.Info("attaching to volume", "name", o.volName, "size", sz)
+
+	em := treemap.NewWithKeyCompare[Extent, OPBA](func(a, b Extent) bool {
+		log.Trace("comparing extents", "a", a, "b", b)
+		if a.LBA < b.LBA {
+			if a.LBA+LBA(a.Blocks) > b.LBA {
+				log.Trace("a is superange of b")
+				return false
+			}
+
+			log.Trace("a is disjoint of b")
+			return true
+		}
+
+		if a.LBA == b.LBA {
+			return a.Blocks < b.Blocks
+		}
+
+		log.Trace("a is larger of b")
+		return false
+	})
 
 	d := &Disk{
 		log:       log,
 		path:      path,
+		size:      sz,
 		lba2obj:   treemap.New[LBA, objPBA](),
+		ext2pba:   em,
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
@@ -138,6 +205,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
 		256, func(key SegmentId, value ObjectReader) {
+			openSegments.Dec()
 			value.Close()
 		})
 	if err != nil {
@@ -146,10 +214,14 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	goodMap, err := d.loadLBAMap(ctx)
-	if err != nil {
-		return nil, err
-	}
+	/*
+		goodMap, err := d.loadLBAMap(ctx)
+		if err != nil {
+			return nil, err
+		}
+	*/
+
+	goodMap := false
 
 	if goodMap {
 		log.Info("reusing serialized LBA map", "blocks", d.lba2obj.Len())
@@ -274,8 +346,13 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		d.lbaMu.Lock()
 		for _, ent := range entries {
-			d.lba2obj.Set(ent.lba, ent.pba)
+			d.ext2pba.Set(ent.extent, ent.opba)
 		}
+		/*
+			for _, ent := range entries {
+				d.lba2obj.Set(ent.lba, ent.pba)
+			}
+		*/
 		d.lbaMu.Unlock()
 
 		d.prevCacheMu.Lock()
@@ -312,42 +389,42 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
-func NewExtent(sz int) Extent {
-	return Extent{
+func NewExtent(sz int) BlockData {
+	return BlockData{
 		blocks: sz,
 		data:   make([]byte, BlockSize*sz),
 	}
 }
 
-func ExtentView(blk []byte) Extent {
+func ExtentView(blk []byte) BlockData {
 	cnt := len(blk) / BlockSize
 	if cnt < 0 || len(blk)%BlockSize != 0 {
 		panic("invalid block data size for extent")
 	}
 
-	return Extent{
+	return BlockData{
 		blocks: cnt,
 		data:   slices.Clone(blk),
 	}
 }
 
-func ExtentOverlay(blk []byte) (Extent, error) {
+func ExtentOverlay(blk []byte) (BlockData, error) {
 	cnt := len(blk) / BlockSize
 	if cnt < 0 || len(blk)%BlockSize != 0 {
-		return Extent{}, fmt.Errorf("invalid extent length, not block sized")
+		return BlockData{}, fmt.Errorf("invalid extent length, not block sized: %d", len(blk))
 	}
 
-	return Extent{
+	return BlockData{
 		blocks: cnt,
 		data:   blk,
 	}, nil
 }
 
-func (e Extent) BlockView(cnt int) []byte {
+func (e BlockData) BlockView(cnt int) []byte {
 	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
 }
 
-func (e Extent) SetBlock(blk int, data []byte) {
+func (e BlockData) SetBlock(blk int, data []byte) {
 	if len(data) != BlockSize {
 		panic("invalid data length, not block size")
 	}
@@ -395,6 +472,85 @@ func (d *Disk) readLBA2Obj(lba LBA) (objPBA, bool) {
 	return pba, ok
 }
 
+type Cover int
+
+const (
+	CoverCompletely Cover = iota
+	CoverPartly
+	CoverNone
+)
+
+func (e Extent) Range() (LBA, LBA) {
+	return e.LBA, e.LBA + LBA(e.Blocks) - 1
+}
+
+func (e Extent) Cover(y Extent) Cover {
+	es, ef := e.Range()
+	ys, yf := y.Range()
+
+	if es <= ys && ef >= ys {
+		// es    ys     yf    ef
+		if ef >= yf {
+			// e is a superange of y
+			return CoverCompletely
+		}
+
+		// es    ys     ef    yf
+		// y begins but does not end within e
+		return CoverPartly
+	}
+
+	if ys < es && yf <= es {
+		// ys   es    ef   yf OR ys   es    yf   fs
+		// e is located within y completely
+		return CoverPartly
+	}
+
+	return CoverNone
+}
+
+func (d *Disk) computeOPBAs(rng Extent) []OPBA {
+	d.lbaMu.Lock()
+	defer d.lbaMu.Unlock()
+
+	var ret []OPBA
+
+loop:
+	for i := d.ext2pba.LowerBound(rng); i.Valid(); i.Next() {
+		switch i.Key().Cover(rng) {
+		case CoverCompletely:
+			ret = append(ret, i.Value())
+			break loop
+		case CoverNone:
+			break loop
+		case CoverPartly:
+			ret = append(ret, i.Value())
+		}
+	}
+
+	return ret
+}
+
+func (d *Disk) nextOPBA(rng Extent) (Extent, OPBA, bool) {
+	d.lbaMu.Lock()
+	defer d.lbaMu.Unlock()
+
+	i := d.ext2pba.LowerBound(rng)
+	if !i.Valid() {
+		d.log.Trace("no lower bound for extent", "extent", rng)
+		return Extent{}, OPBA{}, false
+	}
+
+	d.log.Trace("lower bound for extent",
+		"extent", rng, "bound", i.Key(), "cover", i.Key().Cover(rng))
+	switch i.Key().Cover(rng) {
+	case CoverCompletely, CoverPartly:
+		return i.Key(), i.Value(), true
+	default:
+		return Extent{}, OPBA{}, false
+	}
+}
+
 func (d *Disk) readBlock(ctx context.Context, lba LBA, view []byte) error {
 	if pba, ok := d.wcOffsets[lba]; ok {
 		if pba == math.MaxUint32 {
@@ -435,7 +591,178 @@ func (d *Disk) readBlock(ctx context.Context, lba LBA, view []byte) error {
 	return nil
 }
 
-func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) error {
+func (d *Disk) fillFromWriteCache(ctx context.Context, rng Extent, data BlockData) ([]Extent, error) {
+
+	var (
+		inHole   bool
+		nextHole Extent
+		holes    []Extent
+	)
+
+	for i := 0; i < int(rng.Blocks); i++ {
+		lba := rng.LBA + LBA(i)
+
+		view := data.BlockView(i)
+
+		if pba, ok := d.wcOffsets[lba]; ok {
+			if inHole {
+				holes = append(holes, nextHole)
+				inHole = false
+			}
+
+			if pba == math.MaxUint32 {
+				clear(view)
+			} else {
+				n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
+				if err != nil {
+					d.log.Error("error reading data from write cache", "error", err, "pba", pba)
+					return nil, errors.Wrapf(err, "attempting to read from active (%d)", pba)
+				}
+
+				d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
+			}
+
+			continue
+		}
+
+		found, err := d.checkPrevCaches(lba, view)
+		if err != nil {
+			return nil, err
+		}
+
+		if found {
+			if inHole {
+				holes = append(holes, nextHole)
+				inHole = false
+			}
+			continue
+		}
+
+		if inHole {
+			nextHole.Blocks++
+		} else {
+			inHole = true
+			nextHole = Extent{LBA: lba, Blocks: 1}
+		}
+	}
+
+	// Catch a hole that runs off the end.
+	if inHole {
+		holes = append(holes, nextHole)
+	}
+
+	return holes, nil
+}
+
+type readRequest struct {
+	obpa    OPBA
+	rng     Extent
+	extents []Extent
+}
+
+func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
+	start := time.Now()
+
+	defer func() {
+		blocksReadLatency.Observe(time.Since(start).Seconds())
+	}()
+
+	iops.Inc()
+
+	data := NewExtent(int(rng.Blocks))
+
+	d.log.Trace("attempting to fill request from write cache", "blocks", rng.Blocks)
+
+	remaining, err := d.fillFromWriteCache(ctx, rng, data)
+	if err != nil {
+		return BlockData{}, err
+	}
+
+	// Completely filled range from the write cache
+	if len(remaining) == 0 {
+		d.log.Trace("extent filled entirely from write cache")
+		return data, nil
+	}
+
+	d.log.Trace("remaining extents needed", "total", len(remaining))
+
+	if d.log.IsTrace() {
+		for _, r := range remaining {
+			d.log.Trace("remaining", "extent", r)
+		}
+	}
+
+	var (
+		opbas []*readRequest
+		last  OPBA
+	)
+
+	for _, h := range remaining {
+		orng, opba, ok := d.nextOPBA(h)
+		if !ok {
+			// nothing for range, and since the data is pre-zero'd, we
+			// don't need to clear anything here.
+		} else {
+			if opba.Size == 0 {
+				// it's empty! cool cool, we don't need to fill the hole
+				continue
+			}
+
+			// Because the holes can be smaller than the read ranges,
+			// 2 or more holes in sequence might be served by the same
+			// object range.
+			if last == opba {
+				opbas[len(opbas)-1].extents = append(opbas[len(opbas)-1].extents, h)
+			} else {
+				r := &readRequest{
+					obpa:    opba,
+					rng:     orng,
+					extents: []Extent{h},
+				}
+
+				opbas = append(opbas, r)
+				last = opba
+			}
+		}
+	}
+
+	if d.log.IsTrace() {
+		d.log.Trace("opbas needed", "total", len(opbas))
+
+		for _, o := range opbas {
+			d.log.Trace("opba needed",
+				"segment", o.obpa.Segment, "offset", o.obpa.Offset, "size", o.obpa.Size)
+		}
+	}
+
+	for _, o := range opbas {
+		err := d.readOPBA(ctx, o.rng, o.obpa, o.extents, rng, data)
+		if err != nil {
+			return BlockData{}, err
+		}
+	}
+
+	/*
+		numBlocks := data.Blocks()
+
+		blocksRead.Add(float64(numBlocks))
+
+		for i := 0; i < int(rng.Blocks); i++ {
+			lba := rng.LBA + LBA(i)
+
+			view := data.BlockView(i)
+
+			err := d.readBlock(ctx, lba, view)
+			if err != nil {
+				return BlockData{}, err
+			}
+		}
+	*/
+
+	return data, nil
+}
+
+func (d *Disk) ReadExtento(ctx context.Context, firstBlock LBA, data BlockData) error {
 	start := time.Now()
 
 	defer func() {
@@ -462,6 +789,83 @@ func (d *Disk) ReadExtent(ctx context.Context, firstBlock LBA, data Extent) erro
 	return nil
 }
 
+func (d *Disk) readOPBA(
+	ctx context.Context,
+	full Extent, addr OPBA,
+	rngs []Extent,
+	dataRange Extent, data BlockData,
+) error {
+	ci, ok := d.openSegments.Get(addr.Segment)
+	if !ok {
+		lf, err := d.sa.OpenSegment(ctx, addr.Segment)
+		if err != nil {
+			return err
+		}
+
+		ci = lf
+
+		d.openSegments.Add(addr.Segment, ci)
+		openSegments.Inc()
+	}
+
+	rawData := make([]byte, addr.Size)
+
+	n, err := ci.ReadAt(rawData, int64(addr.Offset))
+	if err != nil {
+		return nil
+	}
+
+	if n != len(rawData) {
+		return fmt.Errorf("short read detected")
+	}
+
+	switch rawData[0] {
+	case 0:
+		rawData = rawData[1:]
+	case 1:
+		sz := binary.BigEndian.Uint32(rawData[1:])
+
+		uncomp := make([]byte, sz)
+
+		n, err := lz4.UncompressBlock(rawData[5:], uncomp)
+		if err != nil {
+			return err
+		}
+
+		if n != int(sz) {
+			return fmt.Errorf("failed to uncompress correctly")
+		}
+
+		rawData = uncomp
+	case 2:
+		rawData = nil
+		// empty!
+	}
+
+	// the bytes at the beginning of data are for LBA dataBegin.LBA.
+	// the bytes at the beginning of rawData are for LBA full.LBA.
+	// we want to compute the 2 byte ranges:
+	//   1. the byte range for rng within data
+	//   2. the byte range for rng within rawData
+	// Then we copy the bytes from 2 to 1.
+	for _, rng := range rngs {
+		d.log.Trace("fill read range", "hole", rng, "obj", full, "data", dataRange)
+		destOff := (rng.LBA - dataRange.LBA) * BlockSize
+		dest := data.data[destOff : destOff+LBA(rng.Blocks*BlockSize)]
+
+		srcOff := (rng.LBA - full.LBA) * BlockSize
+		src := rawData[srcOff : srcOff+LBA(rng.Blocks*BlockSize)]
+
+		copy(dest, src)
+	}
+
+	return nil
+}
+
+func (e Extent) String() string {
+	return fmt.Sprintf("%d:%d", e.LBA, e.Blocks)
+}
+
 func (d *Disk) readPBA(ctx context.Context, lba LBA, addr objPBA, data []byte) error {
 	ci, ok := d.openSegments.Get(addr.Segment)
 	if !ok {
@@ -473,6 +877,7 @@ func (d *Disk) readPBA(ctx context.Context, lba LBA, addr objPBA, data []byte) e
 		ci = lf
 
 		d.openSegments.Add(addr.Segment, ci)
+		openSegments.Inc()
 	}
 
 	switch addr.Flags {
@@ -602,7 +1007,7 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 	return nil
 }
 
-func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data Extent) error {
+func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data BlockData) error {
 	start := time.Now()
 
 	defer func() {
@@ -759,6 +1164,11 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
+		count, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
 		flags, err := br.ReadByte()
 		if err != nil {
 			return err
@@ -781,6 +1191,12 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			},
 			Flags: flags,
 			Size:  uint32(blkSize),
+		})
+
+		d.ext2pba.Set(Extent{LBA: LBA(lba), Blocks: uint32(count)}, OPBA{
+			Segment: seg,
+			Offset:  dataBegin + uint32(blkOffset),
+			Size:    uint32(blkSize),
 		})
 	}
 
@@ -1056,8 +1472,7 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 		return err
 	}
 
-	view := make([]byte, BlockSize)
-	buf := make([]byte, BlockSize)
+	view := make([]byte, BlockSize*10)
 
 	for i := uint32(0); i < cnt; i++ {
 		lba, err := binary.ReadUvarint(br)
@@ -1065,7 +1480,12 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		flags, err := br.ReadByte()
+		blocks, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+
+		_, err = br.ReadByte()
 		if err != nil {
 			return err
 		}
@@ -1075,35 +1495,52 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
+		if len(view) < int(blkSize) {
+			view = make([]byte, blkSize)
+		}
+
 		blkOffset, err := binary.ReadUvarint(br)
 		if err != nil {
 			return err
 		}
 
-		pba, ok := d.lba2obj.Get(LBA(lba))
-		if ok && pba.Segment != seg {
+		extent := Extent{LBA: LBA(lba), Blocks: uint32(blocks)}
+
+		d.log.Trace("considering for copy", "extent", extent, "size", blkSize, "offset", blkOffset)
+
+		opba, ok := d.ext2pba.Get(extent)
+		//pba, ok := d.lba2obj.Get(LBA(lba))
+		if ok && opba.Segment != seg {
 			continue
 		}
 
-		if flags == 1 {
-			_, err = f.ReadAt(buf[:blkSize], int64(uint64(dataBegin)+blkOffset))
+		view := view[:blkSize]
+
+		_, err = f.ReadAt(view, int64(dataBegin+uint32(blkOffset)))
+		if err != nil {
+			return err
+		}
+
+		if view[0] == 1 {
+			sz := binary.BigEndian.Uint32(view[1:])
+
+			uncomp := make([]byte, sz)
+
+			n, err := lz4.UncompressBlock(view[5:], uncomp)
 			if err != nil {
 				return err
 			}
 
-			sz, err := lz4.UncompressBlock(buf[:blkSize], view)
-			if err != nil {
-				return err
+			if n != int(sz) {
+				return fmt.Errorf("failed to uncompress correctly")
 			}
-			if sz != BlockSize {
-				return fmt.Errorf("block uncompressed to wrong size (%d != %d)", sz, BlockSize)
-			}
+
+			view = uncomp
 		} else {
-			_, err = f.ReadAt(view[:blkSize], int64(blkOffset))
-			if err != nil {
-				return err
-			}
+			view = view[1:]
 		}
+
+		d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
 		err = d.WriteExtent(ctx, LBA(lba), ExtentView(view))
 		if err != nil {
@@ -1140,4 +1577,8 @@ func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error
 
 	// ok, no volume has it, we can remove it.
 	return d.sa.RemoveSegment(ctx, seg)
+}
+
+func (d *Disk) Size() int64 {
+	return d.size
 }

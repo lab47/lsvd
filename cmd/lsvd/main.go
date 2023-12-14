@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd"
+	"github.com/lab47/lsvd/cli"
 	"github.com/lab47/lsvd/pkg/nbd"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -24,14 +26,57 @@ var (
 	fProfile = flag.Bool("profile", false, "enable profiling")
 	fConfig  = flag.String("config", "lsvd.hcl", "path to configuration")
 	fMetrics = flag.String("metrics", ":2121", "path to serve metrics on")
+	fName    = flag.String("name", "default", "name of the volume to attach to")
+	fList    = flag.Bool("list", false, "list volumes")
+	fInit    = flag.Bool("init", false, "initialize a volume")
+	fSize    = flag.Int64("size", 0, "size of the volume")
 )
 
 func main() {
-	flag.Parse()
+	level := hclog.Info
+
+	if os.Getenv("LSVD_DEBUG") != "" {
+		level = hclog.Trace
+	}
 
 	log := hclog.New(&hclog.LoggerOptions{
 		Name:  "lsvd",
-		Level: hclog.Info,
+		Level: level,
+		Color: hclog.AutoColor,
+
+		ColorHeaderAndFields: true,
+	})
+
+	log.Debug("log level configured", "level", level)
+
+	c, err := cli.NewCLI(log, os.Args[1:])
+	if err != nil {
+		log.Error("error creating CLI", "error", err)
+		os.Exit(1)
+		return
+	}
+
+	code, err := c.Run()
+	if err != nil {
+		log.Error("error running CLI", "error", err)
+		os.Exit(1)
+	}
+
+	os.Exit(code)
+}
+
+func oldmain() {
+	flag.Parse()
+
+	level := hclog.Info
+
+	if os.Getenv("LSVD_DEBUG") != "" {
+		level = hclog.Trace
+	}
+
+	log := hclog.New(&hclog.LoggerOptions{
+		Name:  "lsvd",
+		Level: level,
 		Color: hclog.AutoColor,
 
 		ColorHeaderAndFields: true,
@@ -106,7 +151,39 @@ func main() {
 		}
 	}
 
-	d, err := lsvd.NewDisk(ctx, log, path, lsvd.WithSegmentAccess(sa))
+	if *fList {
+		volumes, err := sa.ListVolumes(ctx)
+		if err != nil {
+			log.Error("error listing volumes", "error", err)
+			os.Exit(1)
+		}
+
+		for _, vol := range volumes {
+			fmt.Println(vol)
+		}
+
+		return
+	}
+
+	if *fInit {
+		err := sa.InitVolume(ctx, &lsvd.VolumeInfo{
+			Name: *fName,
+			Size: *fSize,
+		})
+		if err != nil {
+			log.Error("error listing volumes", "error", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("volume '%s' created\n", *fName)
+
+		return
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, path,
+		lsvd.WithSegmentAccess(sa),
+		lsvd.WithVolumeName(*fName),
+	)
 	if err != nil {
 		log.Error("error creating new disk", "error", err)
 		os.Exit(1)

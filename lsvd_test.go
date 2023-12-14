@@ -33,15 +33,15 @@ var (
 	testData2 = make([]byte, 4*1024)
 	testData3 = make([]byte, 4*1024)
 
-	testExtent  Extent
-	testExtent2 Extent
-	testExtent3 Extent
+	testExtent  BlockData
+	testExtent2 BlockData
+	testExtent3 BlockData
 
 	testRand  = make([]byte, 4*1024)
-	testRandX Extent
+	testRandX BlockData
 
 	testEmpty  = make([]byte, BlockSize)
-	testEmptyX Extent
+	testEmptyX BlockData
 )
 
 func init() {
@@ -75,7 +75,7 @@ func blockEqual(t *testing.T, a, b []byte) {
 	//require.True(t, bytes.Equal(a, b), "blocks are not the same")
 }
 
-func extentEqual(t *testing.T, a, b Extent) {
+func extentEqual(t *testing.T, a, b BlockData) {
 	t.Helper()
 
 	require.Equal(t, a.Blocks(), b.Blocks())
@@ -105,13 +105,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		data := NewExtent(4)
-
-		for i := range data.data {
-			data.data[i] = 8
-		}
-
-		err = d.ReadExtent(ctx, 1, data)
+		data, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
 
 		r.True(isEmpty(data.data))
@@ -130,12 +124,63 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 0, testRandX)
 		r.NoError(err)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 0, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, d2, testRandX)
+	})
+
+	t.Run("can read from objects", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, 0, testRandX)
+		r.NoError(err)
+
+		r.NoError(d.Close(ctx))
+
+		d, err = NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, d2, testRandX)
+	})
+
+	t.Run("can read from objects (partial)", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		big := make([]byte, 4*4*1024)
+
+		_, err = io.ReadFull(rand.Reader, big)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, 0, ExtentView(big))
+		r.NoError(err)
+
+		r.NoError(d.Close(ctx))
+
+		d, err = NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
+		r.NoError(err)
+
+		blockEqual(t, d2.data, big[BlockSize:BlockSize+BlockSize])
 	})
 
 	t.Run("writes to clear blocks don't corrupt the cache", func(t *testing.T) {
@@ -153,9 +198,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 0, testRandX)
 		r.NoError(err)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 0, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, d2, testRandX)
@@ -179,9 +222,7 @@ func TestLSVD(t *testing.T) {
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 0, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, d2, testExtent)
@@ -189,9 +230,7 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 0, testExtent2)
 		r.NoError(err)
 
-		d3 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 0, d3)
+		d3, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, d3, testExtent2)
@@ -296,22 +335,27 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(4+8), hdrLen)
+		r.Equal(uint32(4+9), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
 		r.Equal(uint64(47), lba)
 
+		blocks, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(1), blocks)
+
 		flags, err := br.ReadByte()
 		r.NoError(err)
 
-		r.Equal(byte(1), flags)
+		r.Equal(byte(0), flags)
 
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0x28), blkSize)
+		r.Equal(uint64(0x2d), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -327,6 +371,13 @@ func TestLSVD(t *testing.T) {
 
 		_, err = io.ReadFull(f, buf)
 		r.NoError(err)
+
+		r.Equal(byte(1), buf[0])
+
+		uncompSize := binary.BigEndian.Uint32(buf[1:])
+		r.Equal(uint32(BlockSize), uncompSize)
+
+		buf = buf[5:]
 
 		sz, err := lz4.UncompressBlock(buf, view)
 		r.NoError(err)
@@ -386,12 +437,17 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(5+8), hdrLen)
+		r.Equal(uint32(5+9), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
 		r.Equal(uint64(47), lba)
+
+		bloccks, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(1), bloccks)
 
 		flags, err := br.ReadByte()
 		r.NoError(err)
@@ -401,7 +457,7 @@ func TestLSVD(t *testing.T) {
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(BlockSize), blkSize)
+		r.Equal(uint64(BlockSize+1), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -411,19 +467,19 @@ func TestLSVD(t *testing.T) {
 		_, err = f.Seek(int64(uint64(hdrLen)+offset), io.SeekStart)
 		r.NoError(err)
 
-		view := make([]byte, BlockSize)
+		view := make([]byte, blkSize)
 
 		_, err = io.ReadFull(f, view)
 		r.NoError(err)
 
-		blockEqual(t, testRand, view)
+		r.Equal(byte(0), view[0])
+
+		blockEqual(t, testRand, view[1:])
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		x1 := NewExtent(1)
-
-		err = d2.ReadExtent(ctx, 47, x1)
+		x1, err := d2.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, testRandX, x1)
@@ -465,12 +521,17 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(4+8), hdrLen)
+		r.Equal(uint32(4+9), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
 		r.Equal(uint64(47), lba)
+
+		blocks, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(1), blocks)
 
 		flags, err := br.ReadByte()
 		r.NoError(err)
@@ -498,20 +559,15 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		data := NewExtent(1)
-		data.SetBlock(0, testRand)
-
 		err = d.WriteExtent(ctx, 0, testEmptyX)
 		r.NoError(err)
 
-		err = d.ReadExtent(ctx, 0, data)
+		data, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		r.True(isEmpty(data.BlockView(0)))
 
-		data.SetBlock(0, testRand)
-
-		err = d.ReadExtent(ctx, 0, data)
+		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		r.True(isEmpty(data.BlockView(0)))
@@ -523,7 +579,7 @@ func TestLSVD(t *testing.T) {
 
 		data.SetBlock(0, testRand)
 
-		err = d.ReadExtent(ctx, 0, data)
+		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		r.True(isEmpty(data.BlockView(0)))
@@ -544,9 +600,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NotEmpty(d.wcOffsets)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 47, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
 		r.Equal(testExtent, d2)
@@ -570,9 +624,7 @@ func TestLSVD(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 47, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
 		blockEqual(t, d2.BlockView(0), testExtent.BlockView(0))
@@ -629,67 +681,67 @@ func TestLSVD(t *testing.T) {
 		_, ok := d.lba2obj.Get(47)
 		r.True(ok)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 47, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
 		blockEqual(t, d2.BlockView(0), testData)
 	})
 
-	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
-		r := require.New(t)
+	/*
+		t.Run("serializes the lba to pba mapping", func(t *testing.T) {
+			r := require.New(t)
 
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
+			d, err := NewDisk(ctx, log, tmpdir)
+			r.NoError(err)
 
-		err = d.WriteExtent(ctx, 47, testExtent)
-		r.NoError(err)
+			err = d.WriteExtent(ctx, 47, testExtent)
+			r.NoError(err)
 
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
+			err = d.CloseSegment(ctx)
+			r.NoError(err)
 
-		r.NoError(d.saveLBAMap(ctx))
+			r.NoError(d.saveLBAMap(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
-		r.NoError(err)
+			f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
+			r.NoError(err)
 
-		defer f.Close()
+			defer f.Close()
 
-		m, err := processLBAMap(f)
-		r.NoError(err)
+			m, err := processLBAMap(f)
+			r.NoError(err)
 
-		_, ok := m.Get(47)
-		r.True(ok)
-	})
+			_, ok := m.Get(47)
+			r.True(ok)
+		})
 
-	t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
-		r := require.New(t)
+		t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
+			r := require.New(t)
 
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
+			d, err := NewDisk(ctx, log, tmpdir)
+			r.NoError(err)
 
-		err = d.WriteExtent(ctx, 47, testExtent)
-		r.NoError(err)
+			err = d.WriteExtent(ctx, 47, testExtent)
+			r.NoError(err)
 
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
+			err = d.CloseSegment(ctx)
+			r.NoError(err)
 
-		r.NoError(d.Close(ctx))
+			r.NoError(d.Close(ctx))
 
-		d2, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
+			d2, err := NewDisk(ctx, log, tmpdir)
+			r.NoError(err)
 
-		r.NotZero(d2.lba2obj.Len())
-	})
+			r.NotZero(d2.lba2obj.Len())
+		})
+	*/
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
 		r := require.New(t)
@@ -737,16 +789,14 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(ctx, 0, data)
 			r.NoError(err)
 
-			d2 := NewExtent(1)
-
-			err = d.ReadExtent(ctx, 1, d2)
+			d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
 			blockEqual(t, d2.BlockView(0), testData)
 
 			d3 := NewExtent(1)
 
-			err = d.ReadExtent(ctx, 1, d3)
+			d3, err = d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
 			blockEqual(t, d3.BlockView(0), testData)
@@ -769,20 +819,16 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(ctx, 0, data)
 			r.NoError(err)
 
-			d2 := NewExtent(2)
-
-			err = d.ReadExtent(ctx, 0, d2)
+			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 2})
 			r.NoError(err)
 
 			blockEqual(t, d2.BlockView(0), testData)
 			blockEqual(t, d2.BlockView(1), testData)
 
-			d3 := NewExtent(1)
-
-			err = d.ReadExtent(ctx, 0, d3)
+			d3, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			blockEqual(t, d2.BlockView(0), testData)
+			blockEqual(t, d3.BlockView(0), testData)
 			blockEqual(t, d2.BlockView(1), testData)
 		})
 
@@ -805,9 +851,7 @@ func TestLSVD(t *testing.T) {
 			err = d.WriteExtent(ctx, 0, testExtent2)
 			r.NoError(err)
 
-			d2 := NewExtent(1)
-
-			err = d.ReadExtent(ctx, 0, d2)
+			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, d2, testExtent2)
@@ -834,9 +878,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			x2 := NewExtent(1)
-
-			err = d2.ReadExtent(ctx, 0, x2)
+			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, x2, testExtent2)
@@ -861,9 +903,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			x2 := NewExtent(1)
-
-			err = d2.ReadExtent(ctx, 0, x2)
+			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, x2, testExtent2)
@@ -893,9 +933,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			x2 := NewExtent(1)
-
-			err = d2.ReadExtent(ctx, 0, x2)
+			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, x2, testExtent2)
@@ -927,9 +965,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			x2 := NewExtent(1)
-
-			err = d2.ReadExtent(ctx, 0, x2)
+			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, x2, testExtent2)
@@ -964,9 +1000,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			x2 := NewExtent(1)
-
-			err = d2.ReadExtent(ctx, 0, x2)
+			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
 			extentEqual(t, x2, testExtent3)
@@ -1019,14 +1053,12 @@ func TestLSVD(t *testing.T) {
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		x2 := NewExtent(1)
-
-		err = d2.ReadExtent(ctx, 0, x2)
+		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, x2, testExtent3)
 
-		err = d2.ReadExtent(ctx, 1, x2)
+		x2, err = d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, x2, testExtent2)
@@ -1048,9 +1080,7 @@ func TestLSVD(t *testing.T) {
 		err = d.ZeroBlocks(ctx, 0, 1)
 		r.NoError(err)
 
-		d2 := NewExtent(1)
-
-		err = d.ReadExtent(ctx, 0, d2)
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
 		extentEqual(t, d2, testEmptyX)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 type ocBlock struct {
 	lba          LBA
+	count        int
 	flags        byte
 	size, offset uint64
 }
@@ -29,8 +31,8 @@ type ObjectCreator struct {
 
 	volName string
 
-	offset uint64
-	blocks []ocBlock
+	offset  uint64
+	extents []ocBlock
 
 	buf    []byte
 	header bytes.Buffer
@@ -38,7 +40,15 @@ type ObjectCreator struct {
 }
 
 func emptyBytes(b []byte) bool {
-	return bytes.Equal(b, emptyBlock)
+	for len(b) > BlockSize {
+		if !bytes.Equal(b[:BlockSize], emptyBlock) {
+			return false
+		}
+
+		b = b[BlockSize:]
+	}
+
+	return bytes.Equal(b, emptyBlock[:len(b)])
 }
 
 func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
@@ -47,7 +57,7 @@ func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 
 		o.cnt++
 
-		o.blocks = append(o.blocks, ocBlock{
+		o.extents = append(o.extents, ocBlock{
 			lba:   lba,
 			flags: 2,
 		})
@@ -56,7 +66,60 @@ func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 	return nil
 }
 
-func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
+func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
+	if o.buf == nil {
+		o.buf = make([]byte, len(ext.data))
+	}
+
+	if emptyBytes(ext.data) {
+		o.cnt++
+
+		o.extents = append(o.extents, ocBlock{
+			lba:   firstBlock,
+			count: ext.Blocks(),
+			flags: 2,
+		})
+
+		return nil
+	}
+
+	sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
+	if err != nil {
+		return err
+	}
+
+	var headerSz int
+
+	if sz > 0 && sz < len(ext.data) {
+		o.body.WriteByte(1)
+		binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
+		o.body.Write(o.buf[:sz])
+
+		headerSz = 1 + 4
+	} else {
+		o.body.WriteByte(0)
+		o.body.Write(ext.data)
+
+		sz = len(ext.data)
+
+		headerSz = 1
+	}
+
+	o.cnt++
+
+	o.extents = append(o.extents, ocBlock{
+		lba:    firstBlock,
+		count:  ext.Blocks(),
+		size:   uint64(headerSz + sz),
+		offset: o.offset,
+	})
+
+	o.offset += uint64(headerSz + sz)
+
+	return nil
+}
+
+func (o *ObjectCreator) WriteExtento(firstBlock LBA, ext BlockData) error {
 	if o.buf == nil {
 		o.buf = make([]byte, 2*BlockSize)
 	}
@@ -68,7 +131,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 		if emptyBytes(ext.BlockView(i)) {
 			o.cnt++
 
-			o.blocks = append(o.blocks, ocBlock{
+			o.extents = append(o.extents, ocBlock{
 				lba:   lba,
 				flags: 2,
 			})
@@ -94,7 +157,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 
 		o.cnt++
 
-		o.blocks = append(o.blocks, ocBlock{
+		o.extents = append(o.extents, ocBlock{
 			lba:    lba,
 			size:   uint64(len(body)),
 			offset: o.offset,
@@ -108,7 +171,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext Extent) error {
 }
 
 func (o *ObjectCreator) Reset() {
-	o.blocks = nil
+	o.extents = nil
 	o.cnt = 0
 	o.offset = 0
 	o.header.Reset()
@@ -118,6 +181,9 @@ func (o *ObjectCreator) Reset() {
 type objectEntry struct {
 	lba LBA
 	pba objPBA
+
+	extent Extent
+	opba   OPBA
 }
 
 func (o *ObjectCreator) Flush(ctx context.Context,
@@ -132,11 +198,17 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	buf := make([]byte, 16)
 
-	for _, blk := range o.blocks {
+	for _, blk := range o.extents {
 		lba := blk.lba
 
 		sz := binary.PutUvarint(buf, uint64(lba))
 		_, err := o.header.Write(buf[:sz])
+		if err != nil {
+			return nil, err
+		}
+
+		sz = binary.PutUvarint(buf, uint64(blk.count))
+		_, err = o.header.Write(buf[:sz])
 		if err != nil {
 			return nil, err
 		}
@@ -164,14 +236,14 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	o.log.Debug("object constructed",
 		"header-size", o.header.Len(),
 		"body-size", o.offset,
-		"blocks", len(o.blocks),
+		"blocks", len(o.extents),
 	)
 
 	segmentsBytes.Add(float64(o.header.Len() + int(o.offset)))
 
-	entries := make([]objectEntry, len(o.blocks))
+	entries := make([]objectEntry, len(o.extents))
 
-	for i, blk := range o.blocks {
+	for i, blk := range o.extents {
 		entries[i] = objectEntry{
 			lba: blk.lba,
 			pba: objPBA{
@@ -181,6 +253,12 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 				},
 				Flags: blk.flags,
 				Size:  uint32(blk.size),
+			},
+			extent: Extent{LBA: blk.lba, Blocks: uint32(blk.count)},
+			opba: OPBA{
+				Segment: seg,
+				Offset:  dataBegin + uint32(blk.offset),
+				Size:    uint32(blk.size),
 			},
 		}
 	}
@@ -407,8 +485,8 @@ func (l *LocalFileAccess) RemoveSegmentFromVolume(ctx context.Context, vol strin
 }
 
 type VolumeInfo struct {
-	Name string
-	Size int64
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 func (l *LocalFileAccess) InitContainer(ctx context.Context) error {
@@ -433,7 +511,29 @@ func (l *LocalFileAccess) InitVolume(ctx context.Context, vol *VolumeInfo) error
 		return fmt.Errorf("volume name must not be empty")
 	}
 
-	return os.MkdirAll(filepath.Join(l.Dir, "volumes", vol.Name), 0755)
+	path := filepath.Join(l.Dir, "volumes", vol.Name)
+
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	err = os.MkdirAll(path, 0755)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(filepath.Join(path, "info.json"))
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	return json.NewEncoder(f).Encode(&vol)
 }
 
 func (l *LocalFileAccess) ListVolumes(ctx context.Context) ([]string, error) {
@@ -451,10 +551,28 @@ func (l *LocalFileAccess) ListVolumes(ctx context.Context) ([]string, error) {
 	return volumes, nil
 }
 
+func (l *LocalFileAccess) GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error) {
+	f, err := os.Open(filepath.Join("volumes", vol, "info.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	defer f.Close()
+
+	var vi VolumeInfo
+	err = json.NewDecoder(f).Decode(&vi)
+	if err != nil {
+		return nil, err
+	}
+
+	return &vi, nil
+}
+
 type SegmentAccess interface {
 	InitContainer(ctx context.Context) error
 	InitVolume(ctx context.Context, vol *VolumeInfo) error
 	ListVolumes(ctx context.Context) ([]string, error)
+	GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error)
 
 	ListSegments(ctx context.Context, vol string) ([]SegmentId, error)
 	OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error)
