@@ -152,6 +152,15 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		extentEqual(t, d2, testRandX)
+
+		t.Run("and from the read cache", func(t *testing.T) {
+			r := require.New(t)
+
+			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+			r.NoError(err)
+
+			extentEqual(t, d2, testRandX)
+		})
 	})
 
 	t.Run("can read from objects (partial)", func(t *testing.T) {
@@ -181,6 +190,15 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, d2.data, big[BlockSize:BlockSize+BlockSize])
+
+		t.Run("and from the read cache", func(t *testing.T) {
+			r := require.New(t)
+
+			d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
+			r.NoError(err)
+
+			blockEqual(t, d2.data, big[BlockSize:BlockSize+BlockSize])
+		})
 	})
 
 	t.Run("writes to clear blocks don't corrupt the cache", func(t *testing.T) {

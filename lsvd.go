@@ -217,19 +217,12 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 }
 
 func CompareExtent(a, b Extent) bool {
-	if a.LBA < b.LBA {
-		if a.LBA+LBA(a.Blocks) > b.LBA {
-			return false
-		}
+	as, af := a.Range()
+	bs, _ := b.Range()
 
-		return true
-	}
-
-	if a.LBA == b.LBA {
-		return a.Blocks < b.Blocks
-	}
-
-	return false
+	// if a ends before be begins, then yeah, it's less.
+	// otherwise, no.
+	return as <= bs && af < bs
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -340,11 +333,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		for _, ent := range entries {
 			d.ext2pba.Set(ent.extent, ent.opba)
 		}
-		/*
-			for _, ent := range entries {
-				d.lba2obj.Set(ent.lba, ent.pba)
-			}
-		*/
 		d.lbaMu.Unlock()
 
 		d.prevCacheMu.Lock()
@@ -652,6 +640,33 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 				continue
 			}
 
+			if windowRng, ok := orng.Constrain(rng); ok {
+				d.log.Trace("calculate needs of subrange", "window", windowRng, "rng", rng)
+
+				view := data.data[(windowRng.LBA-rng.LBA)*BlockSize:]
+
+				var miss bool
+
+				// Next, see if we can fill the extent from the read cache.
+				// If any block misses, we bail because we're going to read the
+				// whole range anyway now.
+				for i := 0; i < int(orng.Blocks); i++ {
+					lba := windowRng.LBA + LBA(i)
+
+					err := d.readCache.ReadBlock(lba, view[:BlockSize])
+					if err == ErrCacheMiss {
+						d.log.Trace("miss read cache", "lba", lba)
+						miss = true
+						break
+					}
+				}
+
+				if !miss {
+					d.log.Trace("served read extent from read cache", "extent", orng)
+					continue
+				}
+			}
+
 			// Because the holes can be smaller than the read ranges,
 			// 2 or more holes in sequence might be served by the same
 			// object range.
@@ -686,24 +701,33 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 		}
 	}
 
-	/*
-		numBlocks := data.Blocks()
-
-		blocksRead.Add(float64(numBlocks))
-
-		for i := 0; i < int(rng.Blocks); i++ {
-			lba := rng.LBA + LBA(i)
-
-			view := data.BlockView(i)
-
-			err := d.readBlock(ctx, lba, view)
-			if err != nil {
-				return BlockData{}, err
-			}
-		}
-	*/
-
 	return data, nil
+}
+
+func ExtentFrom(a, b LBA) Extent {
+	return Extent{LBA: a, Blocks: uint32(b - a)}
+}
+
+func (a Extent) Constrain(b Extent) (Extent, bool) {
+	as, af := a.Range()
+	bs, bf := b.Range()
+
+	if as <= bs {
+		// as af bs bf
+		if af < bf {
+			return Extent{}, false
+		}
+
+		// as bs bf af
+		if af >= bf {
+			return b, true
+		}
+
+		// as bs af bf
+		return ExtentFrom(bs, af), true
+	}
+
+	return Extent{}, false
 }
 
 func (d *Disk) readOPBA(
@@ -754,9 +778,8 @@ func (d *Disk) readOPBA(
 		}
 
 		rawData = uncomp
-	case 2:
-		rawData = nil
-		// empty!
+	default:
+		return fmt.Errorf("unknown type byte: %x", rawData[0])
 	}
 
 	// the bytes at the beginning of data are for LBA dataBegin.LBA.
@@ -776,50 +799,22 @@ func (d *Disk) readOPBA(
 		copy(dest, src)
 	}
 
+	for i := 0; i < int(full.Blocks); i++ {
+		lba := full.LBA + LBA(i)
+
+		d.log.Trace("adding data to read cache", "lba", lba)
+		err = d.readCache.WriteBlock(lba, rawData[:BlockSize])
+		if err != nil {
+			d.log.Error("error writing data to read cache", "error", err)
+		}
+		rawData = rawData[BlockSize:]
+	}
+
 	return nil
 }
 
 func (e Extent) String() string {
 	return fmt.Sprintf("%d:%d", e.LBA, e.Blocks)
-}
-
-func (d *Disk) readPBA(ctx context.Context, lba LBA, addr objPBA, data []byte) error {
-	ci, ok := d.openSegments.Get(addr.Segment)
-	if !ok {
-		lf, err := d.sa.OpenSegment(ctx, addr.Segment)
-		if err != nil {
-			return err
-		}
-
-		ci = lf
-
-		d.openSegments.Add(addr.Segment, ci)
-		openSegments.Inc()
-	}
-
-	switch addr.Flags {
-	case 0:
-		_, err := ci.ReadAt(data, int64(addr.Offset))
-		if err != nil {
-			return err
-		}
-	case 1:
-		_, err := ci.ReadAtCompressed(data, int64(addr.Offset), int64(addr.Size))
-		if err != nil {
-			return err
-		}
-	case 2:
-		clear(data[:BlockSize])
-	default:
-		return fmt.Errorf("unknown flag value: %x", addr.Flags)
-	}
-
-	err := d.readCache.WriteBlock(lba, data)
-	if err != nil {
-		d.log.Error("error populating read cache from object", "error", err, "lba", lba)
-	}
-
-	return nil
 }
 
 type PBA struct {
