@@ -286,17 +286,6 @@ func TestLSVD(t *testing.T) {
 		r.Equal(BlockSize, n)
 
 		r.Equal(testExtent, blk)
-
-		t.Logf("crc: %d", h.Sum64())
-
-		t.Run("and are tracked for reading back", func(t *testing.T) {
-			r := require.New(t)
-			pba, ok := d.cacheTranslate(47)
-			r.True(ok)
-
-			r.Equal(empty, pba.Segment)
-			r.Equal(uint32(headerSize), pba.Offset)
-		})
 	})
 
 	t.Run("writes written out to an object", func(t *testing.T) {
@@ -667,18 +656,18 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
 
-		d.lba2obj.Clear()
+		d.ext2pba.Clear()
 
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
 		r.Empty(d.wcOffsets)
-		d.lba2obj.Clear()
+		d.ext2pba.Clear()
 
 		r.NoError(d.rebuildFromObjects(ctx))
-		r.NotZero(d.lba2obj.Len())
+		r.NotZero(d.ext2pba.Len())
 
-		_, ok := d.lba2obj.Get(47)
+		_, ok := d.ext2pba.Get(Extent{LBA: 47, Blocks: 1})
 		r.True(ok)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
@@ -687,61 +676,59 @@ func TestLSVD(t *testing.T) {
 		blockEqual(t, d2.BlockView(0), testData)
 	})
 
-	/*
-		t.Run("serializes the lba to pba mapping", func(t *testing.T) {
-			r := require.New(t)
+	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
+		r := require.New(t)
 
-			tmpdir, err := os.MkdirTemp("", "lsvd")
-			r.NoError(err)
-			defer os.RemoveAll(tmpdir)
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
 
-			d, err := NewDisk(ctx, log, tmpdir)
-			r.NoError(err)
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
 
-			err = d.WriteExtent(ctx, 47, testExtent)
-			r.NoError(err)
+		err = d.WriteExtent(ctx, 47, testExtent)
+		r.NoError(err)
 
-			err = d.CloseSegment(ctx)
-			r.NoError(err)
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
 
-			r.NoError(d.saveLBAMap(ctx))
+		r.NoError(d.saveLBAMap(ctx))
 
-			f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
-			r.NoError(err)
+		f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
+		r.NoError(err)
 
-			defer f.Close()
+		defer f.Close()
 
-			m, err := processLBAMap(f)
-			r.NoError(err)
+		m, err := processLBAMap(f)
+		r.NoError(err)
 
-			_, ok := m.Get(47)
-			r.True(ok)
-		})
+		_, ok := m.Get(Extent{LBA: 47, Blocks: 1})
+		r.True(ok)
+	})
 
-		t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
-			r := require.New(t)
+	t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {
+		r := require.New(t)
 
-			tmpdir, err := os.MkdirTemp("", "lsvd")
-			r.NoError(err)
-			defer os.RemoveAll(tmpdir)
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
 
-			d, err := NewDisk(ctx, log, tmpdir)
-			r.NoError(err)
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
 
-			err = d.WriteExtent(ctx, 47, testExtent)
-			r.NoError(err)
+		err = d.WriteExtent(ctx, 47, testExtent)
+		r.NoError(err)
 
-			err = d.CloseSegment(ctx)
-			r.NoError(err)
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
 
-			r.NoError(d.Close(ctx))
+		r.NoError(d.Close(ctx))
 
-			d2, err := NewDisk(ctx, log, tmpdir)
-			r.NoError(err)
+		d2, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
 
-			r.NotZero(d2.lba2obj.Len())
-		})
-	*/
+		r.NotZero(d2.ext2pba.Len())
+	})
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
 		r := require.New(t)

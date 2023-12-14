@@ -101,7 +101,6 @@ type Disk struct {
 	wcBufWrite *bufio.Writer
 
 	lbaMu   sync.Mutex
-	lba2obj *treemap.TreeMap[LBA, objPBA]
 	ext2pba *treemap.TreeMap[Extent, OPBA]
 
 	readCache    *DiskCache
@@ -170,31 +169,12 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
 
-	em := treemap.NewWithKeyCompare[Extent, OPBA](func(a, b Extent) bool {
-		log.Trace("comparing extents", "a", a, "b", b)
-		if a.LBA < b.LBA {
-			if a.LBA+LBA(a.Blocks) > b.LBA {
-				log.Trace("a is superange of b")
-				return false
-			}
-
-			log.Trace("a is disjoint of b")
-			return true
-		}
-
-		if a.LBA == b.LBA {
-			return a.Blocks < b.Blocks
-		}
-
-		log.Trace("a is larger of b")
-		return false
-	})
+	em := treemap.NewWithKeyCompare[Extent, OPBA](CompareExtent)
 
 	d := &Disk{
 		log:       log,
 		path:      path,
 		size:      sz,
-		lba2obj:   treemap.New[LBA, objPBA](),
 		ext2pba:   em,
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
@@ -214,17 +194,13 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	/*
-		goodMap, err := d.loadLBAMap(ctx)
-		if err != nil {
-			return nil, err
-		}
-	*/
-
-	goodMap := false
+	goodMap, err := d.loadLBAMap(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	if goodMap {
-		log.Info("reusing serialized LBA map", "blocks", d.lba2obj.Len())
+		log.Info("reusing serialized LBA map", "blocks", d.ext2pba.Len())
 	} else {
 		err = d.rebuildFromObjects(ctx)
 		if err != nil {
@@ -238,6 +214,22 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	}
 
 	return d, nil
+}
+
+func CompareExtent(a, b Extent) bool {
+	if a.LBA < b.LBA {
+		if a.LBA+LBA(a.Blocks) > b.LBA {
+			return false
+		}
+
+		return true
+	}
+
+	if a.LBA == b.LBA {
+		return a.Blocks < b.Blocks
+	}
+
+	return false
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -464,14 +456,6 @@ func (d *Disk) checkPrevCaches(lba LBA, view []byte) (bool, error) {
 	return false, nil
 }
 
-func (d *Disk) readLBA2Obj(lba LBA) (objPBA, bool) {
-	d.lbaMu.Lock()
-	defer d.lbaMu.Unlock()
-
-	pba, ok := d.lba2obj.Get(lba)
-	return pba, ok
-}
-
 type Cover int
 
 const (
@@ -549,46 +533,6 @@ func (d *Disk) nextOPBA(rng Extent) (Extent, OPBA, bool) {
 	default:
 		return Extent{}, OPBA{}, false
 	}
-}
-
-func (d *Disk) readBlock(ctx context.Context, lba LBA, view []byte) error {
-	if pba, ok := d.wcOffsets[lba]; ok {
-		if pba == math.MaxUint32 {
-			clear(view)
-		} else {
-			n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
-			if err != nil {
-				d.log.Error("error reading data from write cache", "error", err, "pba", pba)
-				return errors.Wrapf(err, "attempting to read from active (%d)", pba)
-			}
-
-			d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
-		}
-		return nil
-	}
-
-	found, err := d.checkPrevCaches(lba, view)
-	if err != nil {
-		return err
-	}
-
-	if found {
-		return nil
-	}
-
-	if err := d.readCache.ReadBlock(lba, view); err == nil {
-		// got it!
-		d.log.Trace("found block in read cache", "lba", lba)
-		return nil
-	}
-
-	if pba, ok := d.readLBA2Obj(lba); ok {
-		return d.readPBA(ctx, lba, pba, view)
-	}
-
-	clear(view)
-
-	return nil
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, rng Extent, data BlockData) ([]Extent, error) {
@@ -762,33 +706,6 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 	return data, nil
 }
 
-func (d *Disk) ReadExtento(ctx context.Context, firstBlock LBA, data BlockData) error {
-	start := time.Now()
-
-	defer func() {
-		blocksReadLatency.Observe(time.Since(start).Seconds())
-	}()
-
-	iops.Inc()
-
-	numBlocks := data.Blocks()
-
-	blocksRead.Add(float64(numBlocks))
-
-	for i := 0; i < numBlocks; i++ {
-		lba := firstBlock + LBA(i)
-
-		view := data.BlockView(i)
-
-		err := d.readBlock(ctx, lba, view)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (d *Disk) readOPBA(
 	ctx context.Context,
 	full Extent, addr OPBA,
@@ -910,15 +827,6 @@ type PBA struct {
 	Offset  uint32
 }
 
-func (d *Disk) cacheTranslate(addr LBA) (PBA, bool) {
-	if offset, ok := d.wcOffsets[addr]; ok {
-		return PBA{Offset: offset}, true
-	}
-
-	p, ok := d.lba2obj.Get(addr)
-	return p.PBA, ok
-}
-
 var crcTable = crc64.MakeTable(crc64.ECMA)
 
 func crcLBA(crc uint64, lba LBA) uint64 {
@@ -949,11 +857,9 @@ func (d *Disk) blockIsEmpty(lba LBA) bool {
 		}
 	}
 
-	if addr, tracking := d.lba2obj.Get(lba); tracking {
-		// If it's present in an object as empty already, then yeah, it's empty.
-		if addr.Flags != 2 {
-			return true
-		}
+	i := d.ext2pba.LowerBound(Extent{LBA: lba, Blocks: 1})
+	if i.Valid() {
+		return i.Value().Size == 0
 	}
 
 	return true
@@ -1169,7 +1075,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		flags, err := br.ReadByte()
+		_, err = br.ReadByte()
 		if err != nil {
 			return err
 		}
@@ -1183,15 +1089,6 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 		if err != nil {
 			return err
 		}
-
-		d.lba2obj.Set(LBA(lba), objPBA{
-			PBA: PBA{
-				Segment: seg,
-				Offset:  dataBegin + uint32(blkOffset),
-			},
-			Flags: flags,
-			Size:  uint32(blkSize),
-		})
 
 		d.ext2pba.Set(Extent{LBA: LBA(lba), Blocks: uint32(count)}, OPBA{
 			Segment: seg,
@@ -1349,7 +1246,7 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.lba2obj, f)
+	return saveLBAMap(d.ext2pba, f)
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
@@ -1371,14 +1268,21 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	d.lba2obj = m
+	d.ext2pba = m
 
 	return true, nil
 }
 
-func saveLBAMap(m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
+func saveLBAMap(m *treemap.TreeMap[Extent, OPBA], f io.Writer) error {
 	for it := m.Iterator(); it.Valid(); it.Next() {
-		err := binary.Write(f, binary.BigEndian, uint64(it.Key()))
+		k := it.Key()
+
+		err := binary.Write(f, binary.BigEndian, uint64(k.LBA))
+		if err != nil {
+			return err
+		}
+
+		err = binary.Write(f, binary.BigEndian, uint32(k.Blocks))
 		if err != nil {
 			return err
 		}
@@ -1392,16 +1296,26 @@ func saveLBAMap(m *treemap.TreeMap[LBA, objPBA], f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, objPBA], error) {
-	m := treemap.New[LBA, objPBA]()
+func processLBAMap(f io.Reader) (*treemap.TreeMap[Extent, OPBA], error) {
+	m := treemap.NewWithKeyCompare[Extent, OPBA](CompareExtent)
 
 	for {
 		var (
-			lba uint64
-			pba objPBA
+			lba    uint64
+			blocks uint32
+			pba    OPBA
 		)
 
 		err := binary.Read(f, binary.BigEndian, &lba)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return nil, err
+		}
+
+		err = binary.Read(f, binary.BigEndian, &blocks)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -1415,7 +1329,7 @@ func processLBAMap(f io.Reader) (*treemap.TreeMap[LBA, objPBA], error) {
 			return nil, err
 		}
 
-		m.Set(LBA(lba), pba)
+		m.Set(Extent{LBA: LBA(lba), Blocks: blocks}, pba)
 	}
 
 	return m, nil
