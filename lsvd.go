@@ -21,7 +21,6 @@ import (
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/igrmk/treemap/v2"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
@@ -101,7 +100,7 @@ type Disk struct {
 	wcBufWrite *bufio.Writer
 
 	lbaMu   sync.Mutex
-	ext2pba *treemap.TreeMap[Extent, OPBA]
+	lba2pba *ExtentMap
 
 	readCache    *DiskCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
@@ -169,13 +168,11 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
 
-	em := treemap.NewWithKeyCompare[Extent, OPBA](CompareExtent)
-
 	d := &Disk{
 		log:       log,
 		path:      path,
 		size:      sz,
-		ext2pba:   em,
+		lba2pba:   NewExtentMap(log),
 		readCache: dc,
 		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
@@ -194,13 +191,13 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	goodMap, err := d.loadLBAMap(ctx)
-	if err != nil {
-		return nil, err
-	}
+	//goodMap, err := d.loadLBAMap(ctx)
+	//if err != nil {
+	//return nil, err
+	//}
 
-	if goodMap {
-		log.Info("reusing serialized LBA map", "blocks", d.ext2pba.Len())
+	if false { // goodMap {
+		log.Info("reusing serialized LBA map", "blocks", d.lba2pba.Len())
 	} else {
 		err = d.rebuildFromObjects(ctx)
 		if err != nil {
@@ -216,13 +213,78 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	return d, nil
 }
 
-func CompareExtent(a, b Extent) bool {
-	as, af := a.Range()
-	bs, _ := b.Range()
+func CompareExtent(log hclog.Logger) func(a, b Extent) bool {
+	var s func(a, b Extent) bool
 
-	// if a ends before be begins, then yeah, it's less.
-	// otherwise, no.
-	return as <= bs && af < bs
+	s = func(a, b Extent) bool {
+		as, af := a.Range()
+		bs, bf := b.Range()
+
+		var result bool
+
+		// First, check if they're fully disjoint ranges
+		if af < bs {
+			// as af bs bf
+			result = true
+		} else if bf < as {
+			// bs bf as af
+			result = false
+		} else if as == bs {
+			if af == bf {
+				// as+bs af+bf
+				result = false
+			} else {
+				// a starts the same place, but is smaller
+				// as+bs af bf
+				result = af < bf
+			}
+		} else if as < bs {
+			if af < bf {
+				// They overlap, but a ends first.
+				// as bs af bf
+				result = true
+			} else {
+				// a is a superrange of b
+				// as bs bf af
+				result = false
+			}
+		} else {
+			if bf < af {
+				// bs as bf af
+				result = false
+			} else {
+				// b is a superrange of a
+				// bs as af bf
+				result = true
+			}
+		}
+
+		// if a ends before be begins, then yeah, it's less.
+		// otherwise, no.
+		//result := as <= bs && af < bs
+		//_ = af
+		//result := as < bs
+
+		log.Trace("comparing extents", "a", a, "b", b, "result", result)
+
+		return result
+	}
+
+	return s
+}
+
+type RangedOPBA struct {
+	Range Extent
+	Full  Extent
+	OPBA
+}
+
+func (e Extent) Contains(lba LBA) bool {
+	return lba >= e.LBA && lba < (e.LBA+LBA(e.Blocks))
+}
+
+func (e Extent) Last() LBA {
+	return (e.LBA + LBA(e.Blocks) - 1)
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -331,7 +393,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		d.lbaMu.Lock()
 		for _, ent := range entries {
-			d.ext2pba.Set(ent.extent, ent.opba)
+			d.lba2pba.update(ent.extent, ent.opba)
 		}
 		d.lbaMu.Unlock()
 
@@ -452,6 +514,19 @@ const (
 	CoverNone
 )
 
+func (c Cover) String() string {
+	switch c {
+	case CoverCompletely:
+		return "cover-completely"
+	case CoverPartly:
+		return "cover-partly"
+	case CoverNone:
+		return "cover-non"
+	default:
+		return "bad-cover"
+	}
+}
+
 func (e Extent) Range() (LBA, LBA) {
 	return e.LBA, e.LBA + LBA(e.Blocks) - 1
 }
@@ -460,67 +535,24 @@ func (e Extent) Cover(y Extent) Cover {
 	es, ef := e.Range()
 	ys, yf := y.Range()
 
-	if es <= ys && ef >= ys {
-		// es    ys     yf    ef
-		if ef >= yf {
-			// e is a superange of y
-			return CoverCompletely
-		}
-
-		// es    ys     ef    yf
-		// y begins but does not end within e
-		return CoverPartly
+	if ef < ys || yf < es {
+		return CoverNone
 	}
 
-	if ys < es && yf <= es {
-		// ys   es    ef   yf OR ys   es    yf   fs
-		// e is located within y completely
-		return CoverPartly
+	// es    ys     yf    ef
+	if es <= ys && ef >= yf {
+		// e is a superange of y
+		return CoverCompletely
 	}
 
-	return CoverNone
+	return CoverPartly
 }
 
-func (d *Disk) computeOPBAs(rng Extent) []OPBA {
+func (d *Disk) computeOPBAs(rng Extent) ([]*RangedOPBA, error) {
 	d.lbaMu.Lock()
 	defer d.lbaMu.Unlock()
 
-	var ret []OPBA
-
-loop:
-	for i := d.ext2pba.LowerBound(rng); i.Valid(); i.Next() {
-		switch i.Key().Cover(rng) {
-		case CoverCompletely:
-			ret = append(ret, i.Value())
-			break loop
-		case CoverNone:
-			break loop
-		case CoverPartly:
-			ret = append(ret, i.Value())
-		}
-	}
-
-	return ret
-}
-
-func (d *Disk) nextOPBA(rng Extent) (Extent, OPBA, bool) {
-	d.lbaMu.Lock()
-	defer d.lbaMu.Unlock()
-
-	i := d.ext2pba.LowerBound(rng)
-	if !i.Valid() {
-		d.log.Trace("no lower bound for extent", "extent", rng)
-		return Extent{}, OPBA{}, false
-	}
-
-	d.log.Trace("lower bound for extent",
-		"extent", rng, "bound", i.Key(), "cover", i.Key().Cover(rng))
-	switch i.Key().Cover(rng) {
-	case CoverCompletely, CoverPartly:
-		return i.Key(), i.Value(), true
-	default:
-		return Extent{}, OPBA{}, false
-	}
+	return d.lba2pba.Resolve(rng)
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, rng Extent, data BlockData) ([]Extent, error) {
@@ -626,61 +658,71 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 
 	var (
 		opbas []*readRequest
-		last  OPBA
+		last  *RangedOPBA
 	)
 
 	for _, h := range remaining {
-		orng, opba, ok := d.nextOPBA(h)
-		if !ok {
+		ropba, err := d.computeOPBAs(h)
+		if err != nil {
+			d.log.Error("error computing opbas", "error", err, "rng", h)
+			return BlockData{}, err
+		}
+
+		if len(ropba) == 0 {
+			d.log.Trace("no ranged opbas found")
 			// nothing for range, and since the data is pre-zero'd, we
 			// don't need to clear anything here.
 		} else {
-			if opba.Size == 0 {
-				// it's empty! cool cool, we don't need to fill the hole
-				continue
-			}
+			for _, opba := range ropba {
+				if opba.Size == 0 {
+					// it's empty! cool cool, we don't need to fill the hole
+					continue
+				}
 
-			if windowRng, ok := orng.Constrain(rng); ok {
-				d.log.Trace("calculate needs of subrange", "window", windowRng, "rng", rng)
+				orng := opba.Full
 
-				view := data.data[(windowRng.LBA-rng.LBA)*BlockSize:]
+				if windowRng, ok := orng.Constrain(rng); ok {
+					d.log.Trace("calculate needs of subrange", "window", windowRng, "rng", rng)
 
-				var miss bool
+					view := data.data[(windowRng.LBA-rng.LBA)*BlockSize:]
 
-				// Next, see if we can fill the extent from the read cache.
-				// If any block misses, we bail because we're going to read the
-				// whole range anyway now.
-				for i := 0; i < int(orng.Blocks); i++ {
-					lba := windowRng.LBA + LBA(i)
+					var miss bool
 
-					err := d.readCache.ReadBlock(lba, view[:BlockSize])
-					if err == ErrCacheMiss {
-						d.log.Trace("miss read cache", "lba", lba)
-						miss = true
-						break
+					// Next, see if we can fill the extent from the read cache.
+					// If any block misses, we bail because we're going to read the
+					// whole range anyway now.
+					for i := 0; i < int(orng.Blocks); i++ {
+						lba := windowRng.LBA + LBA(i)
+
+						err := d.readCache.ReadBlock(lba, view[:BlockSize])
+						if err == ErrCacheMiss {
+							d.log.Trace("miss read cache", "lba", lba)
+							miss = true
+							break
+						}
+					}
+
+					if !miss {
+						d.log.Trace("served read extent from read cache", "extent", orng)
+						continue
 					}
 				}
 
-				if !miss {
-					d.log.Trace("served read extent from read cache", "extent", orng)
-					continue
-				}
-			}
+				// Because the holes can be smaller than the read ranges,
+				// 2 or more holes in sequence might be served by the same
+				// object range.
+				if last == opba {
+					opbas[len(opbas)-1].extents = append(opbas[len(opbas)-1].extents, h)
+				} else {
+					r := &readRequest{
+						obpa:    opba.OPBA,
+						rng:     orng,
+						extents: []Extent{h},
+					}
 
-			// Because the holes can be smaller than the read ranges,
-			// 2 or more holes in sequence might be served by the same
-			// object range.
-			if last == opba {
-				opbas[len(opbas)-1].extents = append(opbas[len(opbas)-1].extents, h)
-			} else {
-				r := &readRequest{
-					obpa:    opba,
-					rng:     orng,
-					extents: []Extent{h},
+					opbas = append(opbas, r)
+					last = opba
 				}
-
-				opbas = append(opbas, r)
-				last = opba
 			}
 		}
 	}
@@ -705,7 +747,10 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 }
 
 func ExtentFrom(a, b LBA) Extent {
-	return Extent{LBA: a, Blocks: uint32(b - a)}
+	if b < a {
+		return Extent{}
+	}
+	return Extent{LBA: a, Blocks: uint32(b - a + 1)}
 }
 
 func (a Extent) Constrain(b Extent) (Extent, bool) {
@@ -852,9 +897,14 @@ func (d *Disk) blockIsEmpty(lba LBA) bool {
 		}
 	}
 
-	i := d.ext2pba.LowerBound(Extent{LBA: lba, Blocks: 1})
-	if i.Valid() {
-		return i.Value().Size == 0
+	ropbas, err := d.lba2pba.Resolve(Extent{lba, 1})
+	if err != nil {
+		d.log.Error("error resolving in blockIsEmpty", "error", err, "lba", lba)
+		return false
+	}
+
+	if len(ropbas) != 0 {
+		return ropbas[0].Size == 0
 	}
 
 	return true
@@ -1085,7 +1135,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		d.ext2pba.Set(Extent{LBA: LBA(lba), Blocks: uint32(count)}, OPBA{
+		d.lba2pba.update(Extent{LBA: LBA(lba), Blocks: uint32(count)}, OPBA{
 			Segment: seg,
 			Offset:  dataBegin + uint32(blkOffset),
 			Size:    uint32(blkSize),
@@ -1241,7 +1291,7 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.ext2pba, f)
+	return saveLBAMap(d.lba2pba, f)
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
@@ -1258,31 +1308,21 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 
 	d.log.Trace("reloading lba map from head.map")
 
-	m, err := processLBAMap(f)
+	m, err := processLBAMap(d.log, f)
 	if err != nil {
 		return false, err
 	}
 
-	d.ext2pba = m
+	d.lba2pba = m
 
 	return true, nil
 }
 
-func saveLBAMap(m *treemap.TreeMap[Extent, OPBA], f io.Writer) error {
-	for it := m.Iterator(); it.Valid(); it.Next() {
-		k := it.Key()
+func saveLBAMap(m *ExtentMap, f io.Writer) error {
+	for it := m.m.Iterator(); it.Valid(); it.Next() {
+		cur := it.Value()
 
-		err := binary.Write(f, binary.BigEndian, uint64(k.LBA))
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(f, binary.BigEndian, uint32(k.Blocks))
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(f, binary.BigEndian, it.Value())
+		err := binary.Write(f, binary.BigEndian, cur)
 		if err != nil {
 			return err
 		}
@@ -1291,17 +1331,15 @@ func saveLBAMap(m *treemap.TreeMap[Extent, OPBA], f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(f io.Reader) (*treemap.TreeMap[Extent, OPBA], error) {
-	m := treemap.NewWithKeyCompare[Extent, OPBA](CompareExtent)
+func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
+	m := NewExtentMap(log)
 
 	for {
 		var (
-			lba    uint64
-			blocks uint32
-			pba    OPBA
+			pba RangedOPBA
 		)
 
-		err := binary.Read(f, binary.BigEndian, &lba)
+		err := binary.Read(f, binary.BigEndian, &pba)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -1310,21 +1348,7 @@ func processLBAMap(f io.Reader) (*treemap.TreeMap[Extent, OPBA], error) {
 			return nil, err
 		}
 
-		err = binary.Read(f, binary.BigEndian, &blocks)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			return nil, err
-		}
-
-		err = binary.Read(f, binary.BigEndian, &pba)
-		if err != nil {
-			return nil, err
-		}
-
-		m.Set(Extent{LBA: LBA(lba), Blocks: blocks}, pba)
+		m.m.Set(pba.Range.LBA, &pba)
 	}
 
 	return m, nil
@@ -1383,6 +1407,7 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 
 	view := make([]byte, BlockSize*10)
 
+loop:
 	for i := uint32(0); i < cnt; i++ {
 		lba, err := binary.ReadUvarint(br)
 		if err != nil {
@@ -1417,10 +1442,16 @@ func (d *Disk) copyLive(ctx context.Context, seg SegmentId) error {
 
 		d.log.Trace("considering for copy", "extent", extent, "size", blkSize, "offset", blkOffset)
 
-		opba, ok := d.ext2pba.Get(extent)
-		//pba, ok := d.lba2obj.Get(LBA(lba))
-		if ok && opba.Segment != seg {
-			continue
+		//opba, ok := d.ext2pba.Get(extent)
+		opbas, err := d.lba2pba.Resolve(extent)
+		if err != nil {
+			return err
+		}
+
+		for _, opba := range opbas {
+			if opba.Segment != seg {
+				continue loop
+			}
 		}
 
 		view := view[:blkSize]

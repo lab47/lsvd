@@ -145,6 +145,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
+		t.Log("reopening disk")
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
@@ -163,7 +164,7 @@ func TestLSVD(t *testing.T) {
 		})
 	})
 
-	t.Run("can read from objects (partial)", func(t *testing.T) {
+	t.Run("can read from partial objects", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")
@@ -674,18 +675,18 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
 
-		d.ext2pba.Clear()
+		d.lba2pba.m.Clear()
 
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
 		r.Empty(d.wcOffsets)
-		d.ext2pba.Clear()
+		d.lba2pba.m.Clear()
 
 		r.NoError(d.rebuildFromObjects(ctx))
-		r.NotZero(d.ext2pba.Len())
+		r.NotZero(d.lba2pba.Len())
 
-		_, ok := d.ext2pba.Get(Extent{LBA: 47, Blocks: 1})
+		_, ok := d.lba2pba.m.Get(47)
 		r.True(ok)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
@@ -717,10 +718,10 @@ func TestLSVD(t *testing.T) {
 
 		defer f.Close()
 
-		m, err := processLBAMap(f)
+		m, err := processLBAMap(log, f)
 		r.NoError(err)
 
-		_, ok := m.Get(Extent{LBA: 47, Blocks: 1})
+		_, ok := m.m.Get(47)
 		r.True(ok)
 	})
 
@@ -745,7 +746,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		r.NotZero(d2.ext2pba.Len())
+		r.NotZero(d2.lba2pba.Len())
 	})
 
 	t.Run("replays logs into l2p map if need be on load", func(t *testing.T) {
