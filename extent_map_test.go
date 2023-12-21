@@ -27,14 +27,14 @@ func TestExtentMap(t *testing.T) {
 		d := NewExtentMap(log)
 
 		x := Extent{47, 10}
-		err := d.update(x, OPBA{
+		err := d.Update(x, OPBA{
 			Segment: s1,
 			Offset:  47,
 		})
 		r.NoError(err)
 
 		y := Extent{0, 8}
-		err = d.update(y, OPBA{
+		err = d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  0,
 		})
@@ -57,14 +57,14 @@ func TestExtentMap(t *testing.T) {
 		d := NewExtentMap(log)
 
 		y := Extent{0, 8}
-		err := d.update(y, OPBA{
+		err := d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  0,
 		})
 		r.NoError(err)
 
 		x := Extent{47, 10}
-		err = d.update(x, OPBA{
+		err = d.Update(x, OPBA{
 			Segment: s1,
 			Offset:  47,
 		})
@@ -88,14 +88,14 @@ func TestExtentMap(t *testing.T) {
 
 		x := Extent{LBA: 0, Blocks: 10}
 
-		err := d.update(x, OPBA{
+		err := d.Update(x, OPBA{
 			Segment: s1,
 			Offset:  1,
 		})
 		r.NoError(err)
 
 		y := Extent{1, 1}
-		err = d.update(y, OPBA{
+		err = d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  2,
 		})
@@ -127,12 +127,12 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{2, 1}, OPBA{
+		err := m.Update(Extent{2, 1}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{0, 10}, OPBA{
+		err = m.Update(Extent{0, 10}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -153,12 +153,12 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{0, 5}, OPBA{
+		err := m.Update(Extent{0, 5}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{3, 10}, OPBA{
+		err = m.Update(Extent{3, 10}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -181,12 +181,12 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{3, 10}, OPBA{
+		err := m.Update(Extent{3, 10}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{0, 5}, OPBA{
+		err = m.Update(Extent{0, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -209,12 +209,12 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{3, 2}, OPBA{
+		err := m.Update(Extent{3, 2}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{0, 5}, OPBA{
+		err = m.Update(Extent{0, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -232,12 +232,12 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{1, 1}, OPBA{
+		err := m.Update(Extent{1, 1}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{1, 5}, OPBA{
+		err = m.Update(Extent{1, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -252,22 +252,54 @@ func TestExtentMap(t *testing.T) {
 		r.Equal(Extent{1, 5}, r1.Range)
 	})
 
+	t.Run("doesn't removes non overlapping range", func(t *testing.T) {
+		r := require.New(t)
+
+		m := NewExtentMap(log)
+
+		err := m.Update(Extent{0, 1}, OPBA{
+			Offset: 1,
+		})
+		r.NoError(err)
+
+		err = m.Update(Extent{1, 1}, OPBA{
+			Offset: 2,
+		})
+		r.NoError(err)
+
+		t.Log(m.Render())
+
+		r.Equal(2, m.m.Len())
+
+		err = m.Update(Extent{1, 1}, OPBA{
+			Offset: 2,
+		})
+		r.NoError(err)
+
+		r.Equal(2, m.m.Len())
+
+		r1, ok := m.m.Get(0)
+		r.True(ok)
+
+		r.Equal(Extent{0, 1}, r1.Range)
+	})
+
 	t.Run("removes multiple ranges", func(t *testing.T) {
 		r := require.New(t)
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{1, 1}, OPBA{
+		err := m.Update(Extent{1, 1}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{2, 1}, OPBA{
+		err = m.Update(Extent{2, 1}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{0, 5}, OPBA{
+		err = m.Update(Extent{0, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
@@ -285,22 +317,22 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{8, 1}, OPBA{
+		err := m.Update(Extent{8, 1}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{11, 1}, OPBA{
+		err = m.Update(Extent{11, 1}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{12, 10}, OPBA{
+		err = m.Update(Extent{12, 10}, OPBA{
 			Offset: 3,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{10, 5}, OPBA{
+		err = m.Update(Extent{10, 5}, OPBA{
 			Offset: 4,
 		})
 		r.NoError(err)
@@ -331,27 +363,27 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{0, 5}, OPBA{
+		err := m.Update(Extent{0, 5}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{5, 5}, OPBA{
+		err = m.Update(Extent{5, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{10, 5}, OPBA{
+		err = m.Update(Extent{10, 5}, OPBA{
 			Offset: 3,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{15, 5}, OPBA{
+		err = m.Update(Extent{15, 5}, OPBA{
 			Offset: 4,
 		})
 		r.NoError(err)
 
-		err = m.update(Extent{100, 5}, OPBA{
+		err = m.Update(Extent{100, 5}, OPBA{
 			Offset: 4,
 		})
 		r.NoError(err)
@@ -373,7 +405,7 @@ func TestExtentMap(t *testing.T) {
 
 		m := NewExtentMap(log)
 
-		err := m.update(Extent{0, 5}, OPBA{
+		err := m.Update(Extent{0, 5}, OPBA{
 			Offset: 1,
 		})
 		r.NoError(err)
@@ -388,5 +420,48 @@ func TestExtentMap(t *testing.T) {
 		r.Len(pbas, 1)
 
 		r.Equal(uint32(1), pbas[0].Offset)
+	})
+
+	t.Run("tc", func(t *testing.T) {
+		r := require.New(t)
+
+		m := NewExtentMap(log)
+
+		inject := []Extent{
+			{5799956, 5},
+			{LBA: 5799968, Blocks: 32},
+			{LBA: 5799936, Blocks: 1},
+		}
+
+		for i, e := range inject {
+			err := m.Update(e, OPBA{
+				Offset: uint32(i),
+			})
+			r.NoError(err)
+		}
+
+		r.Equal(3, m.m.Len())
+
+		t.Log(m.Render())
+
+		err := m.Update(Extent{5799956, 13}, OPBA{
+			Offset: 2,
+		})
+		r.NoError(err)
+
+		r.Equal(3, m.m.Len())
+
+		_, ok := m.m.Get(5799968)
+		r.False(ok)
+
+		r1, ok := m.m.Get(5799969)
+		r.True(ok)
+
+		r.Equal(Extent{5799969, 31}, r1.Range)
+
+		r2, ok := m.m.Get(5799956)
+		r.True(ok)
+
+		r.Equal(Extent{5799956, 13}, r2.Range)
 	})
 }

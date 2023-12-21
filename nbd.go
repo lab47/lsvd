@@ -18,10 +18,17 @@ type nbdWrapper struct {
 var _ nbd.Backend = &nbdWrapper{}
 
 func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
+	log = log.Named("nbd")
 	return &nbdWrapper{log, ctx, d}
 }
 
 func blkSum(b []byte) string {
+	b = b[:BlockSize]
+
+	return rangeSum(b[:BlockSize])
+}
+
+func rangeSum(b []byte) string {
 	empty := true
 
 	for _, x := range b {
@@ -39,9 +46,22 @@ func blkSum(b []byte) string {
 	return base58.Encode(x[:])
 }
 
+func logBlocks(log hclog.Logger, msg string, idx LBA, data []byte) {
+	for len(data) > 0 {
+		log.Trace(msg, "block", idx, "sum", blkSum(data))
+		data = data[BlockSize:]
+		idx++
+	}
+}
+
 func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
+
+	n.log.Trace("nbd read-at",
+		"size", len(b), "offset", off,
+		"extent", Extent{blk, blocks},
+	)
 
 	data, err := n.d.ReadExtent(n.ctx, Extent{LBA: blk, Blocks: blocks})
 	if err != nil {
@@ -49,13 +69,13 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 		return 0, err
 	}
 
+	logBlocks(n.log, "read block sums", blk, b)
+
 	err = data.CopyTo(b)
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err
 	}
-
-	n.log.Trace("nbd read-at", "size", len(b), "offset", off)
 
 	return len(b), nil
 }
@@ -70,6 +90,8 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 
 	blk := LBA(off / BlockSize)
 
+	logBlocks(n.log, "write block sums", blk, b)
+
 	err = n.d.WriteExtent(n.ctx, blk, ext)
 	if err != nil {
 		n.log.Error("nbd write-at error", "error", err, "block", blk)
@@ -80,11 +102,14 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 }
 
 func (n *nbdWrapper) ZeroAt(off, size int64) error {
-	n.log.Trace("nbd zero-at", "size", size, "offset", off)
-
 	blk := LBA(off / BlockSize)
 
 	numBlocks := size / BlockSize
+
+	n.log.Trace("nbd zero-at",
+		"size", size, "offset", off,
+		"extent", Extent{blk, uint32(numBlocks)},
+	)
 
 	err := n.d.ZeroBlocks(n.ctx, blk, numBlocks)
 	if err != nil {
@@ -96,11 +121,14 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 }
 
 func (n *nbdWrapper) Trim(off, size int64) error {
-	n.log.Trace("nbd trim", "size", size, "offset", off)
-
 	blk := LBA(off / BlockSize)
 
 	numBlocks := size / BlockSize
+
+	n.log.Trace("nbd trim",
+		"size", size, "offset", off,
+		"extent", Extent{blk, uint32(numBlocks)},
+	)
 
 	err := n.d.ZeroBlocks(n.ctx, blk, numBlocks)
 	if err != nil {

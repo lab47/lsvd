@@ -1056,6 +1056,8 @@ func TestLSVD(t *testing.T) {
 
 		d.Close(ctx)
 
+		t.Log("reloading disk")
+
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 

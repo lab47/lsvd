@@ -3,10 +3,12 @@ package lsvd
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/edsrzf/mmap-go"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/lab47/mode"
 	"golang.org/x/sys/unix"
 )
 
@@ -99,11 +101,18 @@ func (d *DiskCache) Close() error {
 var ErrCacheMiss = errors.New("cache miss")
 
 func (d *DiskCache) ReadBlock(lba LBA, block []byte) error {
+	defer func() {
+		fmt.Printf("!132 => %d\n", binary.BigEndian.Uint32(d.m[132+8:]))
+	}()
+
+	mode.Assert(len(block) == BlockSize, "invalid block size")
+
 	defer d.m.Flush()
 
 	off, ok := d.lru.Get(lba)
 	if ok {
 		dataOff := binary.BigEndian.Uint32(d.m[off+8:])
+		fmt.Printf("! RCW %d => %d => %d\n", lba, off, dataOff)
 		copy(block, d.m[dataOff:])
 		return nil
 	}
@@ -121,7 +130,8 @@ func (d *DiskCache) ReadBlock(lba LBA, block []byte) error {
 		}
 
 		if lba == ent {
-			d.lru.Add(ent, off)
+			fmt.Printf("!RC1 %d => %d\n", ent, off)
+			d.lru.Add(ent, uint32(i*entrySize))
 			copy(block, d.m[off:])
 			return nil
 		}
@@ -154,16 +164,24 @@ func (d *DiskCache) scanForEntry(lba LBA) (uint32, bool) {
 }
 
 func (d *DiskCache) WriteBlock(lba LBA, block []byte) error {
+	mode.Assert(len(block) == BlockSize, "invalid block size")
+
+	defer func() {
+		fmt.Printf("!132 => %d\n", binary.BigEndian.Uint32(d.m[132+8:]))
+	}()
+
 	off, ok := d.lru.Get(lba)
 	if !ok {
 		off, ok = d.scanForEntry(lba)
 		if ok {
+			fmt.Printf("!RC2 %d => %d\n", lba, off)
 			d.lru.Add(lba, off)
 		}
 	}
 
 	if ok {
-		copy(d.m[off:], block)
+		dataPos := binary.BigEndian.Uint32(d.m[off+8:])
+		copy(d.m[dataPos:], block)
 		return nil
 	}
 
@@ -198,6 +216,7 @@ func (d *DiskCache) WriteBlock(lba LBA, block []byte) error {
 		}
 	}
 
+	fmt.Printf("!RC3 %d => %d\n", lba, off)
 	d.lru.Add(lba, off)
 
 	binary.BigEndian.PutUint64(pos, uint64(lba))

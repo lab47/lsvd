@@ -44,6 +44,8 @@ func main() {
 		Level: level,
 		Color: hclog.AutoColor,
 
+		IndependentLevels: true,
+
 		ColorHeaderAndFields: true,
 	})
 

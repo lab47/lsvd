@@ -36,110 +36,100 @@ func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, *RangedOPBA] {
 	return e.m.LowerBound(lba)
 }
 
-func (e *ExtentMap) update(rng Extent, pba OPBA) error {
+func (m *ExtentMap) checkExtent(e Extent) Extent {
+	if mode.Debug() {
+		if e.Blocks == 0 {
+			panic(fmt.Sprintf("empty range detected: %s", e))
+		}
+
+		if e.Blocks > 1_000_000_000 {
+			panic(fmt.Sprintf("extremely large range detected: %s", e))
+		}
+	}
+
+	return e
+}
+
+func (e *ExtentMap) Update(rng Extent, pba OPBA) error {
 	var (
 		toDelete []LBA
 		toAdd    []*RangedOPBA
 	)
 
+	e.checkExtent(rng)
+
+	e.log.Trace("triggered update", "extent", rng)
+
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
-		e.log.Trace("found bound", "lba", i.Key(), "from", rng.LBA)
+		// If we advance past our start position, stop immediately.
+		// We'll pick up these entries in the lowerbound loop below.
+		if i.Key() >= rng.LBA {
+			break
+		}
+
+		e.log.Trace("found bound", "key", i.Key(), "match", i.Value().Range, "from", rng.LBA)
 
 		cur := i.Value()
+
+		orig := cur.Range
 
 		coverage := cur.Range.Cover(rng)
 
 		e.log.Trace("considering",
-			"a", cur.Range, "b", rng,
+			"a", orig, "b", rng,
 			"a-sub-b", coverage,
 		)
-
-		/*
-
-			if i.Key() == rng.LBA {
-				if cur.Range.Blocks > rng.Blocks {
-					toDelete = append(toDelete, i.Key())
-
-					// The current range is larger than our new one,
-					// so we need to change the start of the current range
-					// to just past the new range.
-					pivot := rng.LBA + LBA(rng.Blocks)
-					cur.Range.LBA = pivot
-					cur.Range.Blocks -= rng.Blocks
-
-					toAdd = append(toAdd, cur)
-				}
-
-				// if the new rng is larger than the current one
-				// we can safely discard it when we do the Set() below.
-
-				break
-			}
-		*/
 
 		switch coverage {
 		case CoverNone:
 			// ok, disjoint, easy and done.
 			break loop
 
-		case CoverCompletely:
+		case CoverExact:
+		// The ranges are exactly the same, so we don't
+		// need to adjust anything.
+
+		case CoverSuperRange:
 			// The new range is a complete subrange (ie a hole)
 			// into the existing range, so we need to adjust
 			// and add a new range before and after the hole.
 
-			prefix := ExtentFrom(cur.Range.LBA, rng.LBA-1)
-			suffix := ExtentFrom(rng.Last()+1, cur.Range.Last())
-
-			if suffix.Blocks > 0 {
+			suffix, ok := ExtentFrom(rng.Last()+1, cur.Range.Last())
+			if ok {
 				dup := *cur
 				dup.Range = suffix
 				toAdd = append(toAdd, &dup)
 			}
 
-			if prefix.Blocks > 0 {
-				cur.Range = prefix
-			} else {
-				toDelete = append(toDelete, prefix.LBA)
+			if rng.LBA > 0 {
+				prefix, ok := ExtentFrom(cur.Range.LBA, rng.LBA-1)
+				if ok {
+					cur.Range = prefix
+				}
 			}
+
+			e.checkExtent(cur.Range)
 		case CoverPartly:
-			if rng.Cover(cur.Range) == CoverCompletely {
+			if rng.Cover(cur.Range) == CoverSuperRange {
 				// The new range completely covers the current one
 				// so we can clobber it.
 			} else {
 				// We need to shrink the range of cur down to not overlap
 				// with the new range.
-				cur.Range = ExtentFrom(cur.Range.LBA, rng.LBA-1)
+				update, ok := ExtentFrom(cur.Range.LBA, rng.LBA-1)
+				if !ok {
+					e.log.Error("error calculate updated range", "orig", cur.Range, "target", rng.LBA-1)
+					return fmt.Errorf("error calculating new range")
+				}
+
+				cur.Range = update
 			}
-			/*
-						} else if cur.Range.LBA < rng.LBA {
-							if cur.Range.Blocks > rng.Blocks {
-								// New range is making a hole in the current range, so
-								// we need to dup and put a new range afterward
-
-								dup := *cur
-								dup.Range = ExtentFrom(rng.Last()+1, cur.Range.Last())
-
-								toAdd = append(toAdd, &dup)
-							} else {
-								old := cur.Range
-								cur.Range = ExtentFrom(cur.Range.LBA, rng.LBA-1)
-								e.log.Trace("shrunk range", "old", old, "new", cur.Range)
-							}
-				} else if rng.Contains(cur.Range.Last()) {
-					// The new range is a superrange of the current one, so
-					// just nuke the current one.
-					toDelete = append(toDelete, i.Key())
-				} else {
-					// ok, they overlap with rng first and cur.Range second
-					// so we need to adjust where cur.Range starts.
-					pivot := rng.LBA + LBA(rng.Blocks)
-					cur.Range = ExtentFrom(pivot, cur.Range.Last())
-
-					toDelete = append(toDelete, i.Key())
-					toAdd = append(toAdd, cur)
-			*/
+			e.checkExtent(cur.Range)
+		default:
+			return fmt.Errorf("invalid coverage value: %s", coverage)
 		}
+
 	}
 
 loop2:
@@ -148,31 +138,53 @@ loop2:
 		cur := i.Value()
 		coverage := rng.Cover(cur.Range)
 
+		orig := cur.Range
+
+		e.log.Trace("considering",
+			"a", rng, "b", orig,
+			"a-sub-b", coverage,
+		)
+
 		switch coverage {
 		case CoverNone:
 			break loop2
 
-		case CoverCompletely:
+		case CoverSuperRange, CoverExact:
 			// our new range completely covers the exist one, so we delete it.
 			toDelete = append(toDelete, i.Key())
 		case CoverPartly:
 			old := cur.Range
 			pivot := rng.Last() + 1
-			cur.Range = ExtentFrom(pivot, cur.Range.Last())
+			update, ok := ExtentFrom(pivot, old.Last())
+			if !ok {
+				e.log.Error("error calculating new extent", "pivot", pivot, "old", old)
+				return fmt.Errorf("error calculating new extent")
+			}
+
+			cur.Range = update
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, cur)
 			e.log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Range)
+			e.checkExtent(cur.Range)
+		default:
+			return fmt.Errorf("invalid coverage value: %s", coverage)
 		}
+
 	}
 
 	for _, lba := range toDelete {
+		e.log.Trace("deleting range", "lba", lba)
 		e.m.Del(lba)
 	}
 
 	for _, pba := range toAdd {
+		e.checkExtent(pba.Range)
+		e.log.Trace("adding range", "rng", pba.Range)
 		e.m.Set(pba.Range.LBA, pba)
 	}
+
+	e.checkExtent(rng)
 
 	e.log.Trace("adding read range", "range", rng)
 	e.m.Set(rng.LBA, &RangedOPBA{
@@ -185,7 +197,7 @@ loop2:
 		Range: rng,
 	})
 
-	if mode.Debug() {
+	if false { // mode.Debug() {
 		e.log.Debug("validating map post update")
 		return e.Validate()
 	}
@@ -199,6 +211,15 @@ func (e *ExtentMap) Validate() error {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		lba := i.Key()
 		pba := i.Value()
+
+		if pba.Range.Blocks == 0 || pba.Full.Blocks == 0 {
+			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.Range.LBA)
+		}
+
+		if pba.Range.Blocks >= 1_000_000_000 {
+			e.log.Error("extremely large block range detected", "range", pba.Range)
+			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Range)
+		}
 
 		if lba != pba.Range.LBA {
 			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.Range.LBA)
@@ -222,7 +243,11 @@ func (e *ExtentMap) Render() string {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		pba := i.Value()
 
-		parts = append(parts, fmt.Sprintf("%d-%d", pba.Range.LBA, pba.Range.Last()))
+		if pba.Range.Blocks == 1 {
+			parts = append(parts, fmt.Sprintf("%d", pba.Range.LBA))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d-%d", pba.Range.LBA, pba.Range.Last()))
+		}
 	}
 
 	return strings.Join(parts, " ")
@@ -240,7 +265,7 @@ loop:
 		switch cur.Range.Cover(rng) {
 		case CoverPartly:
 			ret = append(ret, cur)
-		case CoverCompletely:
+		case CoverSuperRange, CoverExact:
 			ret = append(ret, cur)
 			break loop
 		case CoverNone:

@@ -29,6 +29,9 @@ type ObjectCreator struct {
 	log hclog.Logger
 	cnt int
 
+	totalBlocks  int
+	storageRatio float64
+
 	volName string
 
 	offset  uint64
@@ -51,6 +54,10 @@ func emptyBytes(b []byte) bool {
 	return bytes.Equal(b, emptyBlock[:len(b)])
 }
 
+func (o *ObjectCreator) TotalBlocks() int {
+	return o.totalBlocks
+}
+
 func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 	for i := 0; i < int(numBlocks); i++ {
 		lba := firstBlock + LBA(i)
@@ -66,10 +73,24 @@ func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 	return nil
 }
 
+func (o *ObjectCreator) BodySize() int {
+	return o.body.Len()
+}
+
+func (o *ObjectCreator) Entries() int {
+	return o.cnt
+}
+
+func (o *ObjectCreator) AvgStorageRatio() float64 {
+	return o.storageRatio / float64(o.cnt)
+}
+
 func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 	if o.buf == nil {
-		o.buf = make([]byte, len(ext.data))
+		o.buf = make([]byte, len(ext.data)*2)
 	}
+
+	o.totalBlocks += ext.Blocks()
 
 	if emptyBytes(ext.data) {
 		o.cnt++
@@ -81,6 +102,12 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 		})
 
 		return nil
+	}
+
+	bound := lz4.CompressBlockBound(len(ext.data))
+
+	if len(o.buf) < bound {
+		o.buf = make([]byte, bound)
 	}
 
 	sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
@@ -104,6 +131,8 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 
 		headerSz = 1
 	}
+
+	o.storageRatio += (float64(sz) / float64(len(ext.data)))
 
 	o.cnt++
 
@@ -174,6 +203,8 @@ func (o *ObjectCreator) Reset() {
 	o.extents = nil
 	o.cnt = 0
 	o.offset = 0
+	o.totalBlocks = 0
+	o.storageRatio = 0
 	o.header.Reset()
 	o.body.Reset()
 }
