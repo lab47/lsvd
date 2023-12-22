@@ -43,7 +43,7 @@ func TestObjectCreator(t *testing.T) {
 			data.data[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(47, data)
+		err = oc.WriteExtent(data.MapTo(47))
 		r.NoError(err)
 
 		_, err = f.Seek(0, io.SeekStart)
@@ -86,7 +86,7 @@ func TestObjectCreator(t *testing.T) {
 			data.data[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(47, data)
+		err = oc.WriteExtent(data.MapTo(47))
 		r.NoError(err)
 
 		readRequest := NewRangeData(Extent{48, 1})
@@ -127,7 +127,7 @@ func TestObjectCreator(t *testing.T) {
 			data.data[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(47, data)
+		err = oc.WriteExtent(data.MapTo(47))
 		r.NoError(err)
 
 		d2 := NewExtent(1)
@@ -135,7 +135,7 @@ func TestObjectCreator(t *testing.T) {
 			d2.data[i] = byte(i + 1)
 		}
 
-		err = oc.WriteExtent(48, d2)
+		err = oc.WriteExtent(d2.MapTo(48))
 		r.NoError(err)
 
 		req := NewRangeData(Extent{48, 2})

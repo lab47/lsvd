@@ -19,8 +19,7 @@ import (
 )
 
 type ocBlock struct {
-	lba          LBA
-	count        int
+	rng          Extent
 	flags        byte
 	size, offset uint64
 }
@@ -95,9 +94,7 @@ func (o *ObjectCreator) TotalBlocks() int {
 	return o.totalBlocks
 }
 
-func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
-	rng := Extent{LBA: firstBlock, Blocks: uint32(numBlocks)}
-
+func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
 	err := o.em.Update(rng, OPBA{})
 	if err != nil {
@@ -106,8 +103,7 @@ func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
 	o.cnt++
 
 	o.extents = append(o.extents, ocBlock{
-		lba:   firstBlock,
-		count: int(numBlocks),
+		rng:   rng,
 		flags: 2,
 	})
 
@@ -200,8 +196,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 			o.cnt++
 
 			o.extents = append(o.extents, ocBlock{
-				lba:   ext.LBA,
-				count: int(ext.Blocks),
+				rng:   ext,
 				flags: 2,
 			})
 
@@ -240,8 +235,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 		o.cnt++
 
 		o.extents = append(o.extents, ocBlock{
-			lba:    ext.LBA,
-			count:  int(ext.Blocks),
+			rng:    ext,
 			size:   uint64(headerSz + int(dataLen)),
 			offset: o.offset,
 		})
@@ -336,7 +330,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 	return ret, nil
 }
 
-func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
+func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 	if o.buf == nil {
 		o.buf = make([]byte, len(ext.data)*2)
 	}
@@ -345,9 +339,9 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 		o.em = NewExtentMap(o.log)
 	}
 
-	o.totalBlocks += ext.Blocks()
+	o.totalBlocks += int(ext.Extent.Blocks)
 
-	rng := Extent{firstBlock, uint32(ext.Blocks())}
+	rng := ext.Extent
 
 	var (
 		flags byte
@@ -359,8 +353,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 		o.cnt++
 
 		o.extents = append(o.extents, ocBlock{
-			lba:   firstBlock,
-			count: ext.Blocks(),
+			rng:   ext.Extent,
 			flags: 2,
 		})
 
@@ -407,8 +400,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 		o.cnt++
 
 		o.extents = append(o.extents, ocBlock{
-			lba:    firstBlock,
-			count:  ext.Blocks(),
+			rng:    ext.Extent,
 			size:   uint64(headerSz + sz),
 			offset: o.offset,
 		})
@@ -429,7 +421,7 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 	}
 
 	return o.writeLog(
-		Extent{firstBlock, uint32(ext.Blocks())},
+		ext.Extent,
 		flags,
 		len(ext.data),
 		data,
@@ -465,7 +457,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	buf := make([]byte, 16)
 
 	for _, blk := range o.extents {
-		lba := blk.lba
+		lba := blk.rng.LBA
 
 		sz := binary.PutUvarint(buf, uint64(lba))
 		_, err := o.header.Write(buf[:sz])
@@ -473,7 +465,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 			return nil, err
 		}
 
-		sz = binary.PutUvarint(buf, uint64(blk.count))
+		sz = binary.PutUvarint(buf, uint64(blk.rng.Blocks))
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
 			return nil, err
@@ -511,7 +503,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	for i, blk := range o.extents {
 		entries[i] = objectEntry{
-			lba: blk.lba,
+			lba: blk.rng.LBA,
 			pba: objPBA{
 				PBA: PBA{
 					Segment: seg,
@@ -520,7 +512,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 				Flags: blk.flags,
 				Size:  uint32(blk.size),
 			},
-			extent: Extent{LBA: blk.lba, Blocks: uint32(blk.count)},
+			extent: blk.rng,
 			opba: OPBA{
 				Segment: seg,
 				Offset:  dataBegin + uint32(blk.offset),

@@ -56,6 +56,13 @@ func (e *BlockData) CopyTo(data []byte) error {
 	return nil
 }
 
+func (e BlockData) MapTo(lba LBA) RangeData {
+	return RangeData{
+		Extent:    Extent{lba, uint32(e.Blocks())},
+		BlockData: e,
+	}
+}
+
 type segmentInfo struct {
 	f ObjectReader
 	m mmap.MMap
@@ -122,10 +129,6 @@ func RoundToBlockSize(sz int64) int64 {
 	}
 
 	return sz - diff
-}
-
-func (d *Disk) resolve(ext BlockData) []BlockData {
-	return nil
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
@@ -930,14 +933,14 @@ func (d *Disk) blockIsEmpty(lba LBA) bool {
 	return true
 }
 
-func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) error {
+func (d *Disk) ZeroBlocks(ctx context.Context, rng Extent) error {
 	iops.Inc()
-	blocksWritten.Add(float64(numBlocks))
+	blocksWritten.Add(float64(rng.Blocks))
 
-	return d.curOC.ZeroBlocks(firstBlock, numBlocks)
+	return d.curOC.ZeroBlocks(rng)
 }
 
-func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data BlockData) error {
+func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 	start := time.Now()
 
 	defer func() {
@@ -946,113 +949,7 @@ func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data BlockData) 
 
 	iops.Inc()
 
-	err := d.curOC.WriteExtent(firstBlock, data)
-	if err != nil {
-		d.log.Error("error write extents to object creator", "error", err)
-		return err
-	}
-
-	if d.curOC.BodySize() >= flushThreshHold {
-		d.log.Info("flushing new object",
-			"write-cache-size", d.curOffset,
-			"body-size", d.curOC.BodySize(),
-			"extents", d.curOC.Entries(),
-			"blocks", d.curOC.TotalBlocks(),
-			"storage-ratio", d.curOC.AvgStorageRatio(),
-		)
-		ch, err := d.closeSegmentAsync(ctx)
-		if err != nil {
-			return err
-		}
-
-		if mode.Debug() {
-			select {
-			case <-ch:
-				d.log.Debug("object has been flushed")
-			case <-ctx.Done():
-			}
-		}
-	}
-
-	return nil
-}
-
-func (d *Disk) WriteExtento(ctx context.Context, firstBlock LBA, data BlockData) error {
-	start := time.Now()
-
-	defer func() {
-		blocksWriteLatency.Observe(time.Since(start).Seconds())
-	}()
-
-	iops.Inc()
-
-	dw := d.wcBufWrite
-
-	numBlocks := data.Blocks()
-
-	blocksWritten.Add(float64(numBlocks))
-
-	for i := 0; i < numBlocks; i++ {
-		lba := firstBlock + LBA(i)
-
-		view := data.BlockView(i)
-
-		if emptyBytes(view) {
-			// We skip any blocks that are unused currently since we'll
-			// return them as zero when asked later.
-			if d.blockIsEmpty(lba) {
-				continue
-			}
-
-			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
-			if err != nil {
-				return err
-			}
-
-			err = binary.Write(dw, binary.BigEndian, uint64(lba))
-			if err != nil {
-				return err
-			}
-
-			d.curOffset += perBlockHeader
-
-			d.wcOffsets[lba] = math.MaxUint32
-
-			continue
-		}
-
-		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
-
-		err := binary.Write(dw, binary.BigEndian, crc)
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(dw, binary.BigEndian, uint64(lba))
-		if err != nil {
-			return err
-		}
-
-		n, err := dw.Write(view)
-		if err != nil {
-			return err
-		}
-
-		if n != BlockSize {
-			return fmt.Errorf("invalid write size (%d != %d)", n, BlockSize)
-		}
-
-		d.log.Trace("wrote block to write cache", "block", lba, "pba", d.curOffset)
-		d.wcOffsets[lba] = d.curOffset
-		d.curOffset += uint32(perBlockHeader + BlockSize)
-	}
-
-	err := d.wcBufWrite.Flush()
-	if err != nil {
-		d.log.Error("error flushing write cache buffer", "error", err)
-	}
-
-	err = d.curOC.WriteExtent(firstBlock, data)
+	err := d.curOC.WriteExtent(data)
 	if err != nil {
 		d.log.Error("error write extents to object creator", "error", err)
 		return err
@@ -1421,7 +1318,7 @@ loop:
 
 		d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
-		err = d.WriteExtent(ctx, LBA(lba), ExtentView(view))
+		err = d.WriteExtent(ctx, ExtentView(view).MapTo(LBA(lba)))
 		if err != nil {
 			return err
 		}
