@@ -47,16 +47,28 @@ type ObjectCreator struct {
 	em *ExtentMap
 }
 
-func NewObjectCreator(log hclog.Logger, vol string) *ObjectCreator {
-	return &ObjectCreator{
+func NewObjectCreator(log hclog.Logger, vol, path string) (*ObjectCreator, error) {
+	oc := &ObjectCreator{
 		log:     log,
 		volName: vol,
 		em:      NewExtentMap(log),
 	}
+
+	err := oc.OpenWrite(path)
+	if err != nil {
+		return nil, err
+	}
+
+	return oc, nil
 }
 
 func (o *ObjectCreator) OpenWrite(path string) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+
+	err = o.readLog(f)
 	if err != nil {
 		return err
 	}
@@ -112,61 +124,6 @@ func (o *ObjectCreator) Entries() int {
 
 func (o *ObjectCreator) AvgStorageRatio() float64 {
 	return o.storageRatio / float64(o.cnt)
-}
-
-type serializedExtent struct {
-	ext   Extent
-	empty bool
-
-	compressed bool
-	origSize   int
-	data       []byte
-
-	ratio float64
-}
-
-func (o *ObjectCreator) PrepareExtent(firstBlock LBA, ext BlockData) (*serializedExtent, error) {
-	if o.buf == nil {
-		o.buf = make([]byte, len(ext.data)*2)
-	}
-
-	o.totalBlocks += ext.Blocks()
-
-	rng := Extent{LBA: firstBlock, Blocks: uint32(ext.Blocks())}
-	if emptyBytes(ext.data) {
-		return &serializedExtent{
-			ext:   rng,
-			empty: true,
-		}, nil
-	}
-
-	bound := lz4.CompressBlockBound(len(ext.data))
-
-	if len(o.buf) < bound {
-		o.buf = make([]byte, bound)
-	}
-
-	sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if sz > 0 && sz < len(ext.data) {
-		return &serializedExtent{
-			ext:        rng,
-			compressed: true,
-			origSize:   len(ext.data),
-			data:       o.buf[:sz],
-			ratio:      (float64(sz) / float64(len(ext.data))),
-		}, nil
-	} else {
-		return &serializedExtent{
-			ext:      rng,
-			origSize: len(ext.data),
-			data:     ext.data,
-			ratio:    1,
-		}, nil
-	}
 }
 
 func (o *ObjectCreator) writeLog(
@@ -303,52 +260,6 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 	return nil
 }
 
-func (o *ObjectCreator) WritePrepared(se *serializedExtent) error {
-	o.totalBlocks += int(se.ext.Blocks)
-
-	if se.empty {
-		o.cnt++
-
-		o.extents = append(o.extents, ocBlock{
-			lba:   se.ext.LBA,
-			count: int(se.ext.Blocks),
-			flags: 2,
-		})
-
-		return nil
-	}
-
-	var headerSz int
-
-	if se.compressed {
-		o.body.WriteByte(1)
-		binary.Write(&o.body, binary.BigEndian, uint32(se.origSize))
-		o.body.Write(se.data)
-
-		headerSz = 1 + 4
-	} else {
-		o.body.WriteByte(0)
-		o.body.Write(se.data)
-
-		headerSz = 1
-	}
-
-	o.storageRatio += se.ratio
-
-	o.cnt++
-
-	o.extents = append(o.extents, ocBlock{
-		lba:    se.ext.LBA,
-		count:  int(se.ext.Blocks),
-		size:   uint64(headerSz + len(se.data)),
-		offset: o.offset,
-	})
-
-	o.offset += uint64(headerSz + len(se.data))
-
-	return nil
-}
-
 func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 	rng := data.Extent
 
@@ -375,7 +286,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 			continue
 		}
 
-		srcBytes := body[srcRng.Offset:] //  srcRng.Offset+srcRng.Size+5]
+		srcBytes := body[srcRng.Offset:]
 
 		var srcData []byte
 

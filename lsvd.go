@@ -38,11 +38,6 @@ type (
 		Extent
 	}
 
-	Extent struct {
-		LBA    LBA
-		Blocks uint32
-	}
-
 	SegmentId ulid.ULID
 )
 
@@ -200,9 +195,16 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	d.curOC, err = d.newObjectCreator()
+	err = d.restoreWriteCache(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if d.curOC == nil {
+		d.curOC, err = d.newObjectCreator()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	/*
@@ -221,72 +223,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		}
 	}
 
-	err = d.restoreWriteCache(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	return d, nil
-}
-
-func CompareExtent(log hclog.Logger) func(a, b Extent) bool {
-	var s func(a, b Extent) bool
-
-	s = func(a, b Extent) bool {
-		as, af := a.Range()
-		bs, bf := b.Range()
-
-		var result bool
-
-		// First, check if they're fully disjoint ranges
-		if af < bs {
-			// as af bs bf
-			result = true
-		} else if bf < as {
-			// bs bf as af
-			result = false
-		} else if as == bs {
-			if af == bf {
-				// as+bs af+bf
-				result = false
-			} else {
-				// a starts the same place, but is smaller
-				// as+bs af bf
-				result = af < bf
-			}
-		} else if as < bs {
-			if af < bf {
-				// They overlap, but a ends first.
-				// as bs af bf
-				result = true
-			} else {
-				// a is a superrange of b
-				// as bs bf af
-				result = false
-			}
-		} else {
-			if bf < af {
-				// bs as bf af
-				result = false
-			} else {
-				// b is a superrange of a
-				// bs as af bf
-				result = true
-			}
-		}
-
-		// if a ends before be begins, then yeah, it's less.
-		// otherwise, no.
-		//result := as <= bs && af < bs
-		//_ = af
-		//result := as < bs
-
-		log.Trace("comparing extents", "a", a, "b", b, "result", result)
-
-		return result
-	}
-
-	return s
 }
 
 type RangedOPBA struct {
@@ -297,14 +234,6 @@ type RangedOPBA struct {
 
 func (r *RangedOPBA) String() string {
 	return fmt.Sprintf("%s (%s): %s %d:%d", r.Range, r.Full, r.Segment, r.Offset, r.Size)
-}
-
-func (e Extent) Contains(lba LBA) bool {
-	return lba >= e.LBA && lba < (e.LBA+LBA(e.Blocks))
-}
-
-func (e Extent) Last() LBA {
-	return (e.LBA + LBA(e.Blocks) - 1)
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -332,53 +261,15 @@ var (
 )
 
 func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
-	oc := NewObjectCreator(d.log, d.volName)
-
 	seq, err := d.nextSeq()
 	if err != nil {
 		return nil, err
 	}
 
-	d.log.Info("setting creator log", "seq", seq.String())
-
 	d.curSeq = seq
 
-	err = oc.OpenWrite(filepath.Join(d.path, "writecache."+seq.String()))
-	if err != nil {
-		return nil, err
-	}
-
-	return oc, nil
-}
-
-func (d *Disk) nextLogo() error {
-	seq, err := d.nextSeq()
-	if err != nil {
-		return err
-	}
-
-	d.curSeq = seq
-
-	f, err := os.Create(filepath.Join(d.path, "writecache."+seq.String()))
-	if err != nil {
-		return err
-	}
-
-	d.writeCache = f
-	d.wcBufWrite = bufio.NewWriter(f)
-
-	ts := uint64(time.Now().Unix())
-
-	err = binary.Write(f, binary.BigEndian, SegmentHeader{
-		CreatedAt: ts,
-	})
-	if err != nil {
-		return err
-	}
-
-	d.curOffset = uint32(headerSize)
-
-	return nil
+	path := filepath.Join(d.path, "writecache."+seq.String())
+	return NewObjectCreator(d.log, d.volName, path)
 }
 
 func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
@@ -522,12 +413,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		}
 
 		finDur := time.Since(start)
-
-		//name := wc.f.Name()
-
-		//wc.f.Close()
-
-		//defer os.Remove(name)
 
 		d.log.Info("uploaded new object", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
 
@@ -676,64 +561,6 @@ func (c Cover) String() string {
 	}
 }
 
-func (e Extent) Range() (LBA, LBA) {
-	return e.LBA, e.LBA + LBA(e.Blocks) - 1
-}
-
-func (e Extent) Cover(y Extent) Cover {
-	es, ef := e.Range()
-	ys, yf := y.Range()
-
-	if ef < ys || yf < es {
-		return CoverNone
-	}
-
-	if es == ys && ef == yf {
-		return CoverExact
-	}
-
-	// es    ys     yf    ef
-	if es <= ys && ef >= yf {
-		// e is a superange of y
-		return CoverSuperRange
-	}
-
-	return CoverPartly
-}
-
-func (e Extent) Clamp(y Extent) (Extent, bool) {
-	es, ef := e.Range()
-	ys, yf := y.Range()
-
-	if ef < ys || yf < es {
-		return Extent{}, false
-	}
-
-	if es == ys && ef == yf {
-		return y, true
-	}
-
-	var start, end LBA
-
-	if ys <= es {
-		start = es
-	} else {
-		start = ys
-	}
-
-	if yf >= ef {
-		end = ef
-	} else {
-		end = yf
-	}
-
-	if start > end {
-		return Extent{}, false
-	}
-
-	return ExtentFrom(start, end)
-}
-
 func (d *Disk) computeOPBAs(rng Extent) ([]*RangedOPBA, error) {
 	d.lbaMu.Lock()
 	defer d.lbaMu.Unlock()
@@ -768,69 +595,6 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 	}
 
 	return remaining, nil
-
-	/*
-		var (
-			inHole   bool
-			nextHole Extent
-			holes    []Extent
-		)
-
-		for i := 0; i < int(rng.Blocks); i++ {
-			lba := rng.LBA + LBA(i)
-
-			view := data.BlockView(i)
-
-			if pba, ok := d.wcOffsets[lba]; ok {
-				if inHole {
-					holes = append(holes, nextHole)
-					inHole = false
-				}
-
-				if pba == math.MaxUint32 {
-					clear(view)
-				} else {
-					n, err := d.writeCache.ReadAt(view, int64(pba+perBlockHeader))
-					if err != nil {
-						d.log.Error("error reading data from write cache", "error", err, "pba", pba)
-						return nil, errors.Wrapf(err, "attempting to read from active (%d)", pba)
-					}
-
-					d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
-				}
-
-				continue
-			}
-
-			found, err := d.checkPrevCaches(lba, view)
-			if err != nil {
-				return nil, err
-			}
-
-			if found {
-				if inHole {
-					holes = append(holes, nextHole)
-					inHole = false
-				}
-				continue
-			}
-
-			if inHole {
-				nextHole.Blocks++
-			} else {
-				inHole = true
-				nextHole = Extent{LBA: lba, Blocks: 1}
-			}
-		}
-
-		// Catch a hole that runs off the end.
-		if inHole {
-			holes = append(holes, nextHole)
-		}
-
-		return holes, nil
-
-	*/
 }
 
 type readRequest struct {
@@ -1078,20 +842,6 @@ func (d *Disk) readOPBA(
 			return fmt.Errorf("error clamping range: %s => %s", ranged.Range, rng)
 		}
 
-		/*
-			destOff := (rng.LBA - dataRange.LBA) * BlockSize
-			srcOff := (rng.LBA - full.LBA) * BlockSize
-
-			d.log.Trace("fill read range",
-				"hole", rng, "obj", full, "data", dataRange,
-				"srcOff", srcOff, "srcEnd", srcOff+LBA(rng.Blocks*BlockSize),
-				"destOff", destOff,
-			)
-			dest := dest.data[destOff : destOff+LBA(rng.Blocks*BlockSize)]
-
-			src := rawData[srcOff : srcOff+LBA(rng.Blocks*BlockSize)]
-		*/
-
 		subSrc, ok := src.SubRange(rng)
 		if !ok {
 			d.log.Error("error calculate source subrange",
@@ -1130,10 +880,6 @@ func (d *Disk) readOPBA(
 	*/
 
 	return nil
-}
-
-func (e Extent) String() string {
-	return fmt.Sprintf("%d:%d", e.LBA, e.Blocks)
 }
 
 type PBA struct {
@@ -1189,164 +935,7 @@ func (d *Disk) ZeroBlocks(ctx context.Context, firstBlock LBA, numBlocks int64) 
 	blocksWritten.Add(float64(numBlocks))
 
 	return d.curOC.ZeroBlocks(firstBlock, numBlocks)
-
-	dw := d.wcBufWrite
-	defer d.wcBufWrite.Flush()
-
-	for i := int64(0); i < numBlocks; i++ {
-		lba := firstBlock + LBA(i)
-
-		// We skip any blocks that are currently empty since we don't need
-		// to re-zero them.
-		if d.blockIsEmpty(lba) {
-			continue
-		}
-
-		err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(dw, binary.BigEndian, uint64(lba))
-		if err != nil {
-			return err
-		}
-
-		d.curOffset += perBlockHeader
-
-		d.wcOffsets[lba] = math.MaxUint32
-
-		// Zero them one at a time in the object so that we take into account
-		// the above tracking logic to omit zeroing blocks that are already zero.
-		err = d.curOC.ZeroBlocks(lba, 1)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
-
-/*
-func (d *Disk) WriteExtentN(ctx context.Context, firstBlock LBA, data BlockData) error {
-	start := time.Now()
-
-	defer func() {
-		blocksWriteLatency.Observe(time.Since(start).Seconds())
-	}()
-
-	iops.Inc()
-
-	if d.writeCache == nil {
-		err := d.nextLog()
-		if err != nil {
-			return err
-		}
-	}
-
-	dw := d.wcBufWrite
-
-	numBlocks := data.Blocks()
-
-	blocksWritten.Add(float64(numBlocks))
-
-	se, err := d.curOC.PrepareExtent(firstBlock, data)
-	if err != nil {
-		d.log.Error("error preparing extent", "error", err)
-		return err
-	}
-
-	for i := 0; i < numBlocks; i++ {
-		lba := firstBlock + LBA(i)
-
-		view := data.BlockView(i)
-
-		if emptyBytes(view) {
-			// We skip any blocks that are unused currently since we'll
-			// return them as zero when asked later.
-			if d.blockIsEmpty(lba) {
-				continue
-			}
-
-			err := binary.Write(dw, binary.BigEndian, uint64(math.MaxUint64))
-			if err != nil {
-				return err
-			}
-
-			err = binary.Write(dw, binary.BigEndian, uint64(lba))
-			if err != nil {
-				return err
-			}
-
-			d.curOffset += perBlockHeader
-
-			d.wcOffsets[lba] = math.MaxUint32
-
-			continue
-		}
-
-		crc := crc64.Update(crcLBA(0, lba), crcTable, view)
-
-		err := binary.Write(dw, binary.BigEndian, crc)
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(dw, binary.BigEndian, uint64(lba))
-		if err != nil {
-			return err
-		}
-
-		n, err := dw.Write(view)
-		if err != nil {
-			return err
-		}
-
-		if n != BlockSize {
-			return fmt.Errorf("invalid write size (%d != %d)", n, BlockSize)
-		}
-
-		d.log.Trace("wrote block to write cache", "block", lba, "pba", d.curOffset)
-		d.wcOffsets[lba] = d.curOffset
-		d.curOffset += uint32(perBlockHeader + BlockSize)
-	}
-
-	err := d.wcBufWrite.Flush()
-	if err != nil {
-		d.log.Error("error flushing write cache buffer", "error", err)
-	}
-
-	err = d.curOC.WriteExtent(firstBlock, data)
-	if err != nil {
-		d.log.Error("error write extents to object creator", "error", err)
-		return err
-	}
-
-	if d.curOC.BodySize() >= flushThreshHold {
-		d.log.Info("flushing new object",
-			"write-cache-size", d.curOffset,
-			"body-size", d.curOC.BodySize(),
-			"extents", d.curOC.Entries(),
-			"blocks", d.curOC.TotalBlocks(),
-			"storage-ratio", d.curOC.AvgStorageRatio(),
-		)
-		ch, err := d.closeSegmentAsync(ctx)
-		if err != nil {
-			return err
-		}
-
-		if mode.Debug() {
-			select {
-			case <-ch:
-				d.log.Debug("object has been flushed")
-			case <-ctx.Done():
-			}
-		}
-	}
-
-	return nil
-}
-*/
 
 func (d *Disk) WriteExtent(ctx context.Context, firstBlock LBA, data BlockData) error {
 	start := time.Now()
@@ -1510,20 +1099,6 @@ func (d *Disk) rebuildFromObjects(ctx context.Context) error {
 	return nil
 }
 
-func segmentFromName(name string) (SegmentId, bool) {
-	_, intPart, ok := strings.Cut(name, ".")
-	if !ok {
-		return empty, false
-	}
-
-	data, err := ulid.Parse(intPart)
-	if err != nil {
-		return empty, false
-	}
-
-	return SegmentId(data), true
-}
-
 func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 	d.log.Info("rebuilding mappings from object", "id", seg)
 
@@ -1620,93 +1195,12 @@ func (d *Disk) restoreWriteCache(ctx context.Context) error {
 }
 
 func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0644)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-
-		return err
-	}
-
-	return d.curOC.readLog(f)
-
-	if d.writeCache != nil {
-		d.writeCache.Close()
-	}
-
-	d.writeCache = f
-	d.wcBufWrite = bufio.NewWriter(f)
-
-	var hdr SegmentHeader
-
-	err = binary.Read(f, binary.BigEndian, &hdr)
+	oc, err := NewObjectCreator(d.log, d.volName, path)
 	if err != nil {
 		return err
 	}
 
-	d.log.Debug("found orphan active log", "created-at", hdr.CreatedAt)
-
-	offset := uint32(headerSize)
-
-	view := make([]byte, BlockSize)
-
-	var numBlocks, zeroBlocks int
-
-	for {
-		var lba, crc uint64
-
-		err = binary.Read(f, binary.BigEndian, &crc)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return err
-		}
-
-		err = binary.Read(f, binary.BigEndian, &lba)
-		if err != nil {
-			return err
-		}
-
-		numBlocks++
-
-		// This indicates that it's an empty block
-		if crc == math.MaxUint64 {
-			zeroBlocks++
-			offset += perBlockHeader
-			d.wcOffsets[LBA(lba)] = math.MaxUint32
-
-			continue
-		}
-
-		n, err := io.ReadFull(f, view)
-		if err != nil {
-			return err
-		}
-
-		if n != BlockSize {
-			return fmt.Errorf("block incorrect size in log.active (%d)", n)
-		}
-
-		if crc != crc64.Update(crcLBA(0, LBA(lba)), crcTable, view) {
-			d.log.Warn("detected mis-match crc reloading log", "offset", offset)
-			break
-		}
-
-		d.log.Trace("restoring mapping", "lba", lba, "offset", offset)
-
-		d.wcOffsets[LBA(lba)] = offset
-
-		offset += uint32(perBlockHeader + BlockSize)
-	}
-
-	d.log.Info("restored data from write cache", "blocks", numBlocks, "zero-blocks", zeroBlocks)
-
-	if d.curOffset >= flushThreshHold {
-		_, err = d.closeSegmentAsync(ctx)
-		return err
-	}
+	d.curOC = oc
 
 	return nil
 }
