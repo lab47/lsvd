@@ -43,6 +43,22 @@ func TestExtent(t *testing.T) {
 		chk(e(28, 5), e(1, 32), e(28, 32))
 
 		chk(e(121667583, 1), e(121667583, 2), e(121667583, 1))
+	})
 
+	t.Run("sub", func(t *testing.T) {
+		r := require.New(t)
+
+		chk := func(lhs, rhs Extent, rest ...Extent) {
+			act, ok := lhs.Sub(rhs)
+			r.True(ok, "unable to sub %s - %s", lhs, rhs)
+			r.Equal(rest, act)
+		}
+
+		chk(e(1, 10), e(1, 1), e(2, 9))
+		chk(e(1, 10), e(2, 1), e(1, 1), e(3, 8))
+		chk(e(1, 10), e(9, 2), e(1, 8))
+		chk(e(1, 10), e(9, 1), e(1, 8), e(10, 1))
+
+		chk(e(10, 10), e(8, 3), e(11, 9))
 	})
 }

@@ -6,12 +6,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"hash/crc64"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
@@ -255,57 +255,59 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, d3, testExtent2)
 	})
 
-	t.Run("writes are written to a log file", func(t *testing.T) {
-		r := require.New(t)
+	/*
+		t.Run("writes are written to a log file", func(t *testing.T) {
+			r := require.New(t)
 
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
+			tmpdir, err := os.MkdirTemp("", "lsvd")
+			r.NoError(err)
+			defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
+			d, err := NewDisk(ctx, log, tmpdir)
+			r.NoError(err)
 
-		d.SeqGen = func() ulid.ULID {
-			return testUlid
-		}
+			d.SeqGen = func() ulid.ULID {
+				return testUlid
+			}
 
-		err = d.WriteExtent(ctx, 47, testExtent)
-		r.NoError(err)
+			err = d.WriteExtent(ctx, 47, testExtent)
+			r.NoError(err)
 
-		f, err := os.Open(filepath.Join(tmpdir, "writecache."+testUlid.String()))
-		r.NoError(err)
+			f, err := os.Open(filepath.Join(tmpdir, "writecache."+testUlid.String()))
+			r.NoError(err)
 
-		defer f.Close()
+			defer f.Close()
 
-		var hdr SegmentHeader
+			var hdr SegmentHeader
 
-		r.NoError(binary.Read(f, binary.BigEndian, &hdr))
+			r.NoError(binary.Read(f, binary.BigEndian, &hdr))
 
-		var lba, crc uint64
+			var lba, crc uint64
 
-		h := crc64.New(crc64.MakeTable(crc64.ECMA))
+			h := crc64.New(crc64.MakeTable(crc64.ECMA))
 
-		binary.Write(h, binary.BigEndian, uint64(0))
-		binary.Write(h, binary.BigEndian, uint64(0))
-		h.Write(empty[:])
-		binary.Write(h, binary.BigEndian, hdr.CreatedAt)
+			binary.Write(h, binary.BigEndian, uint64(0))
+			binary.Write(h, binary.BigEndian, uint64(0))
+			h.Write(empty[:])
+			binary.Write(h, binary.BigEndian, hdr.CreatedAt)
 
-		f.Seek(int64(headerSize), io.SeekStart)
+			f.Seek(int64(headerSize), io.SeekStart)
 
-		r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &crc))
-		r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &lba))
+			r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &crc))
+			r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &lba))
 
-		r.Equal(uint64(47), lba)
+			r.Equal(uint64(47), lba)
 
-		blk := NewExtent(1)
+			blk := NewExtent(1)
 
-		n, err := io.ReadFull(io.TeeReader(f, h), blk.BlockView(0))
-		r.NoError(err)
+			n, err := io.ReadFull(io.TeeReader(f, h), blk.BlockView(0))
+			r.NoError(err)
 
-		r.Equal(BlockSize, n)
+			r.Equal(BlockSize, n)
 
-		r.Equal(testExtent, blk)
-	})
+			r.Equal(testExtent, blk)
+		})
+	*/
 
 	t.Run("writes written out to an object", func(t *testing.T) {
 		r := require.New(t)
@@ -314,12 +316,10 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
-		d.SeqGen = func() ulid.ULID {
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return testUlid
-		}
+		}))
+		r.NoError(err)
 
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
@@ -416,12 +416,10 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
-		d.SeqGen = func() ulid.ULID {
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return testUlid
-		}
+		}))
+		r.NoError(err)
 
 		err = d.WriteExtent(ctx, 47, testRandX)
 		r.NoError(err)
@@ -500,12 +498,10 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
-		d.SeqGen = func() ulid.ULID {
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return testUlid
-		}
+		}))
+		r.NoError(err)
 
 		err = d.WriteExtent(ctx, 47, testEmptyX)
 		r.NoError(err)
@@ -606,8 +602,6 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
 
-		r.NotEmpty(d.wcOffsets)
-
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
@@ -627,8 +621,6 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
 
-		r.NotEmpty(d.wcOffsets)
-
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
@@ -645,12 +637,10 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
-		d.SeqGen = func() ulid.ULID {
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return testUlid
-		}
+		}))
+		r.NoError(err)
 
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
@@ -738,9 +728,6 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, 47, testExtent)
 		r.NoError(err)
 
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
-
 		r.NoError(d.Close(ctx))
 
 		d2, err := NewDisk(ctx, log, tmpdir)
@@ -769,12 +756,19 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.WriteExtent(ctx, 48, testExtent2))
 
+		t.Log("reloading disk hot")
+
 		disk2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		r.NotEmpty(disk2.wcOffsets)
+		d2, err := disk2.ReadExtent(ctx, Extent{48, 1})
+		r.NoError(err)
 
-		r.Equal(uint32(headerSize), disk2.wcOffsets[48])
+		blockEqual(t, testExtent2.data, d2.data)
+
+		//r.NotEmpty(disk2.wcOffsets)
+
+		//r.Equal(uint32(headerSize), disk2.wcOffsets[48])
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {
@@ -800,9 +794,7 @@ func TestLSVD(t *testing.T) {
 
 			blockEqual(t, d2.BlockView(0), testData)
 
-			d3 := NewExtent(1)
-
-			d3, err = d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
+			d3, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
 			blockEqual(t, d3.BlockView(0), testData)
@@ -880,6 +872,12 @@ func TestLSVD(t *testing.T) {
 			r.NoError(err)
 
 			r.NoError(d.Close(ctx))
+
+			ents, err := os.ReadDir(tmpdir)
+			r.NoError(err)
+			spew.Dump(ents)
+
+			t.Log("reopening disk")
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
@@ -1020,14 +1018,12 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
 		origSeq := ulid.MustNew(ulid.Now(), monoRead)
 
-		d.SeqGen = func() ulid.ULID {
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return origSeq
-		}
+		}))
+		r.NoError(err)
 
 		err = d.WriteExtent(ctx, 0, testExtent)
 		r.NoError(err)

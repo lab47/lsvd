@@ -1,9 +1,12 @@
 package lsvd
 
+import "github.com/oklog/ulid/v2"
+
 type opts struct {
 	sa         SegmentAccess
 	volName    string
 	autoCreate bool
+	seqGen     func() ulid.ULID
 }
 
 type Option func(o *opts)
@@ -23,5 +26,11 @@ func WithVolumeName(name string) Option {
 func AutoCreate(ok bool) Option {
 	return func(o *opts) {
 		o.autoCreate = ok
+	}
+}
+
+func WithSeqGen(f func() ulid.ULID) Option {
+	return func(o *opts) {
+		o.seqGen = f
 	}
 }

@@ -40,6 +40,31 @@ type ObjectCreator struct {
 	buf    []byte
 	header bytes.Buffer
 	body   bytes.Buffer
+
+	logF *os.File
+	logW *bufio.Writer
+
+	em *ExtentMap
+}
+
+func NewObjectCreator(log hclog.Logger, vol string) *ObjectCreator {
+	return &ObjectCreator{
+		log:     log,
+		volName: vol,
+		em:      NewExtentMap(log),
+	}
+}
+
+func (o *ObjectCreator) OpenWrite(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	o.logF = f
+	o.logW = bufio.NewWriter(f)
+
+	return nil
 }
 
 func emptyBytes(b []byte) bool {
@@ -59,16 +84,20 @@ func (o *ObjectCreator) TotalBlocks() int {
 }
 
 func (o *ObjectCreator) ZeroBlocks(firstBlock LBA, numBlocks int64) error {
-	for i := 0; i < int(numBlocks); i++ {
-		lba := firstBlock + LBA(i)
+	rng := Extent{LBA: firstBlock, Blocks: uint32(numBlocks)}
 
-		o.cnt++
-
-		o.extents = append(o.extents, ocBlock{
-			lba:   lba,
-			flags: 2,
-		})
+	// The empty size will signal that it's empty blocks.
+	err := o.em.Update(rng, OPBA{})
+	if err != nil {
+		return err
 	}
+	o.cnt++
+
+	o.extents = append(o.extents, ocBlock{
+		lba:   firstBlock,
+		count: int(numBlocks),
+		flags: 2,
+	})
 
 	return nil
 }
@@ -85,23 +114,30 @@ func (o *ObjectCreator) AvgStorageRatio() float64 {
 	return o.storageRatio / float64(o.cnt)
 }
 
-func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
+type serializedExtent struct {
+	ext   Extent
+	empty bool
+
+	compressed bool
+	origSize   int
+	data       []byte
+
+	ratio float64
+}
+
+func (o *ObjectCreator) PrepareExtent(firstBlock LBA, ext BlockData) (*serializedExtent, error) {
 	if o.buf == nil {
 		o.buf = make([]byte, len(ext.data)*2)
 	}
 
 	o.totalBlocks += ext.Blocks()
 
+	rng := Extent{LBA: firstBlock, Blocks: uint32(ext.Blocks())}
 	if emptyBytes(ext.data) {
-		o.cnt++
-
-		o.extents = append(o.extents, ocBlock{
-			lba:   firstBlock,
-			count: ext.Blocks(),
-			flags: 2,
-		})
-
-		return nil
+		return &serializedExtent{
+			ext:   rng,
+			empty: true,
+		}, nil
 	}
 
 	bound := lz4.CompressBlockBound(len(ext.data))
@@ -112,91 +148,381 @@ func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
 
 	sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
 	if err != nil {
+		return nil, err
+	}
+
+	if sz > 0 && sz < len(ext.data) {
+		return &serializedExtent{
+			ext:        rng,
+			compressed: true,
+			origSize:   len(ext.data),
+			data:       o.buf[:sz],
+			ratio:      (float64(sz) / float64(len(ext.data))),
+		}, nil
+	} else {
+		return &serializedExtent{
+			ext:      rng,
+			origSize: len(ext.data),
+			data:     ext.data,
+			ratio:    1,
+		}, nil
+	}
+}
+
+func (o *ObjectCreator) writeLog(
+	ext Extent,
+	flags byte,
+	origSize int,
+	data []byte,
+) error {
+	dw := o.logW
+	if err := binary.Write(dw, binary.BigEndian, ext); err != nil {
 		return err
 	}
 
-	var headerSz int
-
-	if sz > 0 && sz < len(ext.data) {
-		o.body.WriteByte(1)
-		binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
-		o.body.Write(o.buf[:sz])
-
-		headerSz = 1 + 4
-	} else {
-		o.body.WriteByte(0)
-		o.body.Write(ext.data)
-
-		sz = len(ext.data)
-
-		headerSz = 1
+	if err := dw.WriteByte(flags); err != nil {
+		return err
 	}
 
-	o.storageRatio += (float64(sz) / float64(len(ext.data)))
+	if err := binary.Write(dw, binary.BigEndian, uint32(origSize)); err != nil {
+		return err
+	}
 
-	o.cnt++
+	if err := binary.Write(dw, binary.BigEndian, uint32(len(data))); err != nil {
+		return err
+	}
 
-	o.extents = append(o.extents, ocBlock{
-		lba:    firstBlock,
-		count:  ext.Blocks(),
-		size:   uint64(headerSz + sz),
-		offset: o.offset,
-	})
+	if n, err := dw.Write(data); err != nil || n != len(data) {
+		if err != nil {
+			return err
+		}
 
-	o.offset += uint64(headerSz + sz)
+		return fmt.Errorf("short write to log: %d != %d", n, len(data))
+	}
 
-	return nil
+	return dw.Flush()
 }
 
-func (o *ObjectCreator) WriteExtento(firstBlock LBA, ext BlockData) error {
-	if o.buf == nil {
-		o.buf = make([]byte, 2*BlockSize)
-	}
-	for i := 0; i < ext.Blocks(); i++ {
-		lba := firstBlock + LBA(i)
+func (o *ObjectCreator) readLog(f *os.File) error {
+	o.log.Trace("rebuilding memory from log", "path", f.Name())
 
-		var flags byte
+	br := bufio.NewReader(f)
 
-		if emptyBytes(ext.BlockView(i)) {
+	for {
+		var (
+			ext      Extent
+			flags    byte
+			origSize uint32
+			dataLen  uint32
+			err      error
+		)
+
+		if err := binary.Read(br, binary.BigEndian, &ext); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
+			return err
+		}
+
+		if flags, err = br.ReadByte(); err != nil {
+			return err
+		}
+
+		if err := binary.Read(br, binary.BigEndian, &origSize); err != nil {
+			return err
+		}
+
+		if err := binary.Read(br, binary.BigEndian, &dataLen); err != nil {
+			return err
+		}
+
+		o.totalBlocks += int(ext.Blocks)
+
+		if flags == 2 {
 			o.cnt++
 
 			o.extents = append(o.extents, ocBlock{
-				lba:   lba,
+				lba:   ext.LBA,
+				count: int(ext.Blocks),
 				flags: 2,
 			})
+
+			// The empty size will signal that it's empty blocks.
+			err := o.em.Update(ext, OPBA{})
+			if err != nil {
+				return err
+			}
+
 			continue
 		}
 
-		sz, err := lz4.CompressBlock(ext.BlockView(i), o.buf, nil)
+		var headerSz int
+
+		if flags == 1 {
+			o.body.WriteByte(1)
+			binary.Write(&o.body, binary.BigEndian, uint32(origSize))
+
+			headerSz = 1 + 4
+		} else {
+			o.body.WriteByte(0)
+
+			headerSz = 1
+		}
+
+		n, err := io.CopyN(&o.body, br, int64(dataLen))
 		if err != nil {
 			return err
 		}
-
-		body := ext.BlockView(i)
-
-		if sz > 0 && sz < BlockSize {
-			body = o.buf[:sz]
-			flags = 1
+		if n != int64(dataLen) {
+			return fmt.Errorf("short copy: %d != %d", n, dataLen)
 		}
 
-		_, err = o.body.Write(body)
-		if err != nil {
-			return err
-		}
+		o.storageRatio += float64(dataLen) / float64(origSize)
 
 		o.cnt++
 
 		o.extents = append(o.extents, ocBlock{
-			lba:    lba,
-			size:   uint64(len(body)),
+			lba:    ext.LBA,
+			count:  int(ext.Blocks),
+			size:   uint64(headerSz + int(dataLen)),
 			offset: o.offset,
-			flags:  flags,
 		})
 
-		o.offset += uint64(len(body))
+		err = o.em.Update(ext, OPBA{
+			Offset: uint32(o.offset),
+			Size:   uint32(dataLen),
+		})
+		if err != nil {
+			return err
+		}
+
+		o.offset += uint64(headerSz + int(dataLen))
 	}
 
 	return nil
+}
+
+func (o *ObjectCreator) WritePrepared(se *serializedExtent) error {
+	o.totalBlocks += int(se.ext.Blocks)
+
+	if se.empty {
+		o.cnt++
+
+		o.extents = append(o.extents, ocBlock{
+			lba:   se.ext.LBA,
+			count: int(se.ext.Blocks),
+			flags: 2,
+		})
+
+		return nil
+	}
+
+	var headerSz int
+
+	if se.compressed {
+		o.body.WriteByte(1)
+		binary.Write(&o.body, binary.BigEndian, uint32(se.origSize))
+		o.body.Write(se.data)
+
+		headerSz = 1 + 4
+	} else {
+		o.body.WriteByte(0)
+		o.body.Write(se.data)
+
+		headerSz = 1
+	}
+
+	o.storageRatio += se.ratio
+
+	o.cnt++
+
+	o.extents = append(o.extents, ocBlock{
+		lba:    se.ext.LBA,
+		count:  int(se.ext.Blocks),
+		size:   uint64(headerSz + len(se.data)),
+		offset: o.offset,
+	})
+
+	o.offset += uint64(headerSz + len(se.data))
+
+	return nil
+}
+
+func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
+	rng := data.Extent
+
+	ranges, err := o.em.Resolve(rng)
+	if err != nil {
+		return nil, err
+	}
+
+	body := o.body.Bytes()
+
+	var ret []Extent
+
+	for _, srcRng := range ranges {
+		subDest, ok := data.SubRange(srcRng.Range)
+		if !ok {
+			o.log.Error("error calculating subrange")
+			return nil, fmt.Errorf("error calculating subrange")
+		}
+
+		ret = append(ret, subDest.Extent)
+
+		// It's a empty range
+		if srcRng.Size == 0 {
+			continue
+		}
+
+		srcBytes := body[srcRng.Offset:] //  srcRng.Offset+srcRng.Size+5]
+
+		var srcData []byte
+
+		if srcBytes[0] == 0 {
+			srcData = srcBytes[1 : 1+srcRng.Size]
+		} else {
+			origSize := binary.BigEndian.Uint32(srcBytes[1:])
+			srcBytes = srcBytes[5 : 5+srcRng.Size]
+
+			o.log.Trace("compressed range", "offset", srcRng.Offset, "sum", rangeSum(srcBytes))
+
+			if len(o.buf) < int(origSize) {
+				o.buf = make([]byte, origSize)
+			}
+
+			o.log.Trace("original size of compressed extent", "len", origSize)
+
+			n, err := lz4.UncompressBlock(srcBytes, o.buf)
+			if err != nil {
+				return nil, fmt.Errorf("error uncompressing (src=%d, dest=%d): %w", len(srcBytes), len(o.buf), err)
+			}
+
+			if n != int(origSize) {
+				return nil, fmt.Errorf("didn't fill destination (%d != %d)", n, origSize)
+			}
+
+			srcData = o.buf[:origSize]
+		}
+
+		src := RangeData{
+			Extent: srcRng.Full,
+			BlockData: BlockData{
+				blocks: int(srcRng.Size) / BlockSize,
+				data:   srcData,
+			},
+		}
+
+		subSrc, ok := src.SubRange(srcRng.Range)
+		if !ok {
+			o.log.Error("error calculating src subrange")
+			return nil, fmt.Errorf("error calculating src subrange")
+		}
+
+		copy(subDest.data, subSrc.data)
+	}
+
+	return ret, nil
+}
+
+func (o *ObjectCreator) WriteExtent(firstBlock LBA, ext BlockData) error {
+	if o.buf == nil {
+		o.buf = make([]byte, len(ext.data)*2)
+	}
+
+	if o.em == nil {
+		o.em = NewExtentMap(o.log)
+	}
+
+	o.totalBlocks += ext.Blocks()
+
+	rng := Extent{firstBlock, uint32(ext.Blocks())}
+
+	var (
+		flags byte
+		data  []byte
+	)
+
+	if emptyBytes(ext.data) {
+		flags = 2
+		o.cnt++
+
+		o.extents = append(o.extents, ocBlock{
+			lba:   firstBlock,
+			count: ext.Blocks(),
+			flags: 2,
+		})
+
+		// The empty size will signal that it's empty blocks.
+		err := o.em.Update(rng, OPBA{})
+		if err != nil {
+			return err
+		}
+	} else {
+		bound := lz4.CompressBlockBound(len(ext.data))
+
+		if len(o.buf) < bound {
+			o.buf = make([]byte, bound)
+		}
+
+		sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
+		if err != nil {
+			return err
+		}
+
+		var headerSz int
+
+		if sz > 0 && sz < len(ext.data) {
+			flags = 1
+			o.body.WriteByte(1)
+			binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
+
+			data = o.buf[:sz]
+			o.body.Write(o.buf[:sz])
+
+			headerSz = 1 + 4
+		} else {
+			o.body.WriteByte(0)
+			o.body.Write(ext.data)
+
+			data = ext.data
+			sz = len(ext.data)
+
+			headerSz = 1
+		}
+
+		o.storageRatio += (float64(sz) / float64(len(ext.data)))
+
+		o.cnt++
+
+		o.extents = append(o.extents, ocBlock{
+			lba:    firstBlock,
+			count:  ext.Blocks(),
+			size:   uint64(headerSz + sz),
+			offset: o.offset,
+		})
+
+		o.log.Trace("writing compressed range",
+			"offset", o.offset, "sum", rangeSum(data),
+			"size", sz)
+
+		err = o.em.Update(rng, OPBA{
+			Offset: uint32(o.offset),
+			Size:   uint32(sz),
+		})
+		if err != nil {
+			return err
+		}
+
+		o.offset += uint64(headerSz + sz)
+	}
+
+	return o.writeLog(
+		Extent{firstBlock, uint32(ext.Blocks())},
+		flags,
+		len(ext.data),
+		data,
+	)
 }
 
 func (o *ObjectCreator) Reset() {
@@ -220,8 +546,6 @@ type objectEntry struct {
 func (o *ObjectCreator) Flush(ctx context.Context,
 	sa SegmentAccess, seg SegmentId,
 ) ([]objectEntry, error) {
-	defer o.Reset()
-
 	start := time.Now()
 	defer func() {
 		segmentTime.Observe(time.Since(start).Seconds())
@@ -313,12 +637,12 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		return nil, err
 	}
 
-	_, err = io.Copy(f, &o.header)
+	_, err = io.Copy(f, bytes.NewReader(o.header.Bytes()))
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = io.Copy(f, &o.body)
+	_, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +652,16 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	err = sa.AppendToObjects(ctx, o.volName, seg)
 	if err != nil {
 		return nil, err
+	}
+
+	if o.logF != nil {
+		o.logF.Close()
+
+		o.log.Trace("removing log file", "name", o.logF.Name())
+		err = os.Remove(o.logF.Name())
+		if err != nil {
+			o.log.Error("error removing log file", "error", err)
+		}
 	}
 
 	return entries, nil
