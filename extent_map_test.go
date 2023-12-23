@@ -422,6 +422,28 @@ func TestExtentMap(t *testing.T) {
 		r.Equal(uint32(1), pbas[0].Offset)
 	})
 
+	t.Run("resolves a range that starts before the lba", func(t *testing.T) {
+		r := require.New(t)
+
+		m := NewExtentMap(log)
+
+		err := m.Update(Extent{1, 1}, OPBA{
+			Offset: 1,
+		})
+		r.NoError(err)
+
+		r.Equal(1, m.m.Len())
+
+		t.Log(m.Render())
+
+		pbas, err := m.Resolve(Extent{0, 5})
+		r.NoError(err)
+
+		r.Len(pbas, 1)
+
+		r.Equal(uint32(1), pbas[0].Offset)
+	})
+
 	t.Run("tc", func(t *testing.T) {
 		r := require.New(t)
 

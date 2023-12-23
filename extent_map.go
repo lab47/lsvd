@@ -258,6 +258,11 @@ func (e *ExtentMap) Resolve(rng Extent) ([]*RangedOPBA, error) {
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
+		// Only consider ranges that start before the requested one
+		if i.Key() >= rng.LBA {
+			break
+		}
+
 		cur := i.Value()
 
 		e.log.Trace("consider for resolve", "cur", cur.Range, "against", rng)
@@ -271,6 +276,33 @@ loop:
 		case CoverNone:
 			break loop
 		}
+	}
+
+loop2:
+	// Also check for ranges that start higher to be considered
+	for i := e.m.LowerBound(rng.LBA); i.Valid(); i.Next() {
+		cur := i.Value()
+		coverage := cur.Range.Cover(rng)
+
+		orig := cur.Range
+
+		e.log.Trace("considering",
+			"a", rng, "b", orig,
+			"a-sub-b", coverage,
+		)
+
+		switch coverage {
+		case CoverNone:
+			break loop2
+		case CoverSuperRange, CoverExact:
+			ret = append(ret, cur)
+			break loop2
+		case CoverPartly:
+			ret = append(ret, cur)
+		default:
+			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
+		}
+
 	}
 
 	return ret, nil

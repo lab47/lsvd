@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
@@ -93,7 +94,8 @@ func TestLSVD(t *testing.T) {
 
 	testUlid := ulid.MustNew(ulid.Now(), rand.Reader)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	t.Run("reads with no data return zeros", func(t *testing.T) {
 		r := require.New(t)
@@ -1142,6 +1144,109 @@ func TestLSVD(t *testing.T) {
 
 		extentEqual(t, d2, testEmptyX)
 	})
+
+	t.Run("can use the write cache while currently uploading", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		var sa slowLocal
+
+		sa.Dir = tmpdir
+		sa.wait = make(chan struct{})
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSegmentAccess(&sa))
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testRandX.MapTo(0))
+		r.NoError(err)
+
+		_, err = d.closeSegmentAsync(ctx)
+		r.NoError(err)
+
+		time.Sleep(100 * time.Millisecond)
+
+		r.True(sa.waiting)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, d2, testRandX)
+	})
+
+	t.Run("reads partly from both write caches and an object", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		var sa slowLocal
+
+		sa.Dir = tmpdir
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSegmentAccess(&sa))
+		r.NoError(err)
+
+		data := NewRangeData(Extent{0, 10})
+		_, err = io.ReadFull(rand.Reader, data.data)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, data)
+		r.NoError(err)
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testRandX.MapTo(0))
+		r.NoError(err)
+
+		sa.wait = make(chan struct{})
+
+		_, err = d.closeSegmentAsync(ctx)
+		r.NoError(err)
+
+		time.Sleep(100 * time.Millisecond)
+
+		r.True(sa.waiting)
+
+		err = d.WriteExtent(ctx, testExtent.MapTo(1))
+		r.NoError(err)
+
+		t.Log("performing read")
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
+		r.NoError(err)
+
+		blockEqual(t, testRandX.data, d2.data[:BlockSize])
+		blockEqual(t, testExtent.data, d2.data[BlockSize:BlockSize*2])
+		blockEqual(t,
+			data.data[BlockSize*2:BlockSize*4],
+			d2.data[BlockSize*2:BlockSize*4],
+		)
+	})
+}
+
+type slowLocal struct {
+	LocalFileAccess
+	waiting bool
+	wait    chan struct{}
+}
+
+func (s *slowLocal) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
+	s.waiting = true
+
+	if s.wait != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.wait:
+			// ok
+		}
+	}
+
+	return s.LocalFileAccess.WriteSegment(ctx, seg)
 }
 
 func emptyBytesI(b []byte) bool {

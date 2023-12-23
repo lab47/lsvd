@@ -197,8 +197,13 @@ func (e Extent) SubMany(subs []Extent) ([]Extent, bool) {
 		if suffix.Valid() {
 			considering = suffix
 		} else {
+			considering = Extent{}
 			break
 		}
+	}
+
+	if considering.Valid() {
+		holes = append(holes, considering)
 	}
 
 	return holes, true

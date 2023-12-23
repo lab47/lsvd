@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lab47/lsvd/pkg/list"
 	"github.com/lab47/mode"
 
 	"github.com/edsrzf/mmap-go"
@@ -95,8 +94,9 @@ type Disk struct {
 	size    int64
 	volName string
 
-	prevCacheMu sync.Mutex
-	prevCache   list.List[*ObjectCreator]
+	prevCacheMu   sync.Mutex
+	prevCacheCond *sync.Cond
+	prevCache     *ObjectCreator
 
 	curSeq ulid.ULID
 
@@ -175,6 +175,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		volName:   o.volName,
 		SeqGen:    o.seqGen,
 	}
+
+	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
 
 	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
 		256, func(key SegmentId, value ObjectReader) {
@@ -276,7 +278,10 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	}
 
 	d.prevCacheMu.Lock()
-	elem := d.prevCache.PushFront(oc)
+	for d.prevCache != nil {
+		d.prevCacheCond.Wait()
+	}
+	d.prevCache = oc
 	d.prevCacheMu.Unlock()
 
 	done := make(chan struct{})
@@ -350,14 +355,11 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		d.lbaMu.Unlock()
 
 		d.prevCacheMu.Lock()
-		found := d.prevCache.Remove(elem) != nil
+		d.prevCache = nil
+		d.prevCacheCond.Signal()
 		d.prevCacheMu.Unlock()
 
 		mapDur := time.Since(mapStart)
-
-		if !found {
-			d.log.Warn("unable to find cache in prev caches when removing")
-		}
 
 		if mode.Debug() {
 			passed := 0
@@ -509,14 +511,62 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 		return nil, err
 	}
 
+	var remaining []Extent
+
+	d.log.Trace("write cache used", "request", data.Extent, "used", used, "full", d.curOC.em.Render())
+
 	if len(used) == 0 {
-		return []Extent{data.Extent}, nil
+		remaining = []Extent{data.Extent}
+	} else {
+		var ok bool
+		remaining, ok = data.SubMany(used)
+		if !ok {
+			return nil, fmt.Errorf("internal error calculating remaining extents")
+		}
 	}
 
-	remaining, ok := data.SubMany(used)
-	if !ok {
-		return nil, fmt.Errorf("internal error calculating remaining extents")
+	d.log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+
+	return d.fillingFromPrevWriteCache(ctx, data, remaining)
+}
+
+func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, holes []Extent) ([]Extent, error) {
+	d.prevCacheMu.Lock()
+	defer d.prevCacheMu.Unlock()
+
+	oc := d.prevCache
+
+	if oc == nil {
+		return holes, nil
 	}
+
+	var remaining []Extent
+
+	for _, sub := range holes {
+		sr, ok := data.SubRange(sub)
+		if !ok {
+			return nil, fmt.Errorf("error calculating subrange")
+		}
+
+		used, err := oc.FillExtent(sr)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(used) == 0 {
+			remaining = append(remaining, sub)
+		} else {
+
+			res, ok := sub.SubMany(used)
+			if !ok {
+				return nil, fmt.Errorf("error subtracting partial holes")
+			}
+
+			remaining = append(remaining, res...)
+		}
+	}
+
+	d.log.Trace("write cache didn't find", "input", holes, "holes", remaining)
 
 	return remaining, nil
 }

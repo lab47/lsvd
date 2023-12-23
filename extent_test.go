@@ -72,6 +72,10 @@ func TestExtent(t *testing.T) {
 		res, ok = e(0, 10).SubMany([]Extent{e(8, 2), e(2, 1), e(1, 1)})
 		r.True(ok)
 		r.Equal([]Extent{e(0, 1), e(3, 5)}, res)
+
+		res, ok = e(0, 4).SubMany([]Extent{e(1, 1)})
+		r.True(ok)
+		r.Equal([]Extent{e(0, 1), e(2, 2)}, res)
 	})
 
 	t.Run("mask", func(t *testing.T) {

@@ -274,6 +274,8 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 		return nil, err
 	}
 
+	o.log.Trace("filling extent", "ranges", ranges, o.em.Render())
+
 	body := o.body.Bytes()
 
 	var ret []Extent
@@ -284,6 +286,12 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 			o.log.Error("error calculating subrange")
 			return nil, fmt.Errorf("error calculating subrange")
 		}
+
+		o.log.Trace("calculating relevant ranges",
+			"data", rng,
+			"src", srcRng.Range,
+			"dest", subDest.Extent,
+		)
 
 		ret = append(ret, subDest.Extent)
 
