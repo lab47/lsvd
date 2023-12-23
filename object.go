@@ -282,6 +282,8 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		srcBytes := body[srcRng.Offset:]
 
+		o.log.Trace("reading partial from write cache", "rng", srcRng.Range, "dest", subDest.Extent)
+
 		var srcData []byte
 
 		if srcBytes[0] == 0 {
@@ -318,13 +320,17 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 			},
 		}
 
-		subSrc, ok := src.SubRange(srcRng.Range)
+		subSrc, ok := src.SubRange(subDest.Extent)
 		if !ok {
 			o.log.Error("error calculating src subrange")
 			return nil, fmt.Errorf("error calculating src subrange")
 		}
 
-		copy(subDest.data, subSrc.data)
+		o.log.Trace("mapping src range", "rng", subSrc.Extent)
+
+		n := copy(subDest.data, subSrc.data)
+
+		o.log.Trace("copied range", "bytes", n, "blocks", n/BlockSize)
 	}
 
 	return ret, nil

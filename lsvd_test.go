@@ -130,6 +130,60 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, d2, testRandX)
 	})
 
+	t.Run("can read from across writes from the write cache", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		data := NewRangeData(Extent{0, 10})
+		_, err = io.ReadFull(rand.Reader, data.data)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, data)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testRandX.MapTo(1))
+		r.NoError(err)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
+		r.NoError(err)
+
+		n := d2.data
+		blockEqual(t, data.data[:BlockSize], n[:BlockSize])
+		n = n[BlockSize:]
+		blockEqual(t, testRandX.data[:BlockSize], n[:BlockSize])
+		n = n[BlockSize:]
+		blockEqual(t, data.data[BlockSize*2:BlockSize*4], n)
+	})
+
+	t.Run("can read the middle of an write cache range", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		data := NewRangeData(Extent{1, 19})
+		_, err = io.ReadFull(rand.Reader, data.data)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, data)
+		r.NoError(err)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 4, Blocks: 8})
+		r.NoError(err)
+
+		blockEqual(t, data.data[BlockSize*3:BlockSize*11], d2.data)
+	})
+
 	t.Run("can read from objects", func(t *testing.T) {
 		r := require.New(t)
 

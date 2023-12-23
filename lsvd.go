@@ -33,11 +33,6 @@ type (
 		data   []byte
 	}
 
-	RangeData struct {
-		BlockData
-		Extent
-	}
-
 	SegmentId ulid.ULID
 )
 
@@ -332,8 +327,11 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		if mode.Debug() {
 			sums = map[Extent]string{}
 
+			var data RangeData
+
 			for _, ent := range entries {
-				data := NewRangeData(ent.extent)
+				data.Reset(ent.extent)
+
 				_, err := oc.FillExtent(data)
 				if err != nil {
 					d.log.Error("error reading extent for validation", "error", err)
@@ -446,32 +444,6 @@ func NewExtent(sz int) BlockData {
 	}
 }
 
-func NewRangeData(ext Extent) RangeData {
-	return RangeData{
-		BlockData: BlockData{
-			blocks: int(ext.Blocks),
-			data:   make([]byte, BlockSize*ext.Blocks),
-		},
-		Extent: ext,
-	}
-}
-
-func (r RangeData) SubRange(ext Extent) (RangeData, bool) {
-	ext, ok := r.Clamp(ext)
-	if !ok {
-		return RangeData{}, false
-	}
-
-	byteOffset := (ext.LBA - r.LBA) * BlockSize
-	byteEnd := byteOffset + LBA(ext.Blocks*BlockSize)
-
-	q := RangeData{Extent: ext}
-	q.blocks = int(ext.Blocks)
-	q.data = r.data[byteOffset:byteEnd]
-
-	return q, true
-}
-
 func ExtentView(blk []byte) BlockData {
 	cnt := len(blk) / BlockSize
 	if cnt < 0 || len(blk)%BlockSize != 0 {
@@ -582,19 +554,9 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 		return []Extent{data.Extent}, nil
 	}
 
-	var remaining []Extent
-
-	for _, rng := range used {
-		// Perfect! No holes!
-		if rng == data.Extent {
-			continue
-		}
-
-		holes, ok := data.Sub(rng)
-		if !ok {
-			return nil, fmt.Errorf("error calculating remaining ranges: %s / %s", data.Extent, rng)
-		}
-		remaining = append(remaining, holes...)
+	remaining, ok := data.SubMany(used)
+	if !ok {
+		return nil, fmt.Errorf("internal error calculating remaining extents")
 	}
 
 	return remaining, nil

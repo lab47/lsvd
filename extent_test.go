@@ -61,4 +61,28 @@ func TestExtent(t *testing.T) {
 
 		chk(e(10, 10), e(8, 3), e(11, 9))
 	})
+
+	t.Run("sub_many", func(t *testing.T) {
+		r := require.New(t)
+
+		res, ok := e(0, 10).SubMany([]Extent{e(1, 1), e(2, 1), e(8, 2)})
+		r.True(ok)
+		r.Equal([]Extent{e(0, 1), e(3, 5)}, res)
+
+		res, ok = e(0, 10).SubMany([]Extent{e(8, 2), e(2, 1), e(1, 1)})
+		r.True(ok)
+		r.Equal([]Extent{e(0, 1), e(3, 5)}, res)
+	})
+
+	t.Run("mask", func(t *testing.T) {
+		r := require.New(t)
+
+		m := Extent{0, 4}.StartMask()
+
+		r.NoError(m.Cover(Extent{0, 1}))
+		r.NoError(m.Cover(Extent{1, 19}))
+
+		holes := m.Holes()
+		r.Len(holes, 0)
+	})
 }
