@@ -724,7 +724,6 @@ func TestLSVD(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
-		r.Empty(d.wcOffsets)
 		d.lba2pba.m.Clear()
 
 		r.NoError(d.rebuildFromObjects(ctx))

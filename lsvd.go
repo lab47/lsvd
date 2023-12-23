@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash/crc64"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -97,13 +96,9 @@ type Disk struct {
 	volName string
 
 	prevCacheMu sync.Mutex
-	prevCache   list.List[*writeCache]
+	prevCache   list.List[*ObjectCreator]
 
-	curSeq     ulid.ULID
-	writeCache *os.File
-	wcOffsets  map[LBA]uint32
-	curOffset  uint32
-	wcBufWrite *bufio.Writer
+	curSeq ulid.ULID
 
 	lbaMu   sync.Mutex
 	lba2pba *ExtentMap
@@ -176,7 +171,6 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		size:      sz,
 		lba2pba:   NewExtentMap(log),
 		readCache: dc,
-		wcOffsets: make(map[LBA]uint32),
 		sa:        o.sa,
 		volName:   o.volName,
 		SeqGen:    o.seqGen,
@@ -281,18 +275,9 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		return nil, err
 	}
 
-	wc := &writeCache{
-		f: d.writeCache,
-		m: d.wcOffsets,
-	}
-
 	d.prevCacheMu.Lock()
-	elem := d.prevCache.PushFront(wc)
+	elem := d.prevCache.PushFront(oc)
 	d.prevCacheMu.Unlock()
-
-	d.curOffset = 0
-	d.wcOffsets = make(map[LBA]uint32)
-	d.writeCache = nil
 
 	done := make(chan struct{})
 
@@ -485,32 +470,6 @@ type LBA uint64
 const perBlockHeader = 16
 
 var emptyBlock = make([]byte, BlockSize)
-
-func (d *Disk) checkPrevCaches(lba LBA, view []byte) (bool, error) {
-	d.prevCacheMu.Lock()
-	defer d.prevCacheMu.Unlock()
-
-	for e := d.prevCache.Front(); e != nil; e = e.Next() {
-		wc := e.Value
-
-		if pba, ok := wc.m[lba]; ok {
-			if pba == math.MaxUint32 {
-				clear(view)
-			} else {
-				n, err := wc.f.ReadAt(view, int64(pba+perBlockHeader))
-				if err != nil {
-					d.log.Error("error reading data from write cache", "error", err, "pba", pba)
-					return false, errors.Wrapf(err, "attempting to read from active (%d)", pba)
-				}
-
-				d.log.Trace("reading block from write cache", "block", lba, "pba", pba, "size", n)
-			}
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
 
 type Cover int
 
@@ -871,30 +830,6 @@ func crcLBA(crc uint64, lba LBA) uint64 {
 	return crc64.Update(crc, crcTable, a[:])
 }
 
-func (d *Disk) blockIsEmpty(lba LBA) bool {
-	// We skip any blocks that are unused currently since we'll
-	// return them as zero when asked later.
-	if pba, tracking := d.wcOffsets[lba]; tracking {
-		// If we're tracking it and it has a valid offset in the write cache,
-		// then it's not empty.
-		if pba != math.MaxUint32 {
-			return false
-		}
-	}
-
-	ropbas, err := d.lba2pba.Resolve(Extent{lba, 1})
-	if err != nil {
-		d.log.Error("error resolving in blockIsEmpty", "error", err, "lba", lba)
-		return false
-	}
-
-	if len(ropbas) != 0 {
-		return ropbas[0].Size == 0
-	}
-
-	return true
-}
-
 func (d *Disk) ZeroBlocks(ctx context.Context, rng Extent) error {
 	iops.Inc()
 	blocksWritten.Add(float64(rng.Blocks))
@@ -919,7 +854,6 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 
 	if d.curOC.BodySize() >= flushThreshHold {
 		d.log.Info("flushing new object",
-			"write-cache-size", d.curOffset,
 			"body-size", d.curOC.BodySize(),
 			"extents", d.curOC.Entries(),
 			"blocks", d.curOC.TotalBlocks(),
@@ -1024,8 +958,8 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 func (d *Disk) SyncWriteCache() error {
 	iops.Inc()
 
-	if d.writeCache != nil {
-		return d.writeCache.Sync()
+	if d.curOC != nil {
+		return d.curOC.Sync()
 	}
 
 	return nil

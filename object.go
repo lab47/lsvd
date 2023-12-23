@@ -61,6 +61,18 @@ func NewObjectCreator(log hclog.Logger, vol, path string) (*ObjectCreator, error
 	return oc, nil
 }
 
+func (o *ObjectCreator) Sync() error {
+	if o.logW != nil {
+		o.logW.Flush()
+	}
+
+	if o.logF != nil {
+		return o.logF.Sync()
+	}
+
+	return nil
+}
+
 func (o *ObjectCreator) OpenWrite(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
