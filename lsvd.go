@@ -513,7 +513,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 
 	var remaining []Extent
 
-	d.log.Trace("write cache used", "request", data.Extent, "used", used, "full", d.curOC.em.Render())
+	d.log.Trace("write cache used", "request", data.Extent, "used", used)
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -754,7 +754,8 @@ func (d *Disk) readOPBA(
 		openSegments.Inc()
 	}
 
-	rawData := make([]byte, addr.Size)
+	rawData := buffers.Get(int(addr.Size))
+	defer buffers.Return(rawData)
 
 	n, err := ci.ReadAt(rawData, int64(addr.Offset))
 	if err != nil {
@@ -762,6 +763,7 @@ func (d *Disk) readOPBA(
 	}
 
 	if n != len(rawData) {
+		d.log.Error("didn't read full data", "read", n, "expected", len(rawData), "size", addr.Size)
 		return fmt.Errorf("short read detected")
 	}
 
@@ -771,7 +773,8 @@ func (d *Disk) readOPBA(
 	case 1:
 		sz := binary.BigEndian.Uint32(rawData[1:])
 
-		uncomp := make([]byte, sz)
+		uncomp := buffers.Get(int(sz))
+		defer buffers.Return(uncomp)
 
 		n, err := lz4.UncompressBlock(rawData[5:], uncomp)
 		if err != nil {
@@ -1246,7 +1249,8 @@ loop:
 		if view[0] == 1 {
 			sz := binary.BigEndian.Uint32(view[1:])
 
-			uncomp := make([]byte, sz)
+			uncomp := buffers.Get(int(sz))
+			defer buffers.Return(uncomp)
 
 			n, err := lz4.UncompressBlock(view[5:], uncomp)
 			if err != nil {

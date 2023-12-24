@@ -44,6 +44,8 @@ type ObjectCreator struct {
 	logW *bufio.Writer
 
 	em *ExtentMap
+
+	comp lz4.Compressor
 }
 
 func NewObjectCreator(log hclog.Logger, vol, path string) (*ObjectCreator, error) {
@@ -274,8 +276,6 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 		return nil, err
 	}
 
-	o.log.Trace("filling extent", "ranges", ranges, o.em.Render())
-
 	body := o.body.Bytes()
 
 	var ret []Extent
@@ -312,7 +312,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 			origSize := binary.BigEndian.Uint32(srcBytes[1:])
 			srcBytes = srcBytes[5 : 5+srcRng.Size]
 
-			o.log.Trace("compressed range", "offset", srcRng.Offset, "sum", rangeSum(srcBytes))
+			o.log.Trace("compressed range", "offset", srcRng.Offset)
 
 			if len(o.buf) < int(origSize) {
 				o.buf = make([]byte, origSize)
@@ -395,7 +395,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 			o.buf = make([]byte, bound)
 		}
 
-		sz, err := lz4.CompressBlock(ext.data, o.buf, nil)
+		sz, err := o.comp.CompressBlock(ext.data, o.buf)
 		if err != nil {
 			return err
 		}
@@ -432,7 +432,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		})
 
 		o.log.Trace("writing compressed range",
-			"offset", o.offset, "sum", rangeSum(data),
+			"offset", o.offset,
 			"size", sz)
 
 		err = o.em.Update(rng, OPBA{

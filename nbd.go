@@ -6,6 +6,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/pkg/nbd"
+	"github.com/lab47/mode"
 	"github.com/mr-tron/base58"
 )
 
@@ -69,7 +70,9 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 		return 0, err
 	}
 
-	logBlocks(n.log, "read block sums", blk, b)
+	if mode.Debug() {
+		logBlocks(n.log, "read block sums", blk, b)
+	}
 
 	err = data.CopyTo(b)
 	if err != nil {
@@ -90,7 +93,9 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 
 	blk := LBA(off / BlockSize)
 
-	logBlocks(n.log, "write block sums", blk, b)
+	if mode.Debug() {
+		logBlocks(n.log, "write block sums", blk, b)
+	}
 
 	err = n.d.WriteExtent(n.ctx, ext.MapTo(blk))
 	if err != nil {
