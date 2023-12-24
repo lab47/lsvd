@@ -75,6 +75,10 @@ func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 		}
 	}
 
+	if n != len(dest) {
+		return 0, fmt.Errorf("unable to read data from S3 (expected %d, got %d", len(dest), n)
+	}
+
 	return n, err
 }
 
