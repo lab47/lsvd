@@ -465,9 +465,6 @@ func (o *ObjectCreator) Reset() {
 }
 
 type objectEntry struct {
-	lba LBA
-	pba objPBA
-
 	extent Extent
 	opba   OPBA
 }
@@ -529,15 +526,6 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	for i, blk := range o.extents {
 		entries[i] = objectEntry{
-			lba: blk.rng.LBA,
-			pba: objPBA{
-				PBA: PBA{
-					Segment: seg,
-					Offset:  dataBegin + uint32(blk.offset),
-				},
-				Flags: blk.flags,
-				Size:  uint32(blk.size),
-			},
 			extent: blk.rng,
 			opba: OPBA{
 				Segment: seg,

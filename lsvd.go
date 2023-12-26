@@ -63,24 +63,10 @@ type segmentInfo struct {
 	m mmap.MMap
 }
 
-type objPBA struct {
-	PBA
-
-	Flags byte
-	Size  uint32
-}
-
 const (
 	flushThreshHold = 15 * 1024 * 1024
 	maxWriteCache   = 100 * 1024 * 1024
 )
-
-type writeCache struct {
-	f *os.File
-	m map[LBA]uint32
-
-	next *writeCache
-}
 
 type OPBA struct {
 	Segment SegmentId
@@ -105,15 +91,12 @@ type Disk struct {
 	lbaMu   sync.Mutex
 	lba2pba *ExtentMap
 
-	readCache    *DiskCache
 	extentCache  *ExtentCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
 
 	sa    SegmentAccess
 	curOC *ObjectCreator
 }
-
-const diskCacheSize = 4096 // 16MB read cache
 
 func RoundToBlockSize(sz int64) int64 {
 	diff := sz % BlockSize
@@ -744,19 +727,6 @@ func (d *Disk) readOPBA(
 ) error {
 	addr := ranged.OPBA
 
-	ci, ok := d.openSegments.Get(addr.Segment)
-	if !ok {
-		lf, err := d.sa.OpenSegment(ctx, addr.Segment)
-		if err != nil {
-			return err
-		}
-
-		ci = lf
-
-		d.openSegments.Add(addr.Segment, ci)
-		openSegments.Inc()
-	}
-
 	rawData := buffers.Get(int(addr.Size))
 	defer buffers.Return(rawData)
 
@@ -769,6 +739,19 @@ func (d *Disk) readOPBA(
 		extentCacheHits.Inc()
 	} else {
 		extentCacheMiss.Inc()
+
+		ci, ok := d.openSegments.Get(addr.Segment)
+		if !ok {
+			lf, err := d.sa.OpenSegment(ctx, addr.Segment)
+			if err != nil {
+				return err
+			}
+
+			ci = lf
+
+			d.openSegments.Add(addr.Segment, ci)
+			openSegments.Inc()
+		}
 
 		n, err := ci.ReadAt(rawData, int64(addr.Offset))
 		if err != nil {
