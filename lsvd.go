@@ -38,6 +38,8 @@ func (s SegmentId) String() string {
 	return ulid.ULID(s).String()
 }
 
+const SegmentIdSize = 16
+
 const BlockSize = 4 * 1024
 
 func (e BlockData) Blocks() int {
@@ -104,6 +106,7 @@ type Disk struct {
 	lba2pba *ExtentMap
 
 	readCache    *DiskCache
+	extentCache  *ExtentCache
 	openSegments *lru.Cache[SegmentId, ObjectReader]
 
 	sa    SegmentAccess
@@ -122,7 +125,7 @@ func RoundToBlockSize(sz int64) int64 {
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
-	dc, err := NewDiskCache(filepath.Join(path, "readcache"), diskCacheSize)
+	ec, err := NewExtentCache(log, filepath.Join(path, "readcache"))
 	if err != nil {
 		return nil, err
 	}
@@ -166,14 +169,14 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
 
 	d := &Disk{
-		log:       log,
-		path:      path,
-		size:      sz,
-		lba2pba:   NewExtentMap(log),
-		readCache: dc,
-		sa:        o.sa,
-		volName:   o.volName,
-		SeqGen:    o.seqGen,
+		log:         log,
+		path:        path,
+		size:        sz,
+		lba2pba:     NewExtentMap(log),
+		extentCache: ec,
+		sa:          o.sa,
+		volName:     o.volName,
+		SeqGen:      o.seqGen,
 	}
 
 	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
@@ -757,14 +760,27 @@ func (d *Disk) readOPBA(
 	rawData := buffers.Get(int(addr.Size))
 	defer buffers.Return(rawData)
 
-	n, err := ci.ReadAt(rawData, int64(addr.Offset))
+	found, err := d.extentCache.ReadExtent(ranged, rawData)
 	if err != nil {
-		return nil
+		d.log.Error("error reading extent from read cache", "error", err)
 	}
 
-	if n != len(rawData) {
-		d.log.Error("didn't read full data", "read", n, "expected", len(rawData), "size", addr.Size)
-		return fmt.Errorf("short read detected")
+	if found {
+		extentCacheHits.Inc()
+	} else {
+		extentCacheMiss.Inc()
+
+		n, err := ci.ReadAt(rawData, int64(addr.Offset))
+		if err != nil {
+			return nil
+		}
+
+		if n != len(rawData) {
+			d.log.Error("didn't read full data", "read", n, "expected", len(rawData), "size", addr.Size)
+			return fmt.Errorf("short read detected")
+		}
+
+		d.extentCache.WriteExtent(ranged, rawData)
 	}
 
 	switch rawData[0] {
@@ -1063,6 +1079,8 @@ func (d *Disk) Close(ctx context.Context) error {
 	}
 
 	d.openSegments.Purge()
+
+	d.extentCache.Close()
 
 	return err
 }

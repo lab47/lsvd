@@ -74,6 +74,7 @@ require (
 	github.com/shopspring/decimal v1.2.0 // indirect
 	github.com/spf13/cast v1.3.1 // indirect
 	github.com/zclconf/go-cty v1.13.0 // indirect
+	go.etcd.io/bbolt v1.3.8 // indirect
 	golang.org/x/crypto v0.0.0-20220517005047-85d78b3ac167 // indirect
 	golang.org/x/exp v0.0.0-20220317015231-48e79f11773a // indirect
 	golang.org/x/text v0.11.0 // indirect

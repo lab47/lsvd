@@ -813,6 +813,8 @@ func TestLSVD(t *testing.T) {
 
 		t.Log("reloading disk hot")
 
+		d.extentCache.Close()
+
 		disk2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
@@ -958,6 +960,8 @@ func TestLSVD(t *testing.T) {
 
 			err = d.WriteExtent(ctx, testExtent2.MapTo(0))
 			r.NoError(err)
+
+			d.extentCache.Close()
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)

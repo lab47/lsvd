@@ -53,4 +53,14 @@ var (
 		Name: "lsvd_segments_open",
 		Help: "The total number of open segments",
 	})
+
+	extentCacheMiss = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_extent_cache_miss",
+		Help: "Number of times the extent cache did not contain the entry",
+	})
+
+	extentCacheHits = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_extent_cache_hits",
+		Help: "Number of times the extent cache contained the entry",
+	})
 )
