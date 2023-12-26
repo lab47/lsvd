@@ -375,7 +375,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 							"before", strings.Join(before, " "),
 							"after", strings.Join(after, " "))
 					}
-					panic("blocks")
 				} else {
 					passed++
 				}
@@ -1225,8 +1224,7 @@ loop:
 
 		d.log.Trace("considering for copy", "extent", extent, "size", blkSize, "offset", blkOffset)
 
-		//opba, ok := d.ext2pba.Get(extent)
-		opbas, err := d.lba2pba.Resolve(extent)
+		opbas, err := d.computeOPBAs(extent)
 		if err != nil {
 			return err
 		}
