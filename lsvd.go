@@ -187,14 +187,12 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		}
 	}
 
-	/*
-		goodMap, err := d.loadLBAMap(ctx)
-		if err != nil {
-			return nil, err
-		}
-	*/
+	goodMap, err := d.loadLBAMap(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	if false { // goodMap {
+	if goodMap {
 		log.Info("reusing serialized LBA map", "blocks", d.lba2pba.Len())
 	} else {
 		err = d.rebuildFromObjects(ctx)
@@ -1069,7 +1067,7 @@ func (d *Disk) Close(ctx context.Context) error {
 }
 
 func (d *Disk) saveLBAMap(ctx context.Context) error {
-	f, err := d.sa.WriteMetadata(ctx, d.volName, "head.map")
+	f, err := os.Create(filepath.Join(d.path, "head.map"))
 	if err != nil {
 		return err
 	}
@@ -1080,7 +1078,7 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
-	f, err := d.sa.ReadMetadata(ctx, d.volName, "head.map")
+	f, err := os.Open(filepath.Join(d.path, "head.map"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil

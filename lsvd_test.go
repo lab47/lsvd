@@ -758,7 +758,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.saveLBAMap(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "head.map"))
+		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
 		r.NoError(err)
 
 		defer f.Close()
@@ -1023,7 +1023,7 @@ func TestLSVD(t *testing.T) {
 
 			r.NoError(d.Close(ctx))
 
-			r.NoError(os.Remove(filepath.Join(tmpdir, "volumes", "default", "head.map")))
+			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
@@ -1058,7 +1058,7 @@ func TestLSVD(t *testing.T) {
 
 			r.NoError(d.Close(ctx))
 
-			r.NoError(os.Remove(filepath.Join(tmpdir, "volumes", "default", "head.map")))
+			r.NoError(os.Remove(filepath.Join(tmpdir, "head.map")))
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
