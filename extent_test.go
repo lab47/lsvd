@@ -11,6 +11,29 @@ func TestExtent(t *testing.T) {
 		return Extent{lba, blocks}
 	}
 
+	t.Run("extent-from", func(t *testing.T) {
+		r := require.New(t)
+
+		_, ok := ExtentFrom(10, 1)
+		r.False(ok)
+
+		x, ok := ExtentFrom(1, 10)
+		r.True(ok)
+
+		r.Equal(LBA(1), x.LBA)
+		r.Equal(uint32(10), x.Blocks)
+	})
+
+	t.Run("contains", func(t *testing.T) {
+		r := require.New(t)
+
+		r.True(e(1, 10).Contains(1))
+		r.True(e(1, 10).Contains(10))
+
+		r.False(e(1, 10).Contains(11))
+		r.False(e(1, 10).Contains(0))
+	})
+
 	t.Run("covers", func(t *testing.T) {
 		r := require.New(t)
 
@@ -43,6 +66,12 @@ func TestExtent(t *testing.T) {
 		chk(e(28, 5), e(1, 32), e(28, 32))
 
 		chk(e(121667583, 1), e(121667583, 2), e(121667583, 1))
+
+		_, ok := Extent{0, 2}.Clamp(Extent{3, 1})
+		r.False(ok)
+
+		_, ok = Extent{3, 1}.Clamp(Extent{0, 2})
+		r.False(ok)
 	})
 
 	t.Run("sub", func(t *testing.T) {
@@ -60,6 +89,18 @@ func TestExtent(t *testing.T) {
 		chk(e(1, 10), e(9, 1), e(1, 8), e(10, 1))
 
 		chk(e(10, 10), e(8, 3), e(11, 9))
+
+		chk(e(1, 1), e(1, 1))
+		chk(e(1, 4), e(2, 3), e(1, 1))
+
+		_, ok := Extent{0, 2}.Sub(Extent{3, 1})
+		r.False(ok)
+
+		_, ok = Extent{3, 1}.Sub(Extent{0, 2})
+		r.False(ok)
+
+		_, ok = Extent{1, 4}.Sub(Extent{1, 7})
+		r.False(ok)
 	})
 
 	t.Run("sub_many", func(t *testing.T) {
@@ -76,6 +117,13 @@ func TestExtent(t *testing.T) {
 		res, ok = e(0, 4).SubMany([]Extent{e(1, 1)})
 		r.True(ok)
 		r.Equal([]Extent{e(0, 1), e(2, 2)}, res)
+
+		res, ok = e(0, 10).SubMany([]Extent{e(1, 3), e(1, 1), e(8, 2)})
+		r.True(ok)
+		r.Equal([]Extent{e(0, 1), e(4, 4)}, res)
+
+		_, ok = e(0, 2).SubMany([]Extent{e(3, 1)})
+		r.False(ok)
 	})
 
 	t.Run("mask", func(t *testing.T) {

@@ -33,28 +33,6 @@ func (e Extent) Range() (LBA, LBA) {
 	return e.LBA, e.LBA + LBA(e.Blocks) - 1
 }
 
-func (a Extent) Constrain(b Extent) (Extent, bool) {
-	as, af := a.Range()
-	bs, bf := b.Range()
-
-	if as <= bs {
-		// as af bs bf
-		if af < bf {
-			return Extent{}, false
-		}
-
-		// as bs bf af
-		if af >= bf {
-			return b, true
-		}
-
-		// as bs af bf
-		return ExtentFrom(bs, af)
-	}
-
-	return Extent{}, false
-}
-
 func (e Extent) Cover(y Extent) Cover {
 	es, ef := e.Range()
 	ys, yf := y.Range()
@@ -102,51 +80,26 @@ func (e Extent) Clamp(y Extent) (Extent, bool) {
 		end = yf
 	}
 
-	if start > end {
-		return Extent{}, false
-	}
-
 	return ExtentFrom(start, end)
 }
 
 func (e Extent) Sub(o Extent) ([]Extent, bool) {
-	es, ef := e.Range()
-	os, of := o.Range()
-
-	if ef < os || es > of {
-		return nil, false
-	}
-
-	if es == os && ef == of {
-		return nil, true
-	}
-
-	if es >= os {
-		suffix, ok := ExtentFrom(of+1, ef)
-		if !ok {
-			return nil, false
-		}
-
-		return []Extent{suffix}, true
-	}
-
-	// o falls within e but not at the beginning
-
-	prefix, ok := ExtentFrom(es, os-1)
+	pre, suf, ok := e.SubSpecific(o)
 	if !ok {
 		return nil, false
 	}
 
-	if of >= ef {
-		return []Extent{prefix}, true
+	var xs []Extent
+
+	if pre.Valid() {
+		xs = append(xs, pre)
 	}
 
-	suffix, ok := ExtentFrom(of+1, ef)
-	if !ok {
-		return nil, false
+	if suf.Valid() {
+		xs = append(xs, suf)
 	}
 
-	return []Extent{prefix, suffix}, true
+	return xs, true
 }
 
 func (e Extent) SubSpecific(o Extent) (Extent, Extent, bool) {
