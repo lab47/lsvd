@@ -1,11 +1,22 @@
 package lsvd
 
-import "sync"
+import (
+	"fmt"
+	"slices"
+	"sync"
+)
 
-type RangeData struct {
-	BlockData
-	Extent
-}
+type (
+	BlockData struct {
+		blocks int
+		data   []byte
+	}
+
+	RangeData struct {
+		BlockData
+		Extent
+	}
+)
 
 const (
 	smallRangeBlocks = 20
@@ -16,6 +27,65 @@ var smallDB = sync.Pool{
 	New: func() any {
 		return make([]byte, smallRange)
 	},
+}
+
+func (e BlockData) Blocks() int {
+	return e.blocks
+}
+
+func (e *BlockData) CopyTo(data []byte) error {
+	copy(data, e.data)
+	return nil
+}
+
+func (e BlockData) MapTo(lba LBA) RangeData {
+	return RangeData{
+		Extent:    Extent{lba, uint32(e.Blocks())},
+		BlockData: e,
+	}
+}
+
+func NewBlockData(sz int) BlockData {
+	return BlockData{
+		blocks: sz,
+		data:   make([]byte, BlockSize*sz),
+	}
+}
+
+func BlockDataView(blk []byte) BlockData {
+	cnt := len(blk) / BlockSize
+	if cnt < 0 || len(blk)%BlockSize != 0 {
+		panic("invalid block data size for extent")
+	}
+
+	return BlockData{
+		blocks: cnt,
+		data:   slices.Clone(blk),
+	}
+}
+
+func BlockDataOverlay(blk []byte) (BlockData, error) {
+	cnt := len(blk) / BlockSize
+	if cnt < 0 || len(blk)%BlockSize != 0 {
+		return BlockData{}, fmt.Errorf("invalid extent length, not block sized: %d", len(blk))
+	}
+
+	return BlockData{
+		blocks: cnt,
+		data:   blk,
+	}, nil
+}
+
+func (e BlockData) BlockView(cnt int) []byte {
+	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
+}
+
+func (e BlockData) SetBlock(blk int, data []byte) {
+	if len(data) != BlockSize {
+		panic("invalid data length, not block size")
+	}
+
+	copy(e.data[BlockSize*blk:], data)
 }
 
 func (r *RangeData) Discard() {

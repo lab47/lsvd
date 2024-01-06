@@ -26,11 +26,6 @@ import (
 )
 
 type (
-	BlockData struct {
-		blocks int
-		data   []byte
-	}
-
 	SegmentId ulid.ULID
 	LBA       uint64
 
@@ -70,22 +65,6 @@ func (s SegmentId) String() string {
 const SegmentIdSize = 16
 
 const BlockSize = 4 * 1024
-
-func (e BlockData) Blocks() int {
-	return e.blocks
-}
-
-func (e *BlockData) CopyTo(data []byte) error {
-	copy(data, e.data)
-	return nil
-}
-
-func (e BlockData) MapTo(lba LBA) RangeData {
-	return RangeData{
-		Extent:    Extent{lba, uint32(e.Blocks())},
-		BlockData: e,
-	}
-}
 
 const (
 	flushThreshHold = 15 * 1024 * 1024
@@ -410,49 +389,6 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
-func NewBlockData(sz int) BlockData {
-	return BlockData{
-		blocks: sz,
-		data:   make([]byte, BlockSize*sz),
-	}
-}
-
-func BlockDataView(blk []byte) BlockData {
-	cnt := len(blk) / BlockSize
-	if cnt < 0 || len(blk)%BlockSize != 0 {
-		panic("invalid block data size for extent")
-	}
-
-	return BlockData{
-		blocks: cnt,
-		data:   slices.Clone(blk),
-	}
-}
-
-func BlockDataOverlay(blk []byte) (BlockData, error) {
-	cnt := len(blk) / BlockSize
-	if cnt < 0 || len(blk)%BlockSize != 0 {
-		return BlockData{}, fmt.Errorf("invalid extent length, not block sized: %d", len(blk))
-	}
-
-	return BlockData{
-		blocks: cnt,
-		data:   blk,
-	}, nil
-}
-
-func (e BlockData) BlockView(cnt int) []byte {
-	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
-}
-
-func (e BlockData) SetBlock(blk int, data []byte) {
-	if len(data) != BlockSize {
-		panic("invalid data length, not block size")
-	}
-
-	copy(e.data[BlockSize*blk:], data)
-}
-
 const perBlockHeader = 16
 
 var emptyBlock = make([]byte, BlockSize)
@@ -560,7 +496,7 @@ type readRequest struct {
 	extents []Extent
 }
 
-func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
+func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	start := time.Now()
 
 	defer func() {
@@ -575,13 +511,13 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 
 	remaining, err := d.fillFromWriteCache(ctx, data)
 	if err != nil {
-		return BlockData{}, err
+		return RangeData{}, err
 	}
 
 	// Completely filled range from the write cache
 	if len(remaining) == 0 {
 		d.log.Trace("extent filled entirely from write cache")
-		return data.BlockData, nil
+		return data, nil
 	}
 
 	d.log.Trace("remaining extents needed", "total", len(remaining))
@@ -601,7 +537,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 		ropba, err := d.computeOPBAs(h)
 		if err != nil {
 			d.log.Error("error computing opbas", "error", err, "rng", h)
-			return BlockData{}, err
+			return RangeData{}, err
 		}
 
 		if len(ropba) == 0 {
@@ -646,11 +582,11 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 	for _, o := range opbas {
 		err := d.readOPBA(ctx, o.obpa, o.extents, rng, data)
 		if err != nil {
-			return BlockData{}, err
+			return RangeData{}, err
 		}
 	}
 
-	return data.BlockData, nil
+	return data, nil
 }
 
 func (d *Disk) readOPBA(

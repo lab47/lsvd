@@ -76,12 +76,12 @@ func blockEqual(t *testing.T, a, b []byte) {
 	//require.True(t, bytes.Equal(a, b), "blocks are not the same")
 }
 
-func extentEqual(t *testing.T, a, b BlockData) {
+func extentEqual(t *testing.T, actual BlockData, expected RangeData) {
 	t.Helper()
 
-	require.Equal(t, a.Blocks(), b.Blocks())
+	require.Equal(t, actual.Blocks(), expected.BlockData.Blocks())
 
-	if !bytes.Equal(a.data, b.data) {
+	if !bytes.Equal(actual.data, expected.data) {
 		t.Error("blocks are not the same")
 	}
 }
@@ -129,7 +129,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testRandX)
+		extentEqual(t, testRandX, d2)
 	})
 
 	t.Run("can read from across writes from the write cache", func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testRandX)
+		extentEqual(t, testRandX, d2)
 
 		t.Run("and from the read cache", func(t *testing.T) {
 			r := require.New(t)
@@ -216,7 +216,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, d2, testRandX)
+			extentEqual(t, testRandX, d2)
 		})
 	})
 
@@ -276,7 +276,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testRandX)
+		extentEqual(t, testRandX, d2)
 	})
 
 	t.Run("stale reads aren't returned", func(t *testing.T) {
@@ -300,7 +300,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testExtent)
+		extentEqual(t, testExtent, d2)
 
 		err = d.WriteExtent(ctx, testExtent2.MapTo(0))
 		r.NoError(err)
@@ -308,7 +308,7 @@ func TestLSVD(t *testing.T) {
 		d3, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d3, testExtent2)
+		extentEqual(t, testExtent2, d3)
 	})
 
 	/*
@@ -661,7 +661,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
-		r.Equal(testExtent, d2)
+		extentEqual(t, testExtent, d2)
 	})
 
 	t.Run("can access blocks from the log when the check isn't active", func(t *testing.T) {
@@ -909,7 +909,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, d2, testExtent2)
+			extentEqual(t, testExtent2, d2)
 		})
 
 		t.Run("in a different instance", func(t *testing.T) {
@@ -942,7 +942,7 @@ func TestLSVD(t *testing.T) {
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, x2, testExtent2)
+			extentEqual(t, testExtent2, x2)
 		})
 
 		t.Run("in a when recovering active", func(t *testing.T) {
@@ -969,7 +969,7 @@ func TestLSVD(t *testing.T) {
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, x2, testExtent2)
+			extentEqual(t, testExtent2, x2)
 		})
 
 		t.Run("across segments", func(t *testing.T) {
@@ -999,7 +999,7 @@ func TestLSVD(t *testing.T) {
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, x2, testExtent2)
+			extentEqual(t, testExtent2, x2)
 		})
 
 		t.Run("across segments without a lba map", func(t *testing.T) {
@@ -1031,7 +1031,7 @@ func TestLSVD(t *testing.T) {
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, x2, testExtent2)
+			extentEqual(t, testExtent2, x2)
 		})
 
 		t.Run("across and within segments without a lba map", func(t *testing.T) {
@@ -1066,7 +1066,7 @@ func TestLSVD(t *testing.T) {
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			extentEqual(t, x2, testExtent3)
+			extentEqual(t, testExtent3, x2)
 		})
 	})
 
@@ -1119,12 +1119,12 @@ func TestLSVD(t *testing.T) {
 		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, x2, testExtent3)
+		extentEqual(t, testExtent3, x2)
 
 		x2, err = d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, x2, testExtent2)
+		extentEqual(t, testExtent2, x2)
 	})
 
 	t.Run("zero blocks works like an empty write", func(t *testing.T) {
@@ -1146,7 +1146,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testEmptyX)
+		extentEqual(t, testEmptyX, d2)
 	})
 
 	t.Run("can use the write cache while currently uploading", func(t *testing.T) {
@@ -1177,7 +1177,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		extentEqual(t, d2, testRandX)
+		extentEqual(t, testRandX, d2)
 	})
 
 	t.Run("reads partly from both write caches and an object", func(t *testing.T) {
