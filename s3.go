@@ -18,8 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
-	"github.com/pierrec/lz4/v4"
 )
 
 type S3Access struct {
@@ -90,7 +90,7 @@ func (s *S3ObjectReader) ReadAtCompressed(dest []byte, off, compSize int64) (int
 		return 0, err
 	}
 
-	sz, err := lz4.UncompressBlock(buf, dest)
+	sz, err := lz4decode.UncompressBlock(buf, dest, nil)
 	if err != nil {
 		return 0, err
 	}

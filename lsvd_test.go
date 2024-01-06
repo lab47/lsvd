@@ -14,8 +14,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
-	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,14 +58,14 @@ func init() {
 		testData3[i] = 0x49
 	}
 
-	testExtent = ExtentView(testData)
-	testExtent2 = ExtentView(testData2)
-	testExtent3 = ExtentView(testData3)
+	testExtent = BlockDataView(testData)
+	testExtent2 = BlockDataView(testData2)
+	testExtent3 = BlockDataView(testData3)
 
 	io.ReadFull(rand.Reader, testRand)
-	testRandX = ExtentView(testRand)
+	testRandX = BlockDataView(testRand)
 
-	testEmptyX = ExtentView(testEmpty)
+	testEmptyX = BlockDataView(testEmpty)
 }
 
 func blockEqual(t *testing.T, a, b []byte) {
@@ -235,7 +235,7 @@ func TestLSVD(t *testing.T) {
 		_, err = io.ReadFull(rand.Reader, big)
 		r.NoError(err)
 
-		err = d.WriteExtent(ctx, ExtentView(big).MapTo(0))
+		err = d.WriteExtent(ctx, BlockDataView(big).MapTo(0))
 		r.NoError(err)
 
 		r.NoError(d.Close(ctx))
@@ -443,7 +443,7 @@ func TestLSVD(t *testing.T) {
 
 		buf = buf[5:]
 
-		sz, err := lz4.UncompressBlock(buf, view)
+		sz, err := lz4decode.UncompressBlock(buf, view, nil)
 		r.NoError(err)
 
 		view = view[:sz]

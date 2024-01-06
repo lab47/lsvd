@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lab47/lz4decode"
 	"github.com/lab47/mode"
 
 	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/oklog/ulid/v2"
-	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
 
@@ -32,6 +32,35 @@ type (
 	}
 
 	SegmentId ulid.ULID
+	LBA       uint64
+
+	OPBA struct {
+		Segment SegmentId
+		Offset  uint32
+		Size    uint32
+	}
+
+	RangedOPBA struct {
+		Range Extent
+		Full  Extent
+		OPBA
+	}
+
+	SegmentHeader struct {
+		CreatedAt uint64
+	}
+)
+
+type (
+	segmentInfo struct {
+		f ObjectReader
+		m mmap.MMap
+	}
+)
+
+var (
+	headerSize = binary.Size(SegmentHeader{})
+	empty      SegmentId
 )
 
 func (s SegmentId) String() string {
@@ -58,21 +87,10 @@ func (e BlockData) MapTo(lba LBA) RangeData {
 	}
 }
 
-type segmentInfo struct {
-	f ObjectReader
-	m mmap.MMap
-}
-
 const (
 	flushThreshHold = 15 * 1024 * 1024
 	maxWriteCache   = 100 * 1024 * 1024
 )
-
-type OPBA struct {
-	Segment SegmentId
-	Offset  uint32
-	Size    uint32
-}
 
 type Disk struct {
 	SeqGen func() ulid.ULID
@@ -204,12 +222,6 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	return d, nil
 }
 
-type RangedOPBA struct {
-	Range Extent
-	Full  Extent
-	OPBA
-}
-
 func (r *RangedOPBA) String() string {
 	return fmt.Sprintf("%s (%s): %s %d:%d", r.Range, r.Full, r.Segment, r.Offset, r.Size)
 }
@@ -228,15 +240,6 @@ func (d *Disk) nextSeq() (ulid.ULID, error) {
 
 	return ul, nil
 }
-
-type SegmentHeader struct {
-	CreatedAt uint64
-}
-
-var (
-	headerSize = binary.Size(SegmentHeader{})
-	empty      SegmentId
-)
 
 func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
 	seq, err := d.nextSeq()
@@ -407,14 +410,14 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
-func NewExtent(sz int) BlockData {
+func NewBlockData(sz int) BlockData {
 	return BlockData{
 		blocks: sz,
 		data:   make([]byte, BlockSize*sz),
 	}
 }
 
-func ExtentView(blk []byte) BlockData {
+func BlockDataView(blk []byte) BlockData {
 	cnt := len(blk) / BlockSize
 	if cnt < 0 || len(blk)%BlockSize != 0 {
 		panic("invalid block data size for extent")
@@ -426,7 +429,7 @@ func ExtentView(blk []byte) BlockData {
 	}
 }
 
-func ExtentOverlay(blk []byte) (BlockData, error) {
+func BlockDataOverlay(blk []byte) (BlockData, error) {
 	cnt := len(blk) / BlockSize
 	if cnt < 0 || len(blk)%BlockSize != 0 {
 		return BlockData{}, fmt.Errorf("invalid extent length, not block sized: %d", len(blk))
@@ -449,8 +452,6 @@ func (e BlockData) SetBlock(blk int, data []byte) {
 
 	copy(e.data[BlockSize*blk:], data)
 }
-
-type LBA uint64
 
 const perBlockHeader = 16
 
@@ -556,7 +557,6 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 
 type readRequest struct {
 	obpa    *RangedOPBA
-	rng     Extent
 	extents []Extent
 }
 
@@ -615,38 +615,6 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 					continue
 				}
 
-				orng := opba.Full
-
-				if windowRng, ok := orng.Constrain(rng); ok {
-					d.log.Trace("calculate needs of subrange", "window", windowRng, "rng", rng)
-
-					//view := data.data[(windowRng.LBA-rng.LBA)*BlockSize:]
-
-					miss := true
-					//var miss bool
-
-					// Next, see if we can fill the extent from the read cache.
-					// If any block misses, we bail because we're going to read the
-					// whole range anyway now.
-					/*
-						for i := 0; i < int(orng.Blocks); i++ {
-							lba := windowRng.LBA + LBA(i)
-
-							err := d.readCache.ReadBlock(lba, view[:BlockSize])
-							if err == ErrCacheMiss {
-								d.log.Trace("miss read cache", "lba", lba)
-								miss = true
-								break
-							}
-						}
-					*/
-
-					if !miss {
-						d.log.Trace("served read extent from read cache", "extent", orng)
-						continue
-					}
-				}
-
 				// Because the holes can be smaller than the read ranges,
 				// 2 or more holes in sequence might be served by the same
 				// object range.
@@ -655,7 +623,6 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 				} else {
 					r := &readRequest{
 						obpa:    opba,
-						rng:     orng,
 						extents: []Extent{h},
 					}
 
@@ -684,35 +651,6 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (BlockData, error) {
 	}
 
 	return data.BlockData, nil
-}
-
-func ExtentFrom(a, b LBA) (Extent, bool) {
-	if b < a {
-		return Extent{}, false
-	}
-	return Extent{LBA: a, Blocks: uint32(b - a + 1)}, true
-}
-
-func (a Extent) Constrain(b Extent) (Extent, bool) {
-	as, af := a.Range()
-	bs, bf := b.Range()
-
-	if as <= bs {
-		// as af bs bf
-		if af < bf {
-			return Extent{}, false
-		}
-
-		// as bs bf af
-		if af >= bf {
-			return b, true
-		}
-
-		// as bs af bf
-		return ExtentFrom(bs, af)
-	}
-
-	return Extent{}, false
 }
 
 func (d *Disk) readOPBA(
@@ -772,7 +710,7 @@ func (d *Disk) readOPBA(
 		uncomp := buffers.Get(int(sz))
 		defer buffers.Return(uncomp)
 
-		n, err := lz4.UncompressBlock(rawData[5:], uncomp)
+		n, err := lz4decode.UncompressBlock(rawData[5:], uncomp, nil)
 		if err != nil {
 			return err
 		}
@@ -839,25 +777,7 @@ func (d *Disk) readOPBA(
 		}
 	}
 
-	/*
-		for i := 0; i < int(full.Blocks); i++ {
-			lba := full.LBA + LBA(i)
-
-			d.log.Trace("adding data to read cache", "lba", lba)
-			err = d.readCache.WriteBlock(lba, rawData[:BlockSize])
-			if err != nil {
-				d.log.Error("error writing data to read cache", "error", err)
-			}
-			rawData = rawData[BlockSize:]
-		}
-	*/
-
 	return nil
-}
-
-type PBA struct {
-	Segment SegmentId
-	Offset  uint32
 }
 
 var crcTable = crc64.MakeTable(crc64.ECMA)
@@ -1249,7 +1169,7 @@ loop:
 			uncomp := buffers.Get(int(sz))
 			defer buffers.Return(uncomp)
 
-			n, err := lz4.UncompressBlock(view[5:], uncomp)
+			n, err := lz4decode.UncompressBlock(view[5:], uncomp, nil)
 			if err != nil {
 				return err
 			}
@@ -1265,7 +1185,7 @@ loop:
 
 		d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
-		err = d.WriteExtent(ctx, ExtentView(view).MapTo(LBA(lba)))
+		err = d.WriteExtent(ctx, BlockDataView(view).MapTo(LBA(lba)))
 		if err != nil {
 			return err
 		}

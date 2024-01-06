@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
@@ -320,7 +321,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 			o.log.Trace("original size of compressed extent", "len", origSize)
 
-			n, err := lz4.UncompressBlock(srcBytes, o.buf)
+			n, err := lz4decode.UncompressBlock(srcBytes, o.buf, nil)
 			if err != nil {
 				return nil, fmt.Errorf("error uncompressing (src=%d, dest=%d): %w", len(srcBytes), len(o.buf), err)
 			}
@@ -607,7 +608,7 @@ func (l *LocalFile) ReadAtCompressed(dest []byte, off, compSize int64) (int, err
 		return 0, err
 	}
 
-	sz, err := lz4.UncompressBlock(buf, dest)
+	sz, err := lz4decode.UncompressBlock(buf, dest, nil)
 	if err != nil {
 		return 0, err
 	}

@@ -37,7 +37,7 @@ func TestObjectCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewExtent(5)
+		data := NewBlockData(5)
 
 		for i := range data.data {
 			data.data[i] = byte(i)
@@ -80,7 +80,7 @@ func TestObjectCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewExtent(5)
+		data := NewBlockData(5)
 
 		for i := range data.data {
 			data.data[i] = byte(i)
@@ -121,7 +121,7 @@ func TestObjectCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewExtent(5)
+		data := NewBlockData(5)
 
 		for i := range data.data {
 			data.data[i] = byte(i)
@@ -130,7 +130,7 @@ func TestObjectCreator(t *testing.T) {
 		err = oc.WriteExtent(data.MapTo(47))
 		r.NoError(err)
 
-		d2 := NewExtent(1)
+		d2 := NewBlockData(1)
 		for i := range d2.data {
 			d2.data[i] = byte(i + 1)
 		}

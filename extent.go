@@ -10,6 +10,13 @@ type Extent struct {
 	Blocks uint32
 }
 
+func ExtentFrom(a, b LBA) (Extent, bool) {
+	if b < a {
+		return Extent{}, false
+	}
+	return Extent{LBA: a, Blocks: uint32(b - a + 1)}, true
+}
+
 func (e Extent) String() string {
 	return fmt.Sprintf("%d:%d", e.LBA, e.Blocks)
 }
@@ -24,6 +31,28 @@ func (e Extent) Last() LBA {
 
 func (e Extent) Range() (LBA, LBA) {
 	return e.LBA, e.LBA + LBA(e.Blocks) - 1
+}
+
+func (a Extent) Constrain(b Extent) (Extent, bool) {
+	as, af := a.Range()
+	bs, bf := b.Range()
+
+	if as <= bs {
+		// as af bs bf
+		if af < bf {
+			return Extent{}, false
+		}
+
+		// as bs bf af
+		if af >= bf {
+			return b, true
+		}
+
+		// as bs af bf
+		return ExtentFrom(bs, af)
+	}
+
+	return Extent{}, false
 }
 
 func (e Extent) Cover(y Extent) Cover {

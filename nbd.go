@@ -86,7 +86,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	n.log.Trace("nbd write-at", "size", len(b), "offset", off)
 
-	ext, err := ExtentOverlay(b)
+	ext, err := BlockDataOverlay(b)
 	if err != nil {
 		return 0, err
 	}
