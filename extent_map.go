@@ -50,10 +50,11 @@ func (m *ExtentMap) checkExtent(e Extent) Extent {
 	return e
 }
 
-func (e *ExtentMap) Update(rng Extent, pba OPBA) error {
+func (e *ExtentMap) Update(rng Extent, pba OPBA) ([]RangedOPBA, error) {
 	var (
 		toDelete []LBA
 		toAdd    []*RangedOPBA
+		affected []RangedOPBA
 	)
 
 	e.checkExtent(rng)
@@ -87,9 +88,10 @@ loop:
 			break loop
 
 		case CoverExact:
-		// The ranges are exactly the same, so we don't
-		// need to adjust anything.
+			// The ranges are exactly the same, so we don't
+			// need to adjust anything.
 
+			affected = append(affected, *cur)
 		case CoverSuperRange:
 			// The new range is a complete subrange (ie a hole)
 			// into the existing range, so we need to adjust
@@ -109,27 +111,44 @@ loop:
 				}
 			}
 
+			rem := *cur
+			rem.Range = rng
+			affected = append(affected, rem)
+
 			e.checkExtent(cur.Range)
 		case CoverPartly:
+			var masked Extent
+
 			if rng.Cover(cur.Range) == CoverSuperRange {
 				// The new range completely covers the current one
 				// so we can clobber it.
+				masked = rng
 			} else {
 				// We need to shrink the range of cur down to not overlap
 				// with the new range.
 				update, ok := ExtentFrom(cur.Range.LBA, rng.LBA-1)
 				if !ok {
 					e.log.Error("error calculate updated range", "orig", cur.Range, "target", rng.LBA-1)
-					return fmt.Errorf("error calculating new range")
+					return nil, fmt.Errorf("error calculating new range")
+				}
+
+				masked, ok = ExtentFrom(rng.LBA, cur.Range.Last())
+				if !ok {
+					e.log.Error("error calculate masked range", "orig", cur.Range, "target", rng.LBA-1)
+					return nil, fmt.Errorf("error calculating new range")
 				}
 
 				cur.Range = update
 			}
+
+			rem := *cur
+			rem.Range = masked
+			affected = append(affected, rem)
+
 			e.checkExtent(cur.Range)
 		default:
-			return fmt.Errorf("invalid coverage value: %s", coverage)
+			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
-
 	}
 
 loop2:
@@ -151,6 +170,7 @@ loop2:
 
 		case CoverSuperRange, CoverExact:
 			// our new range completely covers the exist one, so we delete it.
+			affected = append(affected, *cur)
 			toDelete = append(toDelete, i.Key())
 		case CoverPartly:
 			old := cur.Range
@@ -158,8 +178,17 @@ loop2:
 			update, ok := ExtentFrom(pivot, old.Last())
 			if !ok {
 				e.log.Error("error calculating new extent", "pivot", pivot, "old", old)
-				return fmt.Errorf("error calculating new extent")
+				return nil, fmt.Errorf("error calculating new extent")
 			}
+
+			rem := *cur
+
+			rem.Range, ok = ExtentFrom(old.LBA, rng.Last())
+			if !ok {
+				e.log.Error("error calculating masked extent", "pivot", pivot, "old", old)
+				return nil, fmt.Errorf("error calculating new extent")
+			}
+			affected = append(affected, rem)
 
 			cur.Range = update
 
@@ -168,9 +197,8 @@ loop2:
 			e.log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Range)
 			e.checkExtent(cur.Range)
 		default:
-			return fmt.Errorf("invalid coverage value: %s", coverage)
+			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
-
 	}
 
 	for _, lba := range toDelete {
@@ -199,10 +227,10 @@ loop2:
 
 	if false { // mode.Debug() {
 		e.log.Debug("validating map post update")
-		return e.Validate()
+		return nil, e.Validate()
 	}
 
-	return nil
+	return affected, nil
 }
 
 func (e *ExtentMap) Validate() error {

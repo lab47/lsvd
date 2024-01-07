@@ -93,6 +93,9 @@ type Disk struct {
 
 	sa    SegmentAccess
 	curOC *ObjectCreator
+
+	segmentsMu sync.Mutex
+	segments   map[SegmentId]*Segment
 }
 
 func RoundToBlockSize(sz int64) int64 {
@@ -157,6 +160,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		sa:          o.sa,
 		volName:     o.volName,
 		SeqGen:      o.seqGen,
+		segments:    make(map[SegmentId]*Segment),
 	}
 
 	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
@@ -313,10 +317,12 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			if mode.Debug() {
 				d.log.Trace("updating read map", "extent", ent.extent)
 			}
-			err = d.lba2pba.Update(ent.extent, ent.opba)
+			affected, err := d.lba2pba.Update(ent.extent, ent.opba)
 			if err != nil {
 				d.log.Error("error updating read map", "error", err)
 			}
+
+			d.updateUsage(ent.extent, affected)
 		}
 		d.lbaMu.Unlock()
 
@@ -373,6 +379,18 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	}()
 
 	return done, nil
+}
+
+func (d *Disk) updateUsage(rng Extent, affected []RangedOPBA) {
+	d.segmentsMu.Lock()
+	defer d.segmentsMu.Unlock()
+
+	for _, r := range affected {
+		if seg, ok := d.segments[r.Segment]; ok {
+			seg.Used -= uint64(rng.Blocks)
+			seg.UsedBytes -= uint64(r.Size)
+		}
+	}
 }
 
 func (d *Disk) CloseSegment(ctx context.Context) error {
@@ -821,6 +839,10 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 		return err
 	}
 
+	segTrack := &Segment{}
+
+	d.segments[seg] = segTrack
+
 	for i := uint32(0); i < cnt; i++ {
 		lba, err := binary.ReadUvarint(br)
 		if err != nil {
@@ -832,6 +854,9 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
+		segTrack.Size += count
+		segTrack.Used += count
+
 		_, err = br.ReadByte()
 		if err != nil {
 			return err
@@ -842,12 +867,17 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
+		segTrack.TotalBytes += blkSize
+		segTrack.UsedBytes += blkSize
+
 		blkOffset, err := binary.ReadUvarint(br)
 		if err != nil {
 			return err
 		}
 
-		err = d.lba2pba.Update(Extent{LBA: LBA(lba), Blocks: uint32(count)}, OPBA{
+		rng := Extent{LBA: LBA(lba), Blocks: uint32(count)}
+
+		affected, err := d.lba2pba.Update(rng, OPBA{
 			Segment: seg,
 			Offset:  dataBegin + uint32(blkOffset),
 			Size:    uint32(blkSize),
@@ -855,6 +885,8 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 		if err != nil {
 			return err
 		}
+
+		d.updateUsage(rng, affected)
 	}
 
 	return nil

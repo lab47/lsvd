@@ -5,6 +5,14 @@ import (
 	"os"
 )
 
+type Segment struct {
+	Size uint64
+	Used uint64
+
+	TotalBytes uint64
+	UsedBytes  uint64
+}
+
 func ReadSegmentHeader(path string) (*SegmentHeader, error) {
 	f, err := os.Open(path)
 	if err != nil {

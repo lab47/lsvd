@@ -111,7 +111,7 @@ func (o *ObjectCreator) TotalBlocks() int {
 
 func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
-	err := o.em.Update(rng, OPBA{})
+	_, err := o.em.Update(rng, OPBA{})
 	if err != nil {
 		return err
 	}
@@ -216,7 +216,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 			})
 
 			// The empty size will signal that it's empty blocks.
-			err := o.em.Update(ext, OPBA{})
+			_, err := o.em.Update(ext, OPBA{})
 			if err != nil {
 				return err
 			}
@@ -255,7 +255,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 			offset: o.offset,
 		})
 
-		err = o.em.Update(ext, OPBA{
+		_, err = o.em.Update(ext, OPBA{
 			Offset: uint32(o.offset),
 			Size:   uint32(dataLen),
 		})
@@ -385,7 +385,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		})
 
 		// The empty size will signal that it's empty blocks.
-		err := o.em.Update(rng, OPBA{})
+		_, err := o.em.Update(rng, OPBA{})
 		if err != nil {
 			return err
 		}
@@ -436,7 +436,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 			"offset", o.offset,
 			"size", sz)
 
-		err = o.em.Update(rng, OPBA{
+		_, err = o.em.Update(rng, OPBA{
 			Offset: uint32(o.offset),
 			Size:   uint32(sz),
 		})
