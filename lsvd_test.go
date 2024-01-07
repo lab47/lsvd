@@ -686,28 +686,6 @@ func TestLSVD(t *testing.T) {
 		blockEqual(t, d2.BlockView(0), testExtent.BlockView(0))
 	})
 
-	t.Run("segments contain the parent of their actual parent", func(t *testing.T) {
-		r := require.New(t)
-
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
-
-		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
-			return testUlid
-		}))
-		r.NoError(err)
-
-		err = d.WriteExtent(ctx, testExtent.MapTo(47))
-		r.NoError(err)
-
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
-
-		err = d.WriteExtent(ctx, testExtent2.MapTo(48))
-		r.NoError(err)
-	})
-
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
 		r := require.New(t)
 
@@ -1068,6 +1046,47 @@ func TestLSVD(t *testing.T) {
 
 			extentEqual(t, testExtent3, x2)
 		})
+	})
+
+	t.Run("tracks segment usage data", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent.MapTo(0))
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent2.MapTo(1))
+		r.NoError(err)
+
+		s1 := SegmentId(d.curSeq)
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		r.Len(d.segments, 1)
+
+		stats, ok := d.segments[s1]
+		r.True(ok)
+
+		r.Equal(uint64(2), stats.Used)
+		r.True(stats.TotalBytes > 0)
+		r.Equal(stats.UsedBytes, stats.TotalBytes)
+
+		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
+		r.NoError(err)
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		r.Len(d.segments, 2)
+
+		r.Equal(uint64(1), stats.Used)
+		r.True(stats.TotalBytes > stats.UsedBytes)
 	})
 
 	t.Run("gc pulls still used blocks out of the oldest segment and moves them forward", func(t *testing.T) {

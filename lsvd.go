@@ -262,12 +262,13 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		var (
 			entries []objectEntry
+			stats   *SegmentStats
 			err     error
 		)
 
 		start := time.Now()
 		for {
-			entries, err = oc.Flush(ctx, d.sa, segId)
+			entries, stats, err = oc.Flush(ctx, d.sa, segId)
 			if err != nil {
 				d.log.Error("error flushing data to object, retrying", "error", err)
 				time.Sleep(5 * time.Second)
@@ -311,6 +312,18 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		}
 
 		mapStart := time.Now()
+
+		d.segmentsMu.Lock()
+
+		d.segments[segId] = &Segment{
+			Size: stats.Blocks,
+			Used: stats.Blocks,
+
+			TotalBytes: stats.TotalBytes,
+			UsedBytes:  stats.TotalBytes,
+		}
+
+		d.segmentsMu.Unlock()
 
 		d.lbaMu.Lock()
 		for _, ent := range entries {
@@ -389,6 +402,8 @@ func (d *Disk) updateUsage(rng Extent, affected []RangedOPBA) {
 		if seg, ok := d.segments[r.Segment]; ok {
 			seg.Used -= uint64(rng.Blocks)
 			seg.UsedBytes -= uint64(r.Size)
+		} else {
+			d.log.Warn("missing segment during usage update", "id", r.Segment.String())
 		}
 	}
 }
@@ -981,6 +996,19 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	m, err := processLBAMap(d.log, f)
 	if err != nil {
 		return false, err
+	}
+
+	for i := m.m.Iterator(); i.Valid(); i.Next() {
+		ro := i.Value()
+
+		seg := d.segments[ro.Segment]
+		if seg == nil {
+			seg = &Segment{}
+			d.segments[ro.Segment] = seg
+		}
+
+		seg.UsedBytes += uint64(ro.Size)
+		seg.Used += uint64(ro.Range.Blocks)
 	}
 
 	d.lba2pba = m

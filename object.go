@@ -470,46 +470,57 @@ type objectEntry struct {
 	opba   OPBA
 }
 
+type SegmentStats struct {
+	Blocks     uint64
+	TotalBytes uint64
+}
+
 func (o *ObjectCreator) Flush(ctx context.Context,
 	sa SegmentAccess, seg SegmentId,
-) ([]objectEntry, error) {
+) ([]objectEntry, *SegmentStats, error) {
 	start := time.Now()
 	defer func() {
 		segmentTime.Observe(time.Since(start).Seconds())
 	}()
 
+	stats := &SegmentStats{
+		TotalBytes: uint64(o.body.Len()),
+	}
+
 	buf := make([]byte, 16)
 
 	for _, blk := range o.extents {
+		stats.Blocks += uint64(blk.rng.Blocks)
+
 		lba := blk.rng.LBA
 
 		sz := binary.PutUvarint(buf, uint64(lba))
 		_, err := o.header.Write(buf[:sz])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		sz = binary.PutUvarint(buf, uint64(blk.rng.Blocks))
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		err = o.header.WriteByte(blk.flags)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		sz = binary.PutUvarint(buf, blk.size)
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		sz = binary.PutUvarint(buf, blk.offset)
 		_, err = o.header.Write(buf[:sz])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -538,7 +549,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	f, err := sa.WriteSegment(ctx, seg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	defer f.Close()
@@ -546,30 +557,30 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	binary.BigEndian.PutUint32(buf, uint32(o.cnt))
 	_, err = f.Write(buf[:4])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	binary.BigEndian.PutUint32(buf, dataBegin)
 	_, err = f.Write(buf[:4])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	_, err = io.Copy(f, bytes.NewReader(o.header.Bytes()))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	_, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	f.Close()
 
 	err = sa.AppendToObjects(ctx, o.volName, seg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if o.logF != nil {
@@ -582,7 +593,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		}
 	}
 
-	return entries, nil
+	return entries, stats, nil
 }
 
 type ObjectReader interface {
