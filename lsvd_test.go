@@ -1074,8 +1074,6 @@ func TestLSVD(t *testing.T) {
 		r.True(ok)
 
 		r.Equal(uint64(2), stats.Used)
-		r.True(stats.TotalBytes > 0)
-		r.Equal(stats.UsedBytes, stats.TotalBytes)
 
 		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
 		r.NoError(err)
@@ -1086,7 +1084,6 @@ func TestLSVD(t *testing.T) {
 		r.Len(d.segments, 2)
 
 		r.Equal(uint64(1), stats.Used)
-		r.True(stats.TotalBytes > stats.UsedBytes)
 	})
 
 	t.Run("gc pulls still used blocks out of the oldest segment and moves them forward", func(t *testing.T) {
@@ -1125,10 +1122,11 @@ func TestLSVD(t *testing.T) {
 
 		r.Equal(SegmentId(origSeq), gcSeg)
 
+		d.Close(ctx)
+
+		// We delete entries AFTER we write the object that contains the remaints
 		_, err = os.Stat(filepath.Join(tmpdir, "objects", "object."+origSeq.String()))
 		r.ErrorIs(err, os.ErrNotExist)
-
-		d.Close(ctx)
 
 		t.Log("reloading disk")
 

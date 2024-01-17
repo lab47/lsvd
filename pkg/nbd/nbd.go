@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
@@ -354,10 +356,27 @@ nego:
 	// Transmission
 	b := []byte{}
 	for {
+		export.Backend.Idle()
+
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
 		var requestHeader TransmissionRequestHeader
-		if err := binary.Read(conn, binary.BigEndian, &requestHeader); err != nil {
-			return err
+
+		for {
+			if err := binary.Read(conn, binary.BigEndian, &requestHeader); err != nil {
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					export.Backend.Idle()
+					conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+					continue
+				}
+
+				return err
+			} else {
+				break
+			}
 		}
+
+		conn.SetReadDeadline(time.Time{})
 
 		if requestHeader.RequestMagic != TRANSMISSION_MAGIC_REQUEST {
 			return ErrInvalidMagic

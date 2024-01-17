@@ -7,6 +7,7 @@ type opts struct {
 	volName    string
 	autoCreate bool
 	seqGen     func() ulid.ULID
+	afterNS    func(SegmentId)
 }
 
 type Option func(o *opts)
@@ -32,5 +33,11 @@ func AutoCreate(ok bool) Option {
 func WithSeqGen(f func() ulid.ULID) Option {
 	return func(o *opts) {
 		o.seqGen = f
+	}
+}
+
+func AfterNewSegment(f func(SegmentId)) Option {
+	return func(o *opts) {
+		o.afterNS = f
 	}
 }

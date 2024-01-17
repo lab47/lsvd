@@ -483,9 +483,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		segmentTime.Observe(time.Since(start).Seconds())
 	}()
 
-	stats := &SegmentStats{
-		TotalBytes: uint64(o.body.Len()),
-	}
+	stats := &SegmentStats{}
 
 	buf := make([]byte, 16)
 

@@ -11,10 +11,27 @@ type Segment struct {
 
 	TotalBytes uint64
 	UsedBytes  uint64
+
+	deleted bool
+	cleared []Extent
+}
+
+func (s *Segment) detectedCleared(ext Extent) (Extent, bool) {
+	for _, x := range s.cleared {
+		if ext.Cover(x) != CoverNone {
+			return x, true
+		}
+	}
+
+	return Extent{}, false
 }
 
 func (s *Segment) Density() float64 {
-	return float64(s.UsedBytes) / float64(s.TotalBytes)
+	if s.Size == 0 {
+		return 0
+	}
+
+	return float64(s.Used) / float64(s.Size)
 }
 
 func ReadSegmentHeader(path string) (*SegmentHeader, error) {

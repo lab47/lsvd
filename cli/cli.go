@@ -65,6 +65,9 @@ func (c *CLI) setupCommands() error {
 		"volume init": func() (cli.Command, error) {
 			return cleo.Infer("volume init", "initialize a volume", c.volumeInit), nil
 		},
+		"volume inspect": func() (cli.Command, error) {
+			return cleo.Infer("volume inspect", "inspect a volume", c.volumeInspect), nil
+		},
 		"nbd": func() (cli.Command, error) {
 			return cleo.Infer("nbd", "service a volume over nbd", c.nbdServe), nil
 		},
@@ -233,6 +236,36 @@ func (c *CLI) volumeInit(ctx context.Context, opts struct {
 	}
 
 	fmt.Printf("volume '%s' created (%d bytes)\n", opts.Name, size)
+
+	return nil
+}
+
+func (c *CLI) volumeInspect(ctx context.Context, opts struct {
+	Global
+	Name string `short:"n" long:"name" description:"name of volume to create" required:"true"`
+}) error {
+	sa, err := c.loadSegmentAccess(ctx, opts.Config)
+	if err != nil {
+		return err
+	}
+
+	info, err := sa.GetVolumeInfo(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s: %d\n", info.Name, info.Size)
+
+	entries, err := sa.ListSegments(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%d segments\n", len(entries))
+
+	for _, ent := range entries {
+		fmt.Printf("  %s\n", ent)
+	}
 
 	return nil
 }

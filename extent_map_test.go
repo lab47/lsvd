@@ -27,18 +27,20 @@ func TestExtentMap(t *testing.T) {
 		d := NewExtentMap(log)
 
 		x := Extent{47, 10}
-		_, err := d.Update(x, OPBA{
+		a, err := d.Update(x, OPBA{
 			Segment: s1,
 			Offset:  47,
 		})
 		r.NoError(err)
+		r.Len(a, 0)
 
 		y := Extent{0, 8}
-		_, err = d.Update(y, OPBA{
+		a, err = d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  0,
 		})
 		r.NoError(err)
+		r.Len(a, 0)
 
 		r1, ok := d.m.Get(0)
 		r.True(ok)
@@ -57,18 +59,20 @@ func TestExtentMap(t *testing.T) {
 		d := NewExtentMap(log)
 
 		y := Extent{0, 8}
-		_, err := d.Update(y, OPBA{
+		a, err := d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  0,
 		})
 		r.NoError(err)
+		r.Len(a, 0)
 
 		x := Extent{47, 10}
-		_, err = d.Update(x, OPBA{
+		a, err = d.Update(x, OPBA{
 			Segment: s1,
 			Offset:  47,
 		})
 		r.NoError(err)
+		r.Len(a, 0)
 
 		r1, ok := d.m.Get(0)
 		r.True(ok)
@@ -95,11 +99,15 @@ func TestExtentMap(t *testing.T) {
 		r.NoError(err)
 
 		y := Extent{1, 1}
-		_, err = d.Update(y, OPBA{
+		a, err := d.Update(y, OPBA{
 			Segment: s1,
 			Offset:  2,
 		})
 		r.NoError(err)
+		r.Len(a, 1)
+
+		r.Equal(Extent{1, 1}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
 
 		r.Equal(3, d.m.Len())
 
@@ -132,10 +140,13 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{0, 10}, OPBA{
+		a, err := m.Update(Extent{0, 10}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
+		r.Len(a, 1)
+		r.Equal(Extent{2, 1}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
 
 		r.Equal(1, m.m.Len())
 
@@ -158,10 +169,14 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{3, 10}, OPBA{
+		a, err := m.Update(Extent{3, 10}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
+		r.Len(a, 1)
+
+		r.Equal(Extent{3, 2}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
 
 		r.Equal(2, m.m.Len())
 
@@ -186,10 +201,14 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{0, 5}, OPBA{
+		a, err := m.Update(Extent{0, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
+		r.Len(a, 1)
+
+		r.Equal(Extent{3, 2}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
 
 		r.Equal(2, m.m.Len())
 
@@ -237,10 +256,14 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{1, 5}, OPBA{
+		a, err := m.Update(Extent{1, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
+		r.Len(a, 1)
+
+		r.Equal(Extent{1, 1}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
 
 		t.Log(m.Render())
 
@@ -299,10 +322,16 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{0, 5}, OPBA{
+		a, err := m.Update(Extent{0, 5}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
+		r.Len(a, 2)
+
+		r.Equal(Extent{1, 1}, a[0].Range)
+		r.Equal(uint32(1), a[0].Offset)
+		r.Equal(Extent{2, 1}, a[1].Range)
+		r.Equal(uint32(2), a[1].Offset)
 
 		r.Equal(1, m.m.Len())
 
@@ -322,20 +351,30 @@ func TestExtentMap(t *testing.T) {
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{11, 1}, OPBA{
+		a, err := m.Update(Extent{11, 1}, OPBA{
 			Offset: 2,
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{12, 10}, OPBA{
+		r.Len(a, 0)
+
+		a, err = m.Update(Extent{12, 10}, OPBA{
 			Offset: 3,
 		})
 		r.NoError(err)
 
-		_, err = m.Update(Extent{10, 5}, OPBA{
+		r.Len(a, 0)
+
+		a, err = m.Update(Extent{10, 5}, OPBA{
 			Offset: 4,
 		})
 		r.NoError(err)
+
+		r.Len(a, 2)
+		r.Equal(Extent{11, 1}, a[0].Range)
+		r.Equal(uint32(2), a[0].Offset)
+		r.Equal(Extent{12, 3}, a[1].Range)
+		r.Equal(uint32(3), a[1].Offset)
 
 		r.Equal(3, m.m.Len())
 
@@ -356,6 +395,51 @@ func TestExtentMap(t *testing.T) {
 
 		r.Equal(Extent{15, 7}, r3.Range)
 		r.Equal(Extent{12, 10}.Last(), Extent{15, 7}.Last())
+	})
+
+	t.Run("emits affected range once only", func(t *testing.T) {
+		r := require.New(t)
+
+		m := NewExtentMap(log)
+
+		_, err := m.Update(Extent{8, 1}, OPBA{
+			Offset: 1,
+		})
+		r.NoError(err)
+
+		a, err := m.Update(Extent{11, 1}, OPBA{
+			Offset: 2,
+		})
+		r.NoError(err)
+
+		r.Len(a, 0)
+
+		a, err = m.Update(Extent{12, 10}, OPBA{
+			Offset: 3,
+		})
+		r.NoError(err)
+
+		r.Len(a, 0)
+
+		a, err = m.Update(Extent{10, 5}, OPBA{
+			Offset: 4,
+		})
+		r.NoError(err)
+
+		r.Len(a, 2)
+		r.Equal(Extent{11, 1}, a[0].Range)
+		r.Equal(uint32(2), a[0].Offset)
+		r.Equal(Extent{12, 3}, a[1].Range)
+		r.Equal(uint32(3), a[1].Offset)
+
+		a, err = m.Update(Extent{10, 5}, OPBA{
+			Offset: 5,
+		})
+		r.NoError(err)
+
+		r.Len(a, 1)
+		r.Equal(Extent{10, 5}, a[0].Range)
+		r.Equal(uint32(4), a[0].Offset)
 	})
 
 	t.Run("report all pbas for a range", func(t *testing.T) {

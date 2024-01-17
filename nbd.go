@@ -3,6 +3,8 @@ package lsvd
 import (
 	"context"
 	"crypto/sha256"
+	"sync"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/pkg/nbd"
@@ -14,13 +16,20 @@ type nbdWrapper struct {
 	log hclog.Logger
 	ctx context.Context
 	d   *Disk
+
+	mu sync.Mutex
+	ci *CopyIterator
 }
 
 var _ nbd.Backend = &nbdWrapper{}
 
 func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
 	log = log.Named("nbd")
-	return &nbdWrapper{log, ctx, d}
+	w := &nbdWrapper{log: log, ctx: ctx, d: d}
+
+	d.SetAfterNS(w.AfterNS)
+
+	return w
 }
 
 func blkSum(b []byte) string {
@@ -52,6 +61,26 @@ func logBlocks(log hclog.Logger, msg string, idx LBA, data []byte) {
 		log.Trace(msg, "block", idx, "sum", blkSum(data))
 		data = data[BlockSize:]
 		idx++
+	}
+}
+
+func (n *nbdWrapper) Idle() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.ci != nil {
+		n.log.Trace("processing GC copy iterator")
+		ctx := context.Background()
+		done, err := n.ci.Process(ctx, 100*time.Millisecond)
+		if err != nil {
+			n.log.Error("error processing GC copy", "error", err)
+		}
+
+		if done {
+			n.ci.Close()
+			n.ci = nil
+			n.log.Info("finished GC copy process")
+		}
 	}
 }
 
@@ -104,6 +133,33 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	}
 
 	return len(b), nil
+}
+
+func (n *nbdWrapper) AfterNS(_ SegmentId) {
+	ctx := context.Background()
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.ci != nil {
+		n.log.Debug("currently mid-GC, not starting a new one")
+		return
+	}
+
+	seg, ci, err := n.d.StartGC(ctx, 0.30)
+	if err != nil {
+		n.log.Error("error starting GC", "error", err)
+		return
+	}
+
+	if ci == nil {
+		n.log.Debug("no segments for GC detected")
+		return
+	}
+
+	n.log.Info("starting GC", "segment", seg)
+
+	n.ci = ci
 }
 
 func (n *nbdWrapper) ZeroAt(off, size int64) error {

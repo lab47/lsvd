@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
+	"github.com/pkg/errors"
 )
 
 type S3Access struct {
@@ -63,7 +63,7 @@ func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 		Range:  &rng,
 	})
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrapf(err, "request range %s", rng)
 	}
 
 	defer r.Body.Close()

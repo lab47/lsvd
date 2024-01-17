@@ -11,4 +11,6 @@ type Backend interface {
 
 	Size() (int64, error)
 	Sync() error
+
+	Idle()
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,8 @@ type Disk struct {
 
 	segmentsMu sync.Mutex
 	segments   map[SegmentId]*Segment
+
+	afterNS func(SegmentId)
 }
 
 func RoundToBlockSize(sz int64) int64 {
@@ -161,6 +164,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		volName:     o.volName,
 		SeqGen:      o.seqGen,
 		segments:    make(map[SegmentId]*Segment),
+		afterNS:     o.afterNS,
 	}
 
 	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
@@ -203,6 +207,10 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	}
 
 	return d, nil
+}
+
+func (r *Disk) SetAfterNS(f func(SegmentId)) {
+	r.afterNS = f
 }
 
 func (r *RangedOPBA) String() string {
@@ -318,9 +326,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		d.segments[segId] = &Segment{
 			Size: stats.Blocks,
 			Used: stats.Blocks,
-
-			TotalBytes: stats.TotalBytes,
-			UsedBytes:  stats.TotalBytes,
 		}
 
 		d.segmentsMu.Unlock()
@@ -335,7 +340,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 				d.log.Error("error updating read map", "error", err)
 			}
 
-			d.updateUsage(ent.extent, affected)
+			d.updateUsage(segId, affected)
 		}
 		d.lbaMu.Unlock()
 
@@ -384,9 +389,18 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			d.log.Warn("finished block read validation", "passed", passed)
 		}
 
+		if d.afterNS != nil {
+			d.afterNS(segId)
+		}
+
 		finDur := time.Since(start)
 
 		d.log.Info("uploaded new object", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
+
+		err = d.cleanupDeletedSegments(ctx)
+		if err != nil {
+			d.log.Error("error cleaning up deleted segments", "error", err)
+		}
 
 		d.log.Debug("finished background object flush")
 	}()
@@ -394,16 +408,27 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	return done, nil
 }
 
-func (d *Disk) updateUsage(rng Extent, affected []RangedOPBA) {
+func (d *Disk) updateUsage(self SegmentId, affected []RangedOPBA) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
 
 	for _, r := range affected {
-		if seg, ok := d.segments[r.Segment]; ok {
-			seg.Used -= uint64(rng.Blocks)
-			seg.UsedBytes -= uint64(r.Size)
-		} else {
-			d.log.Warn("missing segment during usage update", "id", r.Segment.String())
+		if r.Segment != self {
+			rng := r.Range
+
+			if seg, ok := d.segments[r.Segment]; ok {
+				if seg.deleted {
+					continue
+				}
+
+				if o, ok := seg.detectedCleared(rng); ok {
+					d.log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
+				}
+				seg.cleared = append(seg.cleared, rng)
+				seg.Used -= uint64(rng.Blocks)
+			} else {
+				d.log.Warn("missing segment during usage update", "id", r.Segment.String())
+			}
 		}
 	}
 }
@@ -901,7 +926,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		d.updateUsage(rng, affected)
+		d.updateUsage(seg, affected)
 	}
 
 	return nil
@@ -1052,6 +1077,35 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 	return m, nil
 }
 
+func (d *Disk) LogSegmentInfo() {
+	d.segmentsMu.Lock()
+	defer d.segmentsMu.Unlock()
+
+	type ent struct {
+		seg     SegmentId
+		density float64
+		stats   *Segment
+	}
+
+	var entries []ent
+
+	for segId, stats := range d.segments {
+		entries = append(entries, ent{segId, stats.Density(), stats})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].density < entries[j].density
+	})
+
+	for _, e := range entries {
+		d.log.Info("segment density", "segment", e.seg,
+			"density", e.density,
+			"total", e.stats.Size,
+			"used", e.stats.Used,
+		)
+	}
+}
+
 func (d *Disk) pickSegmentToGC(ctx context.Context, min float64) (SegmentId, bool, error) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
@@ -1062,6 +1116,10 @@ func (d *Disk) pickSegmentToGC(ctx context.Context, min float64) (SegmentId, boo
 	)
 
 	for segId, stats := range d.segments {
+		if stats.deleted {
+			continue
+		}
+
 		d := stats.Density()
 		if d > min {
 			continue
@@ -1105,6 +1163,35 @@ func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
 	return segId, nil
 }
 
+func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
+	d.segmentsMu.Lock()
+	defer d.segmentsMu.Unlock()
+
+	var toDelete []SegmentId
+
+	for i, s := range d.segments {
+		if s.deleted {
+			toDelete = append(toDelete, i)
+		}
+	}
+
+	for _, i := range toDelete {
+		delete(d.segments, i)
+		d.log.Debug("removing segment from volume", "volume", d.volName, "segment", i)
+		err := d.sa.RemoveSegmentFromVolume(ctx, d.volName, i)
+		if err != nil {
+			return err
+		}
+
+		err = d.removeSegmentIfPossible(ctx, i)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterator, error) {
 	toGC, ok, err := d.pickSegmentToGC(ctx, min)
 	if !ok {
@@ -1133,6 +1220,10 @@ type CopyIterator struct {
 
 	cnt       uint32
 	dataBegin uint32
+
+	totalBlocks   uint64
+	copiedExtents int
+	copiedBlocks  uint64
 }
 
 func (c *CopyIterator) Process(ctx context.Context, dur time.Duration) (bool, error) {
@@ -1190,38 +1281,48 @@ loop:
 			}
 		}
 
-		view := view[:blkSize]
+		c.copiedBlocks += blocks
+		c.copiedExtents++
 
-		_, err = c.or.ReadAt(view, int64(c.dataBegin+uint32(blkOffset)))
-		if err != nil {
-			return false, err
-		}
+		// This it's an extent of empty blocks, zero.
+		if blkSize == 0 {
+			c.d.ZeroBlocks(ctx, extent)
+		} else {
+			view := view[:blkSize]
 
-		if view[0] == 1 {
-			sz := binary.BigEndian.Uint32(view[1:])
+			offset := int64(c.dataBegin + uint32(blkOffset))
 
-			uncomp := buffers.Get(int(sz))
-			defer buffers.Return(uncomp)
-
-			n, err := lz4decode.UncompressBlock(view[5:], uncomp, nil)
+			_, err = c.or.ReadAt(view, offset)
 			if err != nil {
 				return false, err
 			}
 
-			if n != int(sz) {
-				return false, fmt.Errorf("failed to uncompress correctly")
+			if view[0] == 1 {
+				sz := binary.BigEndian.Uint32(view[1:])
+
+				uncomp := buffers.Get(int(sz))
+				defer buffers.Return(uncomp)
+
+				n, err := lz4decode.UncompressBlock(view[5:], uncomp, nil)
+				if err != nil {
+					return false, err
+				}
+
+				if n != int(sz) {
+					return false, fmt.Errorf("failed to uncompress correctly")
+				}
+
+				view = uncomp
+			} else {
+				view = view[1:]
 			}
 
-			view = uncomp
-		} else {
-			view = view[1:]
-		}
+			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
-		c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
-
-		err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(LBA(lba)))
-		if err != nil {
-			return false, err
+			err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(LBA(lba)))
+			if err != nil {
+				return false, err
+			}
 		}
 
 		if time.Since(s) >= dur {
@@ -1229,23 +1330,27 @@ loop:
 		}
 	}
 
-	c.d.log.Debug("removing segment from volume", "volume", c.d.volName, "segment", c.seg)
-	err := c.d.sa.RemoveSegmentFromVolume(ctx, c.d.volName, c.seg)
-	if err != nil {
-		return false, err
-	}
-
-	return true, c.d.removeSegmentIfPossible(ctx, c.seg)
+	return true, nil
 }
 
 func (c *CopyIterator) Close() error {
+	c.d.segmentsMu.Lock()
+	defer c.d.segmentsMu.Unlock()
+
+	c.d.segments[c.seg].deleted = true
+
+	c.d.log.Info("gc cycle complete",
+		"extents", c.copiedExtents,
+		"blocks", c.copiedBlocks,
+		"percent", float64(c.copiedBlocks)/float64(c.cnt),
+	)
 	return c.or.Close()
 }
 
 func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, error) {
 	f, err := d.sa.OpenSegment(ctx, seg)
 	if err != nil {
-		return nil, errors.Wrapf(err, "opening local live object")
+		return nil, errors.Wrapf(err, "opening segment %s", seg)
 	}
 
 	br := bufio.NewReader(ToReader(f))
@@ -1261,6 +1366,8 @@ func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, 
 	if err != nil {
 		return nil, err
 	}
+
+	ci.totalBlocks = uint64(ci.cnt)
 
 	err = binary.Read(br, binary.BigEndian, &ci.dataBegin)
 	if err != nil {
@@ -1288,6 +1395,7 @@ func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error
 		}
 	}
 
+	d.log.Info("removing segment", "segment", seg)
 	// ok, no volume has it, we can remove it.
 	return d.sa.RemoveSegment(ctx, seg)
 }
