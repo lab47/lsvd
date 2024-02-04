@@ -216,7 +216,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 			})
 
 			// The empty size will signal that it's empty blocks.
-			_, err := o.em.Update(ext, OPBA{})
+			_, err := o.em.Update(ext, OPBA{Flag: 2})
 			if err != nil {
 				return err
 			}
@@ -227,14 +227,11 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 		var headerSz int
 
 		if flags == 1 {
-			o.body.WriteByte(1)
 			binary.Write(&o.body, binary.BigEndian, uint32(origSize))
 
-			headerSz = 1 + 4
+			headerSz = 4
 		} else {
-			o.body.WriteByte(0)
-
-			headerSz = 1
+			headerSz = 0
 		}
 
 		n, err := io.CopyN(&o.body, br, int64(dataLen))
@@ -252,12 +249,13 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 		o.extents = append(o.extents, ExtentHeader{
 			Extent: ext,
 			Size:   uint64(headerSz + int(dataLen)),
-			Offset: o.offset,
+			Offset: uint32(o.offset),
 		})
 
 		_, err = o.em.Update(ext, OPBA{
 			Offset: uint32(o.offset),
 			Size:   uint32(dataLen),
+			Flag:   flags,
 		})
 		if err != nil {
 			return err
@@ -307,11 +305,11 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		var srcData []byte
 
-		if srcBytes[0] == 0 {
-			srcData = srcBytes[1 : 1+srcRng.Size]
-		} else {
-			origSize := binary.BigEndian.Uint32(srcBytes[1:])
-			srcBytes = srcBytes[5 : 5+srcRng.Size]
+		if srcRng.Flag == 0 {
+			srcData = srcBytes[:srcRng.Size]
+		} else if srcRng.Flag == 1 {
+			origSize := binary.BigEndian.Uint32(srcBytes)
+			srcBytes = srcBytes[4 : 4+srcRng.Size]
 
 			o.log.Trace("compressed range", "offset", srcRng.Offset)
 
@@ -370,22 +368,21 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 	rng := ext.Extent
 
-	var (
-		flags byte
-		data  []byte
-	)
+	var data []byte
+
+	eh := ExtentHeader{
+		Extent: ext.Extent,
+	}
 
 	if emptyBytes(ext.data) {
-		flags = 2
 		o.cnt++
 
-		o.extents = append(o.extents, ExtentHeader{
-			Extent: ext.Extent,
-			Flags:  2,
-		})
+		eh.Flags = 2
 
 		// The empty size will signal that it's empty blocks.
-		_, err := o.em.Update(rng, OPBA{})
+		_, err := o.em.Update(rng, OPBA{
+			Flag: eh.Flags,
+		})
 		if err != nil {
 			return err
 		}
@@ -404,33 +401,28 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		var headerSz int
 
 		if sz > 0 && sz < len(ext.data) {
-			flags = 1
-			o.body.WriteByte(1)
+			eh.Flags = 1
 			binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
 
 			data = o.buf[:sz]
 			o.body.Write(o.buf[:sz])
 
-			headerSz = 1 + 4
+			headerSz = 4
 		} else {
-			o.body.WriteByte(0)
 			o.body.Write(ext.data)
 
 			data = ext.data
 			sz = len(ext.data)
 
-			headerSz = 1
+			headerSz = 0
 		}
 
 		o.storageRatio += (float64(sz) / float64(len(ext.data)))
 
 		o.cnt++
 
-		o.extents = append(o.extents, ExtentHeader{
-			Extent: ext.Extent,
-			Size:   uint64(headerSz + sz),
-			Offset: o.offset,
-		})
+		eh.Size = uint64(headerSz + sz)
+		eh.Offset = uint32(o.offset)
 
 		o.log.Trace("writing compressed range",
 			"offset", o.offset,
@@ -439,6 +431,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		_, err = o.em.Update(rng, OPBA{
 			Offset: uint32(o.offset),
 			Size:   uint32(sz),
+			Flag:   eh.Flags,
 		})
 		if err != nil {
 			return err
@@ -447,9 +440,11 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		o.offset += uint64(headerSz + sz)
 	}
 
+	o.extents = append(o.extents, eh)
+
 	return o.writeLog(
 		ext.Extent,
-		flags,
+		eh.Flags,
 		len(ext.data),
 		data,
 	)
@@ -505,13 +500,14 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	entries := make([]objectEntry, len(o.extents))
 
-	for i, blk := range o.extents {
+	for i, eh := range o.extents {
 		entries[i] = objectEntry{
-			extent: blk.Extent,
+			extent: eh.Extent,
 			opba: OPBA{
 				Segment: seg,
-				Offset:  dataBegin + uint32(blk.Offset),
-				Size:    uint32(blk.Size),
+				Offset:  dataBegin + uint32(eh.Offset),
+				Size:    uint32(eh.Size),
+				Flag:    eh.Flags,
 			},
 		}
 	}

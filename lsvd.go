@@ -34,6 +34,7 @@ type (
 		Segment SegmentId
 		Offset  uint32
 		Size    uint32
+		Flag    byte
 	}
 
 	RangedOPBA struct {
@@ -691,16 +692,13 @@ func (d *Disk) readOPBA(
 		d.extentCache.WriteExtent(ranged, rawData)
 	}
 
-	switch rawData[0] {
-	case 0:
-		rawData = rawData[1:]
-	case 1:
-		sz := binary.BigEndian.Uint32(rawData[1:])
+	if ranged.Flag == 1 {
+		sz := binary.BigEndian.Uint32(rawData)
 
 		uncomp := buffers.Get(int(sz))
 		defer buffers.Return(uncomp)
 
-		n, err := lz4decode.UncompressBlock(rawData[5:], uncomp, nil)
+		n, err := lz4decode.UncompressBlock(rawData[4:], uncomp, nil)
 		if err != nil {
 			return err
 		}
@@ -710,7 +708,7 @@ func (d *Disk) readOPBA(
 		}
 
 		rawData = uncomp
-	default:
+	} else if ranged.Flag != 0 {
 		return fmt.Errorf("unknown type byte: %x", rawData[0])
 	}
 
@@ -894,6 +892,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			Segment: seg,
 			Offset:  hdr.DataOffset + uint32(eh.Offset),
 			Size:    uint32(eh.Size),
+			Flag:    eh.Flags,
 		})
 		if err != nil {
 			return err
@@ -1018,6 +1017,8 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 	for it := m.m.Iterator(); it.Valid(); it.Next() {
 		cur := it.Value()
 
+		hclog.L().Error("write to lba map", "extent", cur.Range, "flag", cur.Flag)
+
 		err := binary.Write(f, binary.BigEndian, cur)
 		if err != nil {
 			return err
@@ -1043,6 +1044,8 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 
 			return nil, err
 		}
+
+		log.Trace("read from lba map", "extent", pba.Range, "flag", pba.Flag)
 
 		m.m.Set(pba.Range.LBA, &pba)
 	}
@@ -1254,13 +1257,13 @@ loop:
 				return false, err
 			}
 
-			if view[0] == 1 {
-				sz := binary.BigEndian.Uint32(view[1:])
+			if eh.Flags == 1 {
+				sz := binary.BigEndian.Uint32(view)
 
 				uncomp := buffers.Get(int(sz))
 				defer buffers.Return(uncomp)
 
-				n, err := lz4decode.UncompressBlock(view[5:], uncomp, nil)
+				n, err := lz4decode.UncompressBlock(view[4:], uncomp, nil)
 				if err != nil {
 					return false, err
 				}
@@ -1270,8 +1273,6 @@ loop:
 				}
 
 				view = uncomp
-			} else {
-				view = view[1:]
 			}
 
 			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))

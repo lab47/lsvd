@@ -414,12 +414,12 @@ func TestLSVD(t *testing.T) {
 		flags, err := br.ReadByte()
 		r.NoError(err)
 
-		r.Equal(byte(0), flags)
+		r.Equal(byte(1), flags)
 
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0x2d), blkSize)
+		r.Equal(uint64(0x2c), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -436,12 +436,10 @@ func TestLSVD(t *testing.T) {
 		_, err = io.ReadFull(f, buf)
 		r.NoError(err)
 
-		r.Equal(byte(1), buf[0])
-
-		uncompSize := binary.BigEndian.Uint32(buf[1:])
+		uncompSize := binary.BigEndian.Uint32(buf)
 		r.Equal(uint32(BlockSize), uncompSize)
 
-		buf = buf[5:]
+		buf = buf[4:]
 
 		sz, err := lz4decode.UncompressBlock(buf, view, nil)
 		r.NoError(err)
@@ -519,7 +517,7 @@ func TestLSVD(t *testing.T) {
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(BlockSize+1), blkSize)
+		r.Equal(uint64(BlockSize), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -534,9 +532,7 @@ func TestLSVD(t *testing.T) {
 		_, err = io.ReadFull(f, view)
 		r.NoError(err)
 
-		r.Equal(byte(0), view[0])
-
-		blockEqual(t, testRand, view[1:])
+		blockEqual(t, testRand, view)
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)

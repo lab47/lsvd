@@ -76,7 +76,7 @@ type ExtentHeader struct {
 	Extent
 	Flags  byte
 	Size   uint64
-	Offset uint64
+	Offset uint32
 }
 
 func (e *ExtentHeader) Read(r io.ByteReader) error {
@@ -104,10 +104,12 @@ func (e *ExtentHeader) Read(r io.ByteReader) error {
 		return err
 	}
 
-	e.Offset, err = binary.ReadUvarint(r)
+	off, err := binary.ReadUvarint(r)
 	if err != nil {
 		return err
 	}
+
+	e.Offset = uint32(off)
 
 	return nil
 }
