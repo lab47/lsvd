@@ -35,7 +35,7 @@ type ObjectCreator struct {
 	volName string
 
 	offset  uint64
-	extents []ocBlock
+	extents []ExtentHeader
 
 	buf    []byte
 	header bytes.Buffer
@@ -117,9 +117,9 @@ func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 	}
 	o.cnt++
 
-	o.extents = append(o.extents, ocBlock{
-		rng:   rng,
-		flags: 2,
+	o.extents = append(o.extents, ExtentHeader{
+		Extent: rng,
+		Flags:  2,
 	})
 
 	return nil
@@ -210,9 +210,9 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 		if flags == 2 {
 			o.cnt++
 
-			o.extents = append(o.extents, ocBlock{
-				rng:   ext,
-				flags: 2,
+			o.extents = append(o.extents, ExtentHeader{
+				Extent: ext,
+				Flags:  2,
 			})
 
 			// The empty size will signal that it's empty blocks.
@@ -249,10 +249,10 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 
 		o.cnt++
 
-		o.extents = append(o.extents, ocBlock{
-			rng:    ext,
-			size:   uint64(headerSz + int(dataLen)),
-			offset: o.offset,
+		o.extents = append(o.extents, ExtentHeader{
+			Extent: ext,
+			Size:   uint64(headerSz + int(dataLen)),
+			Offset: o.offset,
 		})
 
 		_, err = o.em.Update(ext, OPBA{
@@ -379,9 +379,9 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		flags = 2
 		o.cnt++
 
-		o.extents = append(o.extents, ocBlock{
-			rng:   ext.Extent,
-			flags: 2,
+		o.extents = append(o.extents, ExtentHeader{
+			Extent: ext.Extent,
+			Flags:  2,
 		})
 
 		// The empty size will signal that it's empty blocks.
@@ -426,10 +426,10 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 		o.cnt++
 
-		o.extents = append(o.extents, ocBlock{
-			rng:    ext.Extent,
-			size:   uint64(headerSz + sz),
-			offset: o.offset,
+		o.extents = append(o.extents, ExtentHeader{
+			Extent: ext.Extent,
+			Size:   uint64(headerSz + sz),
+			Offset: o.offset,
 		})
 
 		o.log.Trace("writing compressed range",
@@ -485,38 +485,9 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	stats := &SegmentStats{}
 
-	buf := make([]byte, 16)
-
 	for _, blk := range o.extents {
-		stats.Blocks += uint64(blk.rng.Blocks)
-
-		lba := blk.rng.LBA
-
-		sz := binary.PutUvarint(buf, uint64(lba))
-		_, err := o.header.Write(buf[:sz])
-		if err != nil {
-			return nil, nil, err
-		}
-
-		sz = binary.PutUvarint(buf, uint64(blk.rng.Blocks))
-		_, err = o.header.Write(buf[:sz])
-		if err != nil {
-			return nil, nil, err
-		}
-
-		err = o.header.WriteByte(blk.flags)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		sz = binary.PutUvarint(buf, blk.size)
-		_, err = o.header.Write(buf[:sz])
-		if err != nil {
-			return nil, nil, err
-		}
-
-		sz = binary.PutUvarint(buf, blk.offset)
-		_, err = o.header.Write(buf[:sz])
+		stats.Blocks += uint64(blk.Blocks)
+		err := blk.Write(&o.header)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -536,11 +507,11 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	for i, blk := range o.extents {
 		entries[i] = objectEntry{
-			extent: blk.rng,
+			extent: blk.Extent,
 			opba: OPBA{
 				Segment: seg,
-				Offset:  dataBegin + uint32(blk.offset),
-				Size:    uint32(blk.size),
+				Offset:  dataBegin + uint32(blk.Offset),
+				Size:    uint32(blk.Size),
 			},
 		}
 	}
@@ -552,14 +523,10 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	defer f.Close()
 
-	binary.BigEndian.PutUint32(buf, uint32(o.cnt))
-	_, err = f.Write(buf[:4])
-	if err != nil {
-		return nil, nil, err
-	}
-
-	binary.BigEndian.PutUint32(buf, dataBegin)
-	_, err = f.Write(buf[:4])
+	err = SegmentHeader{
+		ExtentCount: uint32(o.cnt),
+		DataOffset:  dataBegin,
+	}.Write(f)
 	if err != nil {
 		return nil, nil, err
 	}

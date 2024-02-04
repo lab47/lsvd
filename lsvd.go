@@ -41,10 +41,6 @@ type (
 		Full  Extent
 		OPBA
 	}
-
-	SegmentHeader struct {
-		CreatedAt uint64
-	}
 )
 
 type (
@@ -867,60 +863,37 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 
 	br := bufio.NewReader(ToReader(f))
 
-	var cnt, dataBegin uint32
+	var hdr SegmentHeader
 
-	err = binary.Read(br, binary.BigEndian, &cnt)
+	err = hdr.Read(br)
 	if err != nil {
 		return err
 	}
 
-	err = binary.Read(br, binary.BigEndian, &dataBegin)
-	if err != nil {
-		return err
-	}
+	d.log.Debug("extent header info", "count", hdr.ExtentCount, "data-begin", hdr.DataOffset)
 
 	segTrack := &Segment{}
 
 	d.segments[seg] = segTrack
 
-	for i := uint32(0); i < cnt; i++ {
-		lba, err := binary.ReadUvarint(br)
+	for i := uint32(0); i < hdr.ExtentCount; i++ {
+		var eh ExtentHeader
+
+		err := eh.Read(br)
 		if err != nil {
 			return err
 		}
 
-		count, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
+		segTrack.Size += uint64(eh.Blocks)
+		segTrack.Used += uint64(eh.Blocks)
 
-		segTrack.Size += count
-		segTrack.Used += count
+		segTrack.TotalBytes += eh.Size
+		segTrack.UsedBytes += eh.Size
 
-		_, err = br.ReadByte()
-		if err != nil {
-			return err
-		}
-
-		blkSize, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-
-		segTrack.TotalBytes += blkSize
-		segTrack.UsedBytes += blkSize
-
-		blkOffset, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-
-		rng := Extent{LBA: LBA(lba), Blocks: uint32(count)}
-
-		affected, err := d.lba2pba.Update(rng, OPBA{
+		affected, err := d.lba2pba.Update(eh.Extent, OPBA{
 			Segment: seg,
-			Offset:  dataBegin + uint32(blkOffset),
-			Size:    uint32(blkSize),
+			Offset:  hdr.DataOffset + uint32(eh.Offset),
+			Size:    uint32(eh.Size),
 		})
 		if err != nil {
 			return err
@@ -1218,8 +1191,9 @@ type CopyIterator struct {
 	or  ObjectReader
 	br  *bufio.Reader
 
-	cnt       uint32
-	dataBegin uint32
+	hdr SegmentHeader
+
+	left uint32
 
 	totalBlocks   uint64
 	copiedExtents int
@@ -1234,40 +1208,23 @@ func (c *CopyIterator) Process(ctx context.Context, dur time.Duration) (bool, er
 	s := time.Now()
 
 loop:
-	for c.cnt > 0 {
-		c.cnt--
-		lba, err := binary.ReadUvarint(br)
+	for c.left > 0 {
+		c.left--
+
+		var eh ExtentHeader
+
+		err := eh.Read(br)
 		if err != nil {
 			return false, err
 		}
 
-		blocks, err := binary.ReadUvarint(br)
-		if err != nil {
-			return false, err
+		if len(view) < int(eh.Size) {
+			view = make([]byte, eh.Size)
 		}
 
-		_, err = br.ReadByte()
-		if err != nil {
-			return false, err
-		}
+		extent := eh.Extent
 
-		blkSize, err := binary.ReadUvarint(br)
-		if err != nil {
-			return false, err
-		}
-
-		if len(view) < int(blkSize) {
-			view = make([]byte, blkSize)
-		}
-
-		blkOffset, err := binary.ReadUvarint(br)
-		if err != nil {
-			return false, err
-		}
-
-		extent := Extent{LBA: LBA(lba), Blocks: uint32(blocks)}
-
-		c.d.log.Trace("considering for copy", "extent", extent, "size", blkSize, "offset", blkOffset)
+		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
 
 		opbas, err := c.d.computeOPBAs(extent)
 		if err != nil {
@@ -1281,16 +1238,16 @@ loop:
 			}
 		}
 
-		c.copiedBlocks += blocks
+		c.copiedBlocks += uint64(eh.Blocks)
 		c.copiedExtents++
 
 		// This it's an extent of empty blocks, zero.
-		if blkSize == 0 {
+		if eh.Size == 0 {
 			c.d.ZeroBlocks(ctx, extent)
 		} else {
-			view := view[:blkSize]
+			view := view[:eh.Size]
 
-			offset := int64(c.dataBegin + uint32(blkOffset))
+			offset := int64(c.hdr.DataOffset + uint32(eh.Offset))
 
 			_, err = c.or.ReadAt(view, offset)
 			if err != nil {
@@ -1319,7 +1276,7 @@ loop:
 
 			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
-			err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(LBA(lba)))
+			err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(eh.LBA))
 			if err != nil {
 				return false, err
 			}
@@ -1342,7 +1299,7 @@ func (c *CopyIterator) Close() error {
 	c.d.log.Info("gc cycle complete",
 		"extents", c.copiedExtents,
 		"blocks", c.copiedBlocks,
-		"percent", float64(c.copiedBlocks)/float64(c.cnt),
+		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
 	)
 	return c.or.Close()
 }
@@ -1362,17 +1319,13 @@ func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, 
 		seg: seg,
 	}
 
-	err = binary.Read(br, binary.BigEndian, &ci.cnt)
+	err = ci.hdr.Read(br)
 	if err != nil {
 		return nil, err
 	}
 
-	ci.totalBlocks = uint64(ci.cnt)
-
-	err = binary.Read(br, binary.BigEndian, &ci.dataBegin)
-	if err != nil {
-		return nil, err
-	}
+	ci.totalBlocks = uint64(ci.hdr.ExtentCount)
+	ci.left = ci.hdr.ExtentCount
 
 	return ci, nil
 }
