@@ -57,6 +57,10 @@ func (e *ExtentMap) Update(rng Extent, pba OPBA) ([]RangedOPBA, error) {
 		affected []RangedOPBA
 	)
 
+	if pba.Flag == 1 && pba.Header.RawSize == 0 {
+		panic("bad opba")
+	}
+
 	e.checkExtent(rng)
 
 	e.log.Trace("triggered update", "extent", rng)

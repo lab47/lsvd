@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,7 +83,7 @@ func (o *ObjectCreator) OpenWrite(path string) error {
 
 	err = o.readLog(f)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "error reading object log")
 	}
 
 	o.logF = f
@@ -139,27 +138,40 @@ func (o *ObjectCreator) AvgStorageRatio() float64 {
 
 func (o *ObjectCreator) writeLog(
 	ext Extent,
+	eh ExtentHeader,
 	flags byte,
 	origSize int,
 	data []byte,
 ) error {
 	dw := o.logW
-	if err := binary.Write(dw, binary.BigEndian, ext); err != nil {
+
+	if eh.Flags == 1 && eh.RawSize == 0 {
+		panic("bad header at writeLog")
+	}
+
+	err := eh.Write(dw)
+	if err != nil {
 		return err
 	}
 
-	if err := dw.WriteByte(flags); err != nil {
-		return err
-	}
+	/*
+		if err := binary.Write(dw, binary.BigEndian, ext); err != nil {
+			return err
+		}
 
-	if err := binary.Write(dw, binary.BigEndian, uint32(origSize)); err != nil {
-		return err
-	}
+		if err := dw.WriteByte(flags); err != nil {
+			return err
+		}
 
-	if err := binary.Write(dw, binary.BigEndian, uint32(len(data))); err != nil {
-		return err
-	}
+		if err := binary.Write(dw, binary.BigEndian, uint32(origSize)); err != nil {
+			return err
+		}
 
+		if err := binary.Write(dw, binary.BigEndian, uint32(len(data))); err != nil {
+			return err
+		}
+
+	*/
 	if n, err := dw.Write(data); err != nil || n != len(data) {
 		if err != nil {
 			return err
@@ -178,47 +190,40 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 
 	for {
 		var (
-			ext      Extent
-			flags    byte
-			origSize uint32
-			dataLen  uint32
-			err      error
+			//ext      Extent
+			//flags    byte
+			//origSize uint32
+			//dataLen  uint32
+			//err      error
+			eh ExtentHeader
 		)
 
-		if err := binary.Read(br, binary.BigEndian, &ext); err != nil {
+		if err := eh.Read(br); err != nil {
 			if errors.Is(err, io.EOF) {
+				o.log.Error("observed error reading extent header", "error", err)
 				break
 			}
 
+			o.log.Error("observed error reading extent header 2", "error", err)
 			return err
 		}
 
-		if flags, err = br.ReadByte(); err != nil {
-			return err
-		}
+		o.log.Trace("read extent header", "extent", eh.Extent, "flags", eh.Flags, "raw-size", eh.RawSize)
 
-		if err := binary.Read(br, binary.BigEndian, &origSize); err != nil {
-			return err
-		}
+		o.totalBlocks += int(eh.Blocks)
 
-		if err := binary.Read(br, binary.BigEndian, &dataLen); err != nil {
-			return err
-		}
-
-		o.totalBlocks += int(ext.Blocks)
-
-		if flags == 2 {
+		if eh.Flags == 2 {
 			o.cnt++
 
 			o.extents = append(o.extents, ExtentHeader{
-				Extent: ext,
+				Extent: eh.Extent,
 				Flags:  2,
 			})
 
 			// The empty size will signal that it's empty blocks.
-			_, err := o.em.Update(ext, OPBA{Flag: 2})
+			_, err := o.em.Update(eh.Extent, OPBA{Flag: 2, Header: eh})
 			if err != nil {
-				return err
+				return errors.Wrapf(err, "error updating extent-map")
 			}
 
 			continue
@@ -226,42 +231,45 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 
 		var headerSz int
 
-		if flags == 1 {
-			binary.Write(&o.body, binary.BigEndian, uint32(origSize))
+		/*
+			if eh.Flags == 1 {
+				binary.Write(&o.body, binary.BigEndian, uint32(eh.RawSize))
 
-			headerSz = 4
-		} else {
-			headerSz = 0
-		}
+				headerSz = 4
+			} else {
+				headerSz = 0
+			}
+		*/
 
-		n, err := io.CopyN(&o.body, br, int64(dataLen))
+		n, err := io.CopyN(&o.body, br, int64(eh.Size))
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "error copying body, expecting %d, got %d", eh.Size, n)
 		}
-		if n != int64(dataLen) {
-			return fmt.Errorf("short copy: %d != %d", n, dataLen)
+		if n != int64(eh.Size) {
+			return fmt.Errorf("short copy: %d != %d", n, eh.Size)
 		}
 
-		o.storageRatio += float64(dataLen) / float64(origSize)
+		o.storageRatio += float64(eh.Size) / float64(eh.RawSize)
 
 		o.cnt++
 
 		o.extents = append(o.extents, ExtentHeader{
-			Extent: ext,
-			Size:   uint64(headerSz + int(dataLen)),
+			Extent: eh.Extent,
+			Size:   uint64(headerSz + int(eh.Size)),
 			Offset: uint32(o.offset),
 		})
 
-		_, err = o.em.Update(ext, OPBA{
+		_, err = o.em.Update(eh.Extent, OPBA{
 			Offset: uint32(o.offset),
-			Size:   uint32(dataLen),
-			Flag:   flags,
+			Size:   uint32(eh.Size),
+			Flag:   eh.Flags,
+			Header: eh,
 		})
 		if err != nil {
 			return err
 		}
 
-		o.offset += uint64(headerSz + int(dataLen))
+		o.offset += uint64(headerSz + int(eh.Size))
 	}
 
 	return nil
@@ -308,8 +316,12 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 		if srcRng.Flag == 0 {
 			srcData = srcBytes[:srcRng.Size]
 		} else if srcRng.Flag == 1 {
-			origSize := binary.BigEndian.Uint32(srcBytes)
-			srcBytes = srcBytes[4 : 4+srcRng.Size]
+			origSize := srcRng.Header.RawSize // binary.BigEndian.Uint32(srcBytes)
+			if origSize == 0 {
+				panic("missing rawsize")
+			}
+
+			srcBytes = srcBytes[:srcRng.Size]
 
 			o.log.Trace("compressed range", "offset", srcRng.Offset)
 
@@ -381,7 +393,8 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 		// The empty size will signal that it's empty blocks.
 		_, err := o.em.Update(rng, OPBA{
-			Flag: eh.Flags,
+			Flag:   eh.Flags,
+			Header: eh,
 		})
 		if err != nil {
 			return err
@@ -402,12 +415,14 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 		if sz > 0 && sz < len(ext.data) {
 			eh.Flags = 1
-			binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
+			eh.RawSize = uint32(len(ext.data))
+
+			// binary.Write(&o.body, binary.BigEndian, uint32(len(ext.data)))
 
 			data = o.buf[:sz]
 			o.body.Write(o.buf[:sz])
 
-			headerSz = 4
+			headerSz = 0
 		} else {
 			o.body.Write(ext.data)
 
@@ -426,12 +441,15 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 		o.log.Trace("writing compressed range",
 			"offset", o.offset,
-			"size", sz)
+			"size", sz,
+			"raw-size", eh.RawSize,
+		)
 
 		_, err = o.em.Update(rng, OPBA{
 			Offset: uint32(o.offset),
 			Size:   uint32(sz),
 			Flag:   eh.Flags,
+			Header: eh,
 		})
 		if err != nil {
 			return err
@@ -444,6 +462,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 	return o.writeLog(
 		ext.Extent,
+		eh,
 		eh.Flags,
 		len(ext.data),
 		data,
@@ -501,6 +520,9 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	entries := make([]objectEntry, len(o.extents))
 
 	for i, eh := range o.extents {
+		if eh.Flags == 1 && eh.RawSize == 0 {
+			panic("bad header")
+		}
 		entries[i] = objectEntry{
 			extent: eh.Extent,
 			opba: OPBA{
@@ -508,6 +530,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 				Offset:  dataBegin + uint32(eh.Offset),
 				Size:    uint32(eh.Size),
 				Flag:    eh.Flags,
+				Header:  eh,
 			},
 		}
 	}

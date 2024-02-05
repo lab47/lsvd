@@ -35,6 +35,8 @@ type (
 		Offset  uint32
 		Size    uint32
 		Flag    byte
+
+		Header ExtentHeader
 	}
 
 	RangedOPBA struct {
@@ -232,7 +234,7 @@ func (d *Disk) nextSeq() (ulid.ULID, error) {
 func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
 	seq, err := d.nextSeq()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "error generating sequence number")
 	}
 
 	d.curSeq = seq
@@ -251,6 +253,8 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	d.log.Debug("starting goroutine to close segment")
 
 	d.prevCacheMu.Lock()
 	for d.prevCache != nil {
@@ -480,7 +484,6 @@ func (d *Disk) computeOPBAs(rng Extent) ([]*RangedOPBA, error) {
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent, error) {
-
 	used, err := d.curOC.FillExtent(data)
 	if err != nil {
 		return nil, err
@@ -693,12 +696,15 @@ func (d *Disk) readOPBA(
 	}
 
 	if ranged.Flag == 1 {
-		sz := binary.BigEndian.Uint32(rawData)
+		sz := ranged.Header.RawSize //  binary.BigEndian.Uint32(rawData)
+		if ranged.Header.RawSize == 0 {
+			panic(fmt.Sprintf("missing rawsize 2: %d != %d", ranged.Header.RawSize, sz))
+		}
 
 		uncomp := buffers.Get(int(sz))
 		defer buffers.Return(uncomp)
 
-		n, err := lz4decode.UncompressBlock(rawData[4:], uncomp, nil)
+		n, err := lz4decode.UncompressBlock(rawData, uncomp, nil)
 		if err != nil {
 			return err
 		}
@@ -893,6 +899,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 			Offset:  hdr.DataOffset + uint32(eh.Offset),
 			Size:    uint32(eh.Size),
 			Flag:    eh.Flags,
+			Header:  eh,
 		})
 		if err != nil {
 			return err
@@ -950,12 +957,13 @@ func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
 func (d *Disk) Close(ctx context.Context) error {
 	err := d.CloseSegment(ctx)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "error closing segment")
 	}
 
 	err = d.saveLBAMap(ctx)
 	if err != nil {
 		d.log.Error("error saving LBA cached map", "error", err)
+		err = errors.Wrapf(err, "error saving lba map")
 	}
 
 	d.openSegments.Purge()
@@ -1258,12 +1266,16 @@ loop:
 			}
 
 			if eh.Flags == 1 {
-				sz := binary.BigEndian.Uint32(view)
+				sz := eh.RawSize // binary.BigEndian.Uint32(view)
+
+				if eh.RawSize == 0 {
+					panic("missing rawsize 3")
+				}
 
 				uncomp := buffers.Get(int(sz))
 				defer buffers.Return(uncomp)
 
-				n, err := lz4decode.UncompressBlock(view[4:], uncomp, nil)
+				n, err := lz4decode.UncompressBlock(view, uncomp, nil)
 				if err != nil {
 					return false, err
 				}

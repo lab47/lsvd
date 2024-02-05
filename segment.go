@@ -74,9 +74,10 @@ func (s *SegmentHeader) Read(r io.Reader) error {
 
 type ExtentHeader struct {
 	Extent
-	Flags  byte
-	Size   uint64
-	Offset uint32
+	Flags   byte
+	Size    uint64
+	Offset  uint32
+	RawSize uint32 // used when the extent is compressed
 }
 
 func (e *ExtentHeader) Read(r io.ByteReader) error {
@@ -110,6 +111,13 @@ func (e *ExtentHeader) Read(r io.ByteReader) error {
 	}
 
 	e.Offset = uint32(off)
+
+	rs, err := binary.ReadUvarint(r)
+	if err != nil {
+		return err
+	}
+
+	e.RawSize = uint32(rs)
 
 	return nil
 }
@@ -153,6 +161,11 @@ func (e *ExtentHeader) Write(w io.ByteWriter) error {
 	}
 
 	_, err = WriteUvarint(w, uint64(e.Offset))
+	if err != nil {
+		return err
+	}
+
+	_, err = WriteUvarint(w, uint64(e.RawSize))
 	if err != nil {
 		return err
 	}

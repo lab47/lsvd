@@ -380,8 +380,10 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
 
+		t.Log("closing disk")
 		r.NoError(d.Close(ctx))
 
+		t.Log("reopening disk")
 		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
 		r.NoError(err)
 
@@ -399,7 +401,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(4+9), hdrLen)
+		r.Equal(uint32(0xf), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -419,12 +421,17 @@ func TestLSVD(t *testing.T) {
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0x2c), blkSize)
+		r.Equal(uint64(0x28), blkSize)
 
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
 		r.Equal(uint64(0), offset)
+
+		rawSize, err := binary.ReadUvarint(br)
+		r.NoError(err)
+
+		r.Equal(uint64(BlockSize), rawSize)
 
 		_, err = f.Seek(int64(uint64(hdrLen)+offset), io.SeekStart)
 		r.NoError(err)
@@ -435,11 +442,6 @@ func TestLSVD(t *testing.T) {
 
 		_, err = io.ReadFull(f, buf)
 		r.NoError(err)
-
-		uncompSize := binary.BigEndian.Uint32(buf)
-		r.Equal(uint32(BlockSize), uncompSize)
-
-		buf = buf[4:]
 
 		sz, err := lz4decode.UncompressBlock(buf, view, nil)
 		r.NoError(err)
@@ -497,7 +499,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(5+9), hdrLen)
+		r.Equal(uint32(5+10), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -577,7 +579,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(4+9), hdrLen)
+		r.Equal(uint32(4+10), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
