@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/lab47/lz4decode"
 	"github.com/lab47/mode"
 
@@ -31,12 +32,8 @@ type (
 	LBA       uint64
 
 	OPBA struct {
+		ExtentHeader
 		Segment SegmentId
-		Offset  uint32
-		Size    uint32
-		Flag    byte
-
-		Header ExtentHeader
 	}
 
 	RangedOPBA struct {
@@ -266,6 +263,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	done := make(chan struct{})
 
 	go func() {
+		defer d.log.Debug("finished goroutine to close segment")
 		defer close(done)
 		defer segmentsWritten.Inc()
 
@@ -337,6 +335,8 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 				d.log.Trace("updating read map", "extent", ent.extent)
 			}
 			affected, err := d.lba2pba.Update(ent.extent, ent.opba)
+			spew.Config.DisableMethods = true
+			spew.Dump(ent.opba)
 			if err != nil {
 				d.log.Error("error updating read map", "error", err)
 			}
@@ -353,6 +353,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		mapDur := time.Since(mapStart)
 
 		if mode.Debug() {
+			d.log.Info("performing extent validation")
 			passed := 0
 			for _, ent := range entries {
 				data, err := d.ReadExtent(ctx, ent.extent)
@@ -656,6 +657,8 @@ func (d *Disk) readOPBA(
 ) error {
 	addr := ranged.OPBA
 
+	spew.Dump(ranged)
+
 	rawData := buffers.Get(int(addr.Size))
 	defer buffers.Return(rawData)
 
@@ -695,10 +698,10 @@ func (d *Disk) readOPBA(
 		d.extentCache.WriteExtent(ranged, rawData)
 	}
 
-	if ranged.Flag == 1 {
-		sz := ranged.Header.RawSize //  binary.BigEndian.Uint32(rawData)
-		if ranged.Header.RawSize == 0 {
-			panic(fmt.Sprintf("missing rawsize 2: %d != %d", ranged.Header.RawSize, sz))
+	if ranged.Flags == 1 {
+		sz := ranged.RawSize //  binary.BigEndian.Uint32(rawData)
+		if ranged.RawSize == 0 {
+			panic(fmt.Sprintf("missing rawsize 2: %d != %d", ranged.RawSize, sz))
 		}
 
 		uncomp := buffers.Get(int(sz))
@@ -706,7 +709,7 @@ func (d *Disk) readOPBA(
 
 		n, err := lz4decode.UncompressBlock(rawData, uncomp, nil)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
 		}
 
 		if n != int(sz) {
@@ -714,7 +717,7 @@ func (d *Disk) readOPBA(
 		}
 
 		rawData = uncomp
-	} else if ranged.Flag != 0 {
+	} else if ranged.Flags != 0 {
 		return fmt.Errorf("unknown type byte: %x", rawData[0])
 	}
 
@@ -894,12 +897,11 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 		segTrack.TotalBytes += eh.Size
 		segTrack.UsedBytes += eh.Size
 
+		eh.Offset += hdr.DataOffset
+
 		affected, err := d.lba2pba.Update(eh.Extent, OPBA{
-			Segment: seg,
-			Offset:  hdr.DataOffset + uint32(eh.Offset),
-			Size:    uint32(eh.Size),
-			Flag:    eh.Flags,
-			Header:  eh,
+			ExtentHeader: eh,
+			Segment:      seg,
 		})
 		if err != nil {
 			return err
@@ -1025,7 +1027,7 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 	for it := m.m.Iterator(); it.Valid(); it.Next() {
 		cur := it.Value()
 
-		hclog.L().Error("write to lba map", "extent", cur.Range, "flag", cur.Flag)
+		hclog.L().Error("write to lba map", "extent", cur.Range, "flag", cur.Flags)
 
 		err := binary.Write(f, binary.BigEndian, cur)
 		if err != nil {
@@ -1053,7 +1055,7 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 			return nil, err
 		}
 
-		log.Trace("read from lba map", "extent", pba.Range, "flag", pba.Flag)
+		log.Trace("read from lba map", "extent", pba.Range, "flag", pba.Flags)
 
 		m.m.Set(pba.Range.LBA, &pba)
 	}

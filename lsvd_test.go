@@ -158,7 +158,7 @@ func TestLSVD(t *testing.T) {
 		n := d2.data
 		blockEqual(t, data.data[:BlockSize], n[:BlockSize])
 		n = n[BlockSize:]
-		blockEqual(t, testRandX.data[:BlockSize], n[:BlockSize])
+		blockEqual(t, testRandX.data, n[:BlockSize])
 		n = n[BlockSize:]
 		blockEqual(t, data.data[BlockSize*2:BlockSize*4], n)
 	})
@@ -292,8 +292,10 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
 
+		t.Log("closing disk")
 		r.NoError(d.Close(ctx))
 
+		t.Log("reopening disk")
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
