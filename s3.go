@@ -17,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/hashicorp/go-hclog"
-	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
@@ -80,26 +79,6 @@ func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 	}
 
 	return n, err
-}
-
-func (s *S3ObjectReader) ReadAtCompressed(dest []byte, off, compSize int64) (int, error) {
-	buf := make([]byte, compSize)
-
-	_, err := s.ReadAt(buf, off)
-	if err != nil {
-		return 0, err
-	}
-
-	sz, err := lz4decode.UncompressBlock(buf, dest, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	if sz != BlockSize {
-		return 0, fmt.Errorf("compressed block uncompressed wrong size (%d != %d)", sz, BlockSize)
-	}
-
-	return len(dest), nil
 }
 
 func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
