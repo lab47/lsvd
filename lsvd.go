@@ -242,20 +242,22 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	)
 
 	for _, h := range remaining {
-		pes, err := d.computePartialExtents(h)
+		pes, err := d.resolvePartialExtents(h)
 		if err != nil {
 			d.log.Error("error computing opbas", "error", err, "rng", h)
 			return RangeData{}, err
 		}
 
 		if len(pes) == 0 {
-			d.log.Trace("no ranged opbas found")
+			d.log.Trace("no partial extents found")
 			// nothing for range, and since the data is pre-zero'd, we
 			// don't need to clear anything here.
 		} else {
 			for _, pe := range pes {
 				if pe.Size == 0 {
 					// it's empty! cool cool, we don't need to fill the hole
+					// since the slice we're filling inside data has already been
+					// cleared when it's created.
 					continue
 				}
 
@@ -287,6 +289,9 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		}
 	}
 
+	// With our set of segments and partial extents in hand, go reach each one
+	// and populate data. This could be parallelized as each touches a different
+	// range of data.
 	for _, o := range reqs {
 		err := d.readPartialExtent(ctx, o.pe, o.extents, rng, data)
 		if err != nil {
@@ -323,11 +328,14 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 }
 
 func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, holes []Extent) ([]Extent, error) {
+	// This is broken out from fillFromWriteCache because we need to hold prevCacheMu since
+	// the segment closing goroutine is running elsewhere and touches it.
 	d.prevCacheMu.Lock()
 	defer d.prevCacheMu.Unlock()
 
 	oc := d.prevCache
 
+	// If there is no previous cache, bail.
 	if oc == nil {
 		return holes, nil
 	}
@@ -348,7 +356,6 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 		if len(used) == 0 {
 			remaining = append(remaining, sub)
 		} else {
-
 			res, ok := sub.SubMany(used)
 			if !ok {
 				return nil, fmt.Errorf("error subtracting partial holes")
@@ -363,7 +370,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 	return remaining, nil
 }
 
-func (d *Disk) computePartialExtents(rng Extent) ([]*PartialExtent, error) {
+func (d *Disk) resolvePartialExtents(rng Extent) ([]*PartialExtent, error) {
 	d.lbaMu.Lock()
 	defer d.lbaMu.Unlock()
 
@@ -418,7 +425,7 @@ func (d *Disk) readPartialExtent(
 		d.extentCache.WriteExtent(pe, rawData)
 	}
 
-	if pe.Flags == 1 {
+	if pe.Flags == Compressed {
 		sz := pe.RawSize
 
 		uncomp := buffers.Get(int(sz))
@@ -434,8 +441,8 @@ func (d *Disk) readPartialExtent(
 		}
 
 		rawData = uncomp
-	} else if pe.Flags != 0 {
-		return fmt.Errorf("unknown type byte: %x", rawData[0])
+	} else if pe.Flags != Uncompressed {
+		return fmt.Errorf("unknown flags value: %d", pe.Flags)
 	}
 
 	src := RangeData{
@@ -452,26 +459,28 @@ func (d *Disk) readPartialExtent(
 	//   1. the byte range for rng within data
 	//   2. the byte range for rng within rawData
 	// Then we copy the bytes from 2 to 1.
-	for _, rrng := range rngs {
-		rng, ok := pe.Partial.Clamp(rrng)
+	for _, x := range rngs {
+		overlap, ok := pe.Partial.Clamp(x)
 		if !ok {
 			d.log.Error("error clamping required range to usable range")
 			return fmt.Errorf("error clamping range")
 		}
 
-		d.log.Trace("preparing to copy data from object", "request", rrng, "clamped", rng)
+		d.log.Trace("preparing to copy data from object", "request", x, "clamped", overlap)
 
-		subDest, ok := dest.SubRange(rng)
+		// Compute our source range and destination range against overlap
+
+		subDest, ok := dest.SubRange(overlap)
 		if !ok {
-			d.log.Error("error clamping range", "full", pe.Partial, "sub", rng)
-			return fmt.Errorf("error clamping range: %s => %s", pe.Partial, rng)
+			d.log.Error("error clamping range", "full", pe.Partial, "sub", overlap)
+			return fmt.Errorf("error clamping range: %s => %s", pe.Partial, overlap)
 		}
 
-		subSrc, ok := src.SubRange(rng)
+		subSrc, ok := src.SubRange(overlap)
 		if !ok {
 			d.log.Error("error calculate source subrange",
-				"input", src.Extent, "sub", rng,
-				"request", rrng, "usable", pe.Partial,
+				"input", src.Extent, "sub", overlap,
+				"request", x, "usable", pe.Partial,
 				"full", pe.Extent,
 			)
 			return fmt.Errorf("error calculate source subrange")
@@ -483,11 +492,8 @@ func (d *Disk) readPartialExtent(
 			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
 		)
 		n := copy(subDest.data, subSrc.data)
-		if n != len(dest.data) {
-			d.log.Trace("copied data into buffer", "size", n,
-				"src", subSrc.Extent.Blocks,
-				"dest", subDest.Extent.Blocks,
-			)
+		if n != len(subDest.data) {
+			d.log.Error("error copying data from partial extent", "expected", len(subDest.data), "was", n)
 		}
 	}
 

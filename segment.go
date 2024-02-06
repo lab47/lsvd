@@ -72,6 +72,12 @@ func (s *SegmentHeader) Read(r io.Reader) error {
 	return nil
 }
 
+const (
+	Uncompressed = 0
+	Compressed   = 1
+	Empty        = 2
+)
+
 type ExtentHeader struct {
 	Extent
 	Flags   byte

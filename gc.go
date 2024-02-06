@@ -129,7 +129,7 @@ loop:
 
 		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
 
-		opbas, err := c.d.computePartialExtents(extent)
+		opbas, err := c.d.resolvePartialExtents(extent)
 		if err != nil {
 			return false, err
 		}

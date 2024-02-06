@@ -95,8 +95,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 				} else {
 					resi[ent.Extent] = ranges
 				}
-
-				//d.log.Info("extent sum", "extent", ent.extent, "sum", sum)
 			}
 		}
 

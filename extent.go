@@ -56,6 +56,7 @@ func (e Extent) Cover(y Extent) Cover {
 	return CoverPartly
 }
 
+// Returns a new Extent that the region of +e+ that overlaps with +y+.
 func (e Extent) Clamp(y Extent) (Extent, bool) {
 	es, ef := e.Range()
 	ys, yf := y.Range()

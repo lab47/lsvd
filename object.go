@@ -4,16 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lz4decode"
-	"github.com/oklog/ulid/v2"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
@@ -110,7 +107,7 @@ func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 
 	o.extents = append(o.extents, ExtentHeader{
 		Extent: rng,
-		Flags:  2,
+		Flags:  Empty,
 	})
 
 	return nil
@@ -128,13 +125,15 @@ func (o *ObjectCreator) AvgStorageRatio() float64 {
 	return o.storageRatio / float64(o.cnt)
 }
 
+// writeLog writes the header and the data to the log so that we can
+// recover the write with readLog if need be.
 func (o *ObjectCreator) writeLog(
 	eh ExtentHeader,
 	data []byte,
 ) error {
 	dw := o.logW
 
-	if eh.Flags == 1 && eh.RawSize == 0 {
+	if eh.Flags == Compressed && eh.RawSize == 0 {
 		panic("bad header at writeLog")
 	}
 
@@ -154,6 +153,8 @@ func (o *ObjectCreator) writeLog(
 	return dw.Flush()
 }
 
+// readLog is used to restore the state of the ObjectCreator from the
+// log written to data.
 func (o *ObjectCreator) readLog(f *os.File) error {
 	o.log.Trace("rebuilding memory from log", "path", f.Name())
 
@@ -211,6 +212,9 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 	return nil
 }
 
+// FillExtent attempts to fill as much of +data+ as possible, returning
+// a list of Extents that was unable to fill. That later list is then
+// feed to the system that reads data from segments.
 func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 	rng := data.Extent
 
@@ -251,9 +255,9 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 		var srcData []byte
 
 		switch srcRng.Flags {
-		case 0:
+		case Uncompressed:
 			srcData = srcBytes[:srcRng.Size]
-		case 1:
+		case Compressed:
 			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
 			if origSize == 0 {
 				panic("missing rawsize")
@@ -279,7 +283,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 			}
 
 			srcData = o.buf[:origSize]
-		case 2:
+		case Empty:
 			// handled above, shouldn't be here.
 			return nil, fmt.Errorf("invalid flag 2, should have size == 0, did not")
 		default:
@@ -330,7 +334,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 	o.cnt++
 
 	if emptyBytes(ext.data) {
-		eh.Flags = 2
+		eh.Flags = Empty
 	} else {
 		bound := lz4.CompressBlockBound(len(ext.data))
 
@@ -344,7 +348,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		}
 
 		if compressedSize > 0 && compressedSize < len(ext.data) {
-			eh.Flags = 1
+			eh.Flags = Compressed
 			eh.RawSize = uint32(len(ext.data))
 			eh.Size = uint64(compressedSize)
 
@@ -355,7 +359,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 				"size", eh.Size,
 			)
 		} else {
-			eh.Flags = 0
+			eh.Flags = Uncompressed
 			eh.Size = uint64(len(ext.data))
 
 			data = ext.data
@@ -437,7 +441,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	entries := make([]ExtentLocation, len(o.extents))
 
 	for i, eh := range o.extents {
-		if eh.Flags == 1 && eh.RawSize == 0 {
+		if eh.Flags == Compressed && eh.RawSize == 0 {
 			panic("bad header")
 		}
 
@@ -498,243 +502,9 @@ type ObjectReader interface {
 	io.Closer
 }
 
-type LocalFile struct {
-	f *os.File
-}
-
-func (l *LocalFile) ReadAt(b []byte, off int64) (int, error) {
-	return l.f.ReadAt(b, off)
-}
-
-func OpenLocalFile(path string) (*LocalFile, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	return &LocalFile{f: f}, nil
-}
-
-func (l *LocalFile) Close() error {
-	return l.f.Close()
-}
-
-type LocalFileAccess struct {
-	Dir string
-}
-
-func (l *LocalFileAccess) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
-	return OpenLocalFile(
-		filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String()))
-}
-
-func ReadSegments(f io.Reader) ([]SegmentId, error) {
-	var out []SegmentId
-
-	br := bufio.NewReader(f)
-
-	for {
-		var seg SegmentId
-
-		_, err := br.Read(seg[:])
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, err
-		}
-
-		out = append(out, seg)
-	}
-
-	return out, nil
-}
-
-func (l *LocalFileAccess) ListSegments(ctx context.Context, vol string) ([]SegmentId, error) {
-	f, err := os.Open(filepath.Join(l.Dir, "volumes", vol, "objects"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-
-		return nil, err
-	}
-
-	defer f.Close()
-
-	return ReadSegments(f)
-}
-
-func (l *LocalFileAccess) WriteMetadata(ctx context.Context, vol, name string) (io.WriteCloser, error) {
-	f, err := os.Create(filepath.Join(l.Dir, "volumes", vol, name))
-	return f, err
-}
-
-func (l *LocalFileAccess) ReadMetadata(ctx context.Context, vol, name string) (io.ReadCloser, error) {
-	f, err := os.Open(filepath.Join(l.Dir, "volumes", vol, name))
-	return f, err
-}
-
-func (l *LocalFileAccess) RemoveSegment(ctx context.Context, seg SegmentId) error {
-	return os.Remove(
-		filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String()))
-}
-
-func (l *LocalFileAccess) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
-	path := filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String())
-	return os.Create(path)
-}
-
-func (l *LocalFileAccess) AppendToObjects(ctx context.Context, vol string, seg SegmentId) error {
-	segments, err := l.ListSegments(ctx, vol)
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(l.Dir, "volumes", vol, "objects")
-
-	segments = append(segments, seg)
-
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	bw := bufio.NewWriter(f)
-
-	defer bw.Flush()
-
-	for _, seg := range segments {
-		bw.Write(seg[:])
-	}
-
-	return nil
-}
-
-func (l *LocalFileAccess) RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error {
-	var buf bytes.Buffer
-
-	objectsPath := filepath.Join(l.Dir, "volumes", vol, "objects")
-	f, err := os.OpenFile(objectsPath, os.O_RDONLY, 0644)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	var cur SegmentId
-
-	for {
-		_, err = f.Read(cur[:])
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			return err
-		}
-
-		if seg != cur {
-			buf.Write(cur[:])
-		}
-	}
-
-	f.Close()
-
-	f, err = os.Create(objectsPath)
-	if err != nil {
-		return err
-	}
-
-	io.Copy(f, &buf)
-
-	return nil
-}
-
 type VolumeInfo struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
-}
-
-func (l *LocalFileAccess) InitContainer(ctx context.Context) error {
-	for _, p := range []string{"objects", "volumes"} {
-		path := filepath.Join(l.Dir, p)
-		fi, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			err = os.Mkdir(path, 0755)
-			if err != nil {
-				return err
-			}
-		} else if !fi.Mode().IsDir() {
-			return fmt.Errorf("sub path not a directory: %s", path)
-		}
-	}
-
-	return nil
-}
-
-func (l *LocalFileAccess) InitVolume(ctx context.Context, vol *VolumeInfo) error {
-	if vol.Name == "" {
-		return fmt.Errorf("volume name must not be empty")
-	}
-
-	path := filepath.Join(l.Dir, "volumes", vol.Name)
-
-	_, err := os.Stat(path)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	err = os.MkdirAll(path, 0755)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.Create(filepath.Join(path, "info.json"))
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	return json.NewEncoder(f).Encode(&vol)
-}
-
-func (l *LocalFileAccess) ListVolumes(ctx context.Context) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(l.Dir, "volumes"))
-	if err != nil {
-		return nil, err
-	}
-
-	var volumes []string
-
-	for _, ent := range entries {
-		volumes = append(volumes, ent.Name())
-	}
-
-	return volumes, nil
-}
-
-func (l *LocalFileAccess) GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error) {
-	f, err := os.Open(filepath.Join("volumes", vol, "info.json"))
-	if err != nil {
-		return nil, err
-	}
-
-	defer f.Close()
-
-	var vi VolumeInfo
-	err = json.NewDecoder(f).Decode(&vi)
-	if err != nil {
-		return nil, err
-	}
-
-	return &vi, nil
 }
 
 type SegmentAccess interface {
