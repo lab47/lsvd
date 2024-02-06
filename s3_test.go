@@ -171,7 +171,7 @@ func TestS3(t *testing.T) {
 
 			expected = append(expected, SegmentId(seg))
 
-			err = s.AppendToObjects(ctx, "default", SegmentId(seg))
+			err = s.AppendToSegments(ctx, "default", SegmentId(seg))
 			r.NoError(err)
 		}
 

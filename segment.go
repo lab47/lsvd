@@ -15,12 +15,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-type ocBlock struct {
-	rng          Extent
-	flags        byte
-	size, offset uint64
-}
-
 type SegmentCreator struct {
 	log hclog.Logger
 	cnt int
@@ -479,7 +473,7 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 
 	f.Close()
 
-	err = sa.AppendToObjects(ctx, o.volName, seg)
+	err = sa.AppendToSegments(ctx, o.volName, seg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -495,51 +489,4 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 	}
 
 	return entries, stats, nil
-}
-
-type SegmentReader interface {
-	io.ReaderAt
-	io.Closer
-}
-
-type VolumeInfo struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-}
-
-type SegmentAccess interface {
-	InitContainer(ctx context.Context) error
-	InitVolume(ctx context.Context, vol *VolumeInfo) error
-	ListVolumes(ctx context.Context) ([]string, error)
-	GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error)
-
-	ListSegments(ctx context.Context, vol string) ([]SegmentId, error)
-	OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error)
-	WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error)
-
-	RemoveSegment(ctx context.Context, seg SegmentId) error
-	RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error
-	WriteMetadata(ctx context.Context, vol, name string) (io.WriteCloser, error)
-	ReadMetadata(ctx context.Context, vol, name string) (io.ReadCloser, error)
-
-	AppendToObjects(ctx context.Context, volume string, seg SegmentId) error
-}
-
-var _ SegmentAccess = (*LocalFileAccess)(nil)
-
-type ReaderAtAsReader struct {
-	f   io.ReaderAt
-	off int64
-}
-
-func (r *ReaderAtAsReader) Read(b []byte) (int, error) {
-	n, err := r.f.ReadAt(b, r.off)
-	r.off += int64(n)
-	return n, err
-}
-
-func ToReader(ra io.ReaderAt) io.Reader {
-	return &ReaderAtAsReader{
-		f: ra,
-	}
 }

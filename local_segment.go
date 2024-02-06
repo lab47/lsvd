@@ -39,6 +39,8 @@ type LocalFileAccess struct {
 	Dir string
 }
 
+var _ SegmentAccess = (*LocalFileAccess)(nil)
+
 func (l *LocalFileAccess) OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error) {
 	return OpenLocalFile(
 		filepath.Join(l.Dir, "segments", "segment."+ulid.ULID(seg).String()))
@@ -101,7 +103,7 @@ func (l *LocalFileAccess) WriteSegment(ctx context.Context, seg SegmentId) (io.W
 	return os.Create(path)
 }
 
-func (l *LocalFileAccess) AppendToObjects(ctx context.Context, vol string, seg SegmentId) error {
+func (l *LocalFileAccess) AppendToSegments(ctx context.Context, vol string, seg SegmentId) error {
 	segments, err := l.ListSegments(ctx, vol)
 	if err != nil {
 		return err

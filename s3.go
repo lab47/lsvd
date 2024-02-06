@@ -264,7 +264,7 @@ func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg 
 	return err
 }
 
-func (s *S3Access) AppendToObjects(ctx context.Context, vol string, seg SegmentId) error {
+func (s *S3Access) AppendToSegments(ctx context.Context, vol string, seg SegmentId) error {
 	segments, err := s.ListSegments(ctx, vol)
 	if err != nil {
 		return err
