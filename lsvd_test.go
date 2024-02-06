@@ -313,60 +313,6 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, testExtent2, d3)
 	})
 
-	/*
-		t.Run("writes are written to a log file", func(t *testing.T) {
-			r := require.New(t)
-
-			tmpdir, err := os.MkdirTemp("", "lsvd")
-			r.NoError(err)
-			defer os.RemoveAll(tmpdir)
-
-			d, err := NewDisk(ctx, log, tmpdir)
-			r.NoError(err)
-
-			d.SeqGen = func() ulid.ULID {
-				return testUlid
-			}
-
-			err = d.WriteExtent(ctx, 47, testExtent)
-			r.NoError(err)
-
-			f, err := os.Open(filepath.Join(tmpdir, "writecache."+testUlid.String()))
-			r.NoError(err)
-
-			defer f.Close()
-
-			var hdr SegmentHeader
-
-			r.NoError(binary.Read(f, binary.BigEndian, &hdr))
-
-			var lba, crc uint64
-
-			h := crc64.New(crc64.MakeTable(crc64.ECMA))
-
-			binary.Write(h, binary.BigEndian, uint64(0))
-			binary.Write(h, binary.BigEndian, uint64(0))
-			h.Write(empty[:])
-			binary.Write(h, binary.BigEndian, hdr.CreatedAt)
-
-			f.Seek(int64(headerSize), io.SeekStart)
-
-			r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &crc))
-			r.NoError(binary.Read(io.TeeReader(f, h), binary.BigEndian, &lba))
-
-			r.Equal(uint64(47), lba)
-
-			blk := NewExtent(1)
-
-			n, err := io.ReadFull(io.TeeReader(f, h), blk.BlockView(0))
-			r.NoError(err)
-
-			r.Equal(BlockSize, n)
-
-			r.Equal(testExtent, blk)
-		})
-	*/
-
 	t.Run("writes written out to an object", func(t *testing.T) {
 		r := require.New(t)
 
@@ -800,10 +746,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		blockEqual(t, testExtent2.data, d2.data)
-
-		//r.NotEmpty(disk2.wcOffsets)
-
-		//r.Equal(uint32(headerSize), disk2.wcOffsets[48])
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {

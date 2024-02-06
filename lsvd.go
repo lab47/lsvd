@@ -1,70 +1,29 @@
 package lsvd
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
-	"hash/crc64"
-	"io"
-	"os"
 	"path/filepath"
-	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/lab47/lz4decode"
 	"github.com/lab47/mode"
 
-	"github.com/edsrzf/mmap-go"
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
 
-type (
-	SegmentId ulid.ULID
-	LBA       uint64
-
-	ExtentLocation struct {
-		ExtentHeader
-		Segment SegmentId
-	}
-
-	PartialExtent struct {
-		Range Extent
-		ExtentLocation
-	}
-)
-
-type (
-	segmentInfo struct {
-		f ObjectReader
-		m mmap.MMap
-	}
-)
-
-var (
-	headerSize = binary.Size(SegmentHeader{})
-	empty      SegmentId
-)
-
-func (s SegmentId) String() string {
-	return ulid.ULID(s).String()
-}
-
-const SegmentIdSize = 16
-
-const BlockSize = 4 * 1024
-
 const (
-	flushThreshHold = 15 * 1024 * 1024
-	maxWriteCache   = 100 * 1024 * 1024
+	// The size of all blocks in bytes
+	BlockSize = 4 * 1024
+
+	// How big the object gets before we flush it to S3
+	FlushThreshHold = 15 * 1024 * 1024
 )
 
 type Disk struct {
@@ -94,15 +53,6 @@ type Disk struct {
 	segments   map[SegmentId]*Segment
 
 	afterNS func(SegmentId)
-}
-
-func RoundToBlockSize(sz int64) int64 {
-	diff := sz % BlockSize
-	if diff == 0 {
-		return sz
-	}
-
-	return sz - diff
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
@@ -208,8 +158,18 @@ func (r *Disk) SetAfterNS(f func(SegmentId)) {
 	r.afterNS = f
 }
 
+type ExtentLocation struct {
+	ExtentHeader
+	Segment SegmentId
+}
+
+type PartialExtent struct {
+	Partial Extent
+	ExtentLocation
+}
+
 func (r *PartialExtent) String() string {
-	return fmt.Sprintf("%s (%s): %s %d:%d", r.Range, r.Extent, r.Segment, r.Offset, r.Size)
+	return fmt.Sprintf("%s (%s): %s %d:%d", r.Partial, r.Extent, r.Segment, r.Offset, r.Size)
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -239,246 +199,102 @@ func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
 	return NewObjectCreator(d.log, d.volName, path)
 }
 
-func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
-	segId := SegmentId(d.curSeq)
+func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
+	start := time.Now()
 
-	oc := d.curOC
-
-	var err error
-	d.curOC, err = d.newObjectCreator()
-	if err != nil {
-		return nil, err
-	}
-
-	d.log.Debug("starting goroutine to close segment")
-
-	d.prevCacheMu.Lock()
-	for d.prevCache != nil {
-		d.prevCacheCond.Wait()
-	}
-	d.prevCache = oc
-	d.prevCacheMu.Unlock()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer d.log.Debug("finished goroutine to close segment")
-		defer close(done)
-		defer segmentsWritten.Inc()
-
-		var (
-			entries []ExtentLocation
-			stats   *SegmentStats
-			err     error
-		)
-
-		start := time.Now()
-		for {
-			entries, stats, err = oc.Flush(ctx, d.sa, segId)
-			if err != nil {
-				d.log.Error("error flushing data to object, retrying", "error", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			break
-		}
-
-		flushDur := time.Since(start)
-
-		d.log.Debug("object published, resetting write cache")
-
-		sums := map[Extent]string{}
-		resi := map[Extent][]*PartialExtent{}
-
-		if mode.Debug() {
-			sums = map[Extent]string{}
-
-			var data RangeData
-
-			for _, ent := range entries {
-				data.Reset(ent.Extent)
-
-				_, err := oc.FillExtent(data)
-				if err != nil {
-					d.log.Error("error reading extent for validation", "error", err)
-				}
-				sum := rangeSum(data.data)
-				sums[ent.Extent] = sum
-
-				ranges, err := d.lba2pba.Resolve(ent.Extent)
-				if err != nil {
-					d.log.Error("error performing resolution for block read check")
-				} else {
-					resi[ent.Extent] = ranges
-				}
-
-				//d.log.Info("extent sum", "extent", ent.extent, "sum", sum)
-			}
-		}
-
-		mapStart := time.Now()
-
-		d.segmentsMu.Lock()
-
-		d.segments[segId] = &Segment{
-			Size: stats.Blocks,
-			Used: stats.Blocks,
-		}
-
-		d.segmentsMu.Unlock()
-
-		d.lbaMu.Lock()
-		for _, ent := range entries {
-			if mode.Debug() {
-				d.log.Trace("updating read map", "extent", ent.Extent)
-			}
-			affected, err := d.lba2pba.Update(ent)
-			if err != nil {
-				d.log.Error("error updating read map", "error", err)
-			}
-
-			d.updateUsage(segId, affected)
-		}
-		d.lbaMu.Unlock()
-
-		d.prevCacheMu.Lock()
-		d.prevCache = nil
-		d.prevCacheCond.Signal()
-		d.prevCacheMu.Unlock()
-
-		mapDur := time.Since(mapStart)
-
-		if mode.Debug() {
-			d.log.Info("performing extent validation")
-			passed := 0
-			for _, ent := range entries {
-				data, err := d.ReadExtent(ctx, ent.Extent)
-				if err != nil {
-					d.log.Error("error reading extent for validation", "error", err)
-				}
-				sum := rangeSum(data.data)
-
-				if sum != sums[ent.Extent] {
-					d.log.Error("block read validation failed", "extent", ent.Extent,
-						"sum", sum, "expected", sums[ent.Extent])
-					ranges, err := d.lba2pba.Resolve(ent.Extent)
-					if err != nil {
-						d.log.Error("unable to resolve for check", "error", err)
-					} else {
-						var before []string
-						for _, r := range resi[ent.Extent] {
-							before = append(before, r.String())
-						}
-
-						var after []string
-						for _, r := range ranges {
-							after = append(after, r.String())
-						}
-
-						d.log.Error("block read validation ranges",
-							"before", strings.Join(before, " "),
-							"after", strings.Join(after, " "))
-					}
-				} else {
-					passed++
-				}
-			}
-
-			d.log.Warn("finished block read validation", "passed", passed)
-		}
-
-		if d.afterNS != nil {
-			d.afterNS(segId)
-		}
-
-		finDur := time.Since(start)
-
-		d.log.Info("uploaded new object", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
-
-		err = d.cleanupDeletedSegments(ctx)
-		if err != nil {
-			d.log.Error("error cleaning up deleted segments", "error", err)
-		}
-
-		d.log.Debug("finished background object flush")
+	defer func() {
+		blocksReadLatency.Observe(time.Since(start).Seconds())
 	}()
 
-	return done, nil
-}
+	iops.Inc()
 
-func (d *Disk) updateUsage(self SegmentId, affected []PartialExtent) {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
+	data := NewRangeData(rng)
 
-	for _, r := range affected {
-		if r.Segment != self {
-			rng := r.Range
+	d.log.Trace("attempting to fill request from write cache", "extent", rng)
 
-			if seg, ok := d.segments[r.Segment]; ok {
-				if seg.deleted {
+	remaining, err := d.fillFromWriteCache(ctx, data)
+	if err != nil {
+		return RangeData{}, err
+	}
+
+	// Completely filled range from the write cache
+	if len(remaining) == 0 {
+		d.log.Trace("extent filled entirely from write cache")
+		return data, nil
+	}
+
+	d.log.Trace("remaining extents needed", "total", len(remaining))
+
+	if d.log.IsTrace() {
+		for _, r := range remaining {
+			d.log.Trace("remaining", "extent", r)
+		}
+	}
+
+	type readRequest struct {
+		pe      *PartialExtent
+		extents []Extent
+	}
+
+	var (
+		reqs []*readRequest
+		last *PartialExtent
+	)
+
+	for _, h := range remaining {
+		pes, err := d.computePartialExtents(h)
+		if err != nil {
+			d.log.Error("error computing opbas", "error", err, "rng", h)
+			return RangeData{}, err
+		}
+
+		if len(pes) == 0 {
+			d.log.Trace("no ranged opbas found")
+			// nothing for range, and since the data is pre-zero'd, we
+			// don't need to clear anything here.
+		} else {
+			for _, pe := range pes {
+				if pe.Size == 0 {
+					// it's empty! cool cool, we don't need to fill the hole
 					continue
 				}
 
-				if o, ok := seg.detectedCleared(rng); ok {
-					d.log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
+				// Because the holes can be smaller than the read ranges,
+				// 2 or more holes in sequence might be served by the same
+				// object range.
+				if last == pe {
+					reqs[len(reqs)-1].extents = append(reqs[len(reqs)-1].extents, h)
+				} else {
+					r := &readRequest{
+						pe:      pe,
+						extents: []Extent{h},
+					}
+
+					reqs = append(reqs, r)
+					last = pe
 				}
-				seg.cleared = append(seg.cleared, rng)
-				seg.Used -= uint64(rng.Blocks)
-			} else {
-				d.log.Warn("missing segment during usage update", "id", r.Segment.String())
 			}
 		}
 	}
-}
 
-func (d *Disk) CloseSegment(ctx context.Context) error {
-	ch, err := d.closeSegmentAsync(ctx)
-	if ch == nil || err != nil {
-		return err
+	if d.log.IsTrace() {
+		d.log.Trace("pes needed", "total", len(reqs))
+
+		for _, o := range reqs {
+			d.log.Trace("partial-extent needed",
+				"segment", o.pe.Segment, "offset", o.pe.Offset, "size", o.pe.Size,
+				"usable", o.pe.Partial, "full", o.pe.Extent)
+		}
 	}
 
-	select {
-	case <-ch:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for _, o := range reqs {
+		err := d.readPartialExtent(ctx, o.pe, o.extents, rng, data)
+		if err != nil {
+			return RangeData{}, err
+		}
 	}
-}
 
-const perBlockHeader = 16
-
-var emptyBlock = make([]byte, BlockSize)
-
-type Cover int
-
-const (
-	CoverSuperRange Cover = iota
-	CoverExact
-	CoverPartly
-	CoverNone
-)
-
-func (c Cover) String() string {
-	switch c {
-	case CoverSuperRange:
-		return "cover-super-range"
-	case CoverExact:
-		return "cover-exact"
-	case CoverPartly:
-		return "cover-partly"
-	case CoverNone:
-		return "cover-none"
-	default:
-		return "bad-cover"
-	}
-}
-
-func (d *Disk) computeOPBAs(rng Extent) ([]*PartialExtent, error) {
-	d.lbaMu.Lock()
-	defer d.lbaMu.Unlock()
-
-	return d.lba2pba.Resolve(rng)
+	return data, nil
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent, error) {
@@ -547,119 +363,26 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 	return remaining, nil
 }
 
-type readRequest struct {
-	obpa    *PartialExtent
-	extents []Extent
+func (d *Disk) computePartialExtents(rng Extent) ([]*PartialExtent, error) {
+	d.lbaMu.Lock()
+	defer d.lbaMu.Unlock()
+
+	return d.lba2pba.Resolve(rng)
 }
 
-func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
-	start := time.Now()
-
-	defer func() {
-		blocksReadLatency.Observe(time.Since(start).Seconds())
-	}()
-
-	iops.Inc()
-
-	data := NewRangeData(rng)
-
-	d.log.Trace("attempting to fill request from write cache", "extent", rng)
-
-	remaining, err := d.fillFromWriteCache(ctx, data)
-	if err != nil {
-		return RangeData{}, err
-	}
-
-	// Completely filled range from the write cache
-	if len(remaining) == 0 {
-		d.log.Trace("extent filled entirely from write cache")
-		return data, nil
-	}
-
-	d.log.Trace("remaining extents needed", "total", len(remaining))
-
-	if d.log.IsTrace() {
-		for _, r := range remaining {
-			d.log.Trace("remaining", "extent", r)
-		}
-	}
-
-	var (
-		opbas []*readRequest
-		last  *PartialExtent
-	)
-
-	for _, h := range remaining {
-		ropba, err := d.computeOPBAs(h)
-		if err != nil {
-			d.log.Error("error computing opbas", "error", err, "rng", h)
-			return RangeData{}, err
-		}
-
-		if len(ropba) == 0 {
-			d.log.Trace("no ranged opbas found")
-			// nothing for range, and since the data is pre-zero'd, we
-			// don't need to clear anything here.
-		} else {
-			for _, opba := range ropba {
-				if opba.Size == 0 {
-					// it's empty! cool cool, we don't need to fill the hole
-					continue
-				}
-
-				// Because the holes can be smaller than the read ranges,
-				// 2 or more holes in sequence might be served by the same
-				// object range.
-				if last == opba {
-					opbas[len(opbas)-1].extents = append(opbas[len(opbas)-1].extents, h)
-				} else {
-					r := &readRequest{
-						obpa:    opba,
-						extents: []Extent{h},
-					}
-
-					opbas = append(opbas, r)
-					last = opba
-				}
-			}
-		}
-	}
-
-	if d.log.IsTrace() {
-		d.log.Trace("opbas needed", "total", len(opbas))
-
-		for _, o := range opbas {
-			d.log.Trace("opba needed",
-				"segment", o.obpa.Segment, "offset", o.obpa.Offset, "size", o.obpa.Size,
-				"usable", o.obpa.Range, "full", o.obpa.Extent)
-		}
-	}
-
-	for _, o := range opbas {
-		err := d.readOPBA(ctx, o.obpa, o.extents, rng, data)
-		if err != nil {
-			return RangeData{}, err
-		}
-	}
-
-	return data, nil
-}
-
-func (d *Disk) readOPBA(
+func (d *Disk) readPartialExtent(
 	ctx context.Context,
-	ranged *PartialExtent,
+	pe *PartialExtent,
 	rngs []Extent,
 	dataRange Extent,
 	dest RangeData,
 ) error {
-	addr := ranged.ExtentLocation
-
-	spew.Dump(ranged)
+	addr := pe.ExtentLocation
 
 	rawData := buffers.Get(int(addr.Size))
 	defer buffers.Return(rawData)
 
-	found, err := d.extentCache.ReadExtent(ranged, rawData)
+	found, err := d.extentCache.ReadExtent(pe, rawData)
 	if err != nil {
 		d.log.Error("error reading extent from read cache", "error", err)
 	}
@@ -692,14 +415,11 @@ func (d *Disk) readOPBA(
 			return fmt.Errorf("short read detected")
 		}
 
-		d.extentCache.WriteExtent(ranged, rawData)
+		d.extentCache.WriteExtent(pe, rawData)
 	}
 
-	if ranged.Flags == 1 {
-		sz := ranged.RawSize //  binary.BigEndian.Uint32(rawData)
-		if ranged.RawSize == 0 {
-			panic(fmt.Sprintf("missing rawsize 2: %d != %d", ranged.RawSize, sz))
-		}
+	if pe.Flags == 1 {
+		sz := pe.RawSize
 
 		uncomp := buffers.Get(int(sz))
 		defer buffers.Return(uncomp)
@@ -714,14 +434,14 @@ func (d *Disk) readOPBA(
 		}
 
 		rawData = uncomp
-	} else if ranged.Flags != 0 {
+	} else if pe.Flags != 0 {
 		return fmt.Errorf("unknown type byte: %x", rawData[0])
 	}
 
 	src := RangeData{
-		Extent: ranged.Extent, // got to be full, that's what rawData has.
+		Extent: pe.Extent, // be sure not to use pe.Partial as srcData is the full extent
 		BlockData: BlockData{
-			blocks: int(ranged.Range.Blocks),
+			blocks: int(pe.Partial.Blocks),
 			data:   rawData,
 		},
 	}
@@ -733,7 +453,7 @@ func (d *Disk) readOPBA(
 	//   2. the byte range for rng within rawData
 	// Then we copy the bytes from 2 to 1.
 	for _, rrng := range rngs {
-		rng, ok := ranged.Range.Clamp(rrng)
+		rng, ok := pe.Partial.Clamp(rrng)
 		if !ok {
 			d.log.Error("error clamping required range to usable range")
 			return fmt.Errorf("error clamping range")
@@ -743,16 +463,16 @@ func (d *Disk) readOPBA(
 
 		subDest, ok := dest.SubRange(rng)
 		if !ok {
-			d.log.Error("error clamping range", "full", ranged.Range, "sub", rng)
-			return fmt.Errorf("error clamping range: %s => %s", ranged.Range, rng)
+			d.log.Error("error clamping range", "full", pe.Partial, "sub", rng)
+			return fmt.Errorf("error clamping range: %s => %s", pe.Partial, rng)
 		}
 
 		subSrc, ok := src.SubRange(rng)
 		if !ok {
 			d.log.Error("error calculate source subrange",
 				"input", src.Extent, "sub", rng,
-				"request", rrng, "usable", ranged.Range,
-				"full", ranged.Extent,
+				"request", rrng, "usable", pe.Partial,
+				"full", pe.Extent,
 			)
 			return fmt.Errorf("error calculate source subrange")
 		}
@@ -772,25 +492,6 @@ func (d *Disk) readOPBA(
 	}
 
 	return nil
-}
-
-var crcTable = crc64.MakeTable(crc64.ECMA)
-
-func crcLBA(crc uint64, lba LBA) uint64 {
-	x := uint64(lba)
-
-	a := [8]byte{
-		byte(x >> 56),
-		byte(x >> 48),
-		byte(x >> 40),
-		byte(x >> 32),
-		byte(x >> 24),
-		byte(x >> 16),
-		byte(x >> 8),
-		byte(x),
-	}
-
-	return crc64.Update(crc, crcTable, a[:])
 }
 
 func (d *Disk) ZeroBlocks(ctx context.Context, rng Extent) error {
@@ -815,7 +516,7 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 		return err
 	}
 
-	if d.curOC.BodySize() >= flushThreshHold {
+	if d.curOC.BodySize() >= FlushThreshHold {
 		d.log.Info("flushing new object",
 			"body-size", d.curOC.BodySize(),
 			"extents", d.curOC.Entries(),
@@ -839,116 +540,12 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 	return nil
 }
 
-func (d *Disk) rebuildFromObjects(ctx context.Context) error {
-	entries, err := d.sa.ListSegments(ctx, d.volName)
-	if err != nil {
-		return err
-	}
-
-	for _, ent := range entries {
-		err := d.rebuildFromObject(ctx, ent)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
-	d.log.Info("rebuilding mappings from object", "id", seg)
-
-	f, err := d.sa.OpenSegment(ctx, seg)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	br := bufio.NewReader(ToReader(f))
-
-	var hdr SegmentHeader
-
-	err = hdr.Read(br)
-	if err != nil {
-		return err
-	}
-
-	d.log.Debug("extent header info", "count", hdr.ExtentCount, "data-begin", hdr.DataOffset)
-
-	segTrack := &Segment{}
-
-	d.segments[seg] = segTrack
-
-	for i := uint32(0); i < hdr.ExtentCount; i++ {
-		var eh ExtentHeader
-
-		err := eh.Read(br)
-		if err != nil {
-			return err
-		}
-
-		segTrack.Size += uint64(eh.Blocks)
-		segTrack.Used += uint64(eh.Blocks)
-
-		segTrack.TotalBytes += eh.Size
-		segTrack.UsedBytes += eh.Size
-
-		eh.Offset += hdr.DataOffset
-
-		affected, err := d.lba2pba.Update(ExtentLocation{
-			ExtentHeader: eh,
-			Segment:      seg,
-		})
-		if err != nil {
-			return err
-		}
-
-		d.updateUsage(seg, affected)
-	}
-
-	return nil
-}
-
 func (d *Disk) SyncWriteCache() error {
 	iops.Inc()
 
 	if d.curOC != nil {
 		return d.curOC.Sync()
 	}
-
-	return nil
-}
-
-func (d *Disk) restoreWriteCache(ctx context.Context) error {
-	entries, err := filepath.Glob(filepath.Join(d.path, "writecache.*"))
-	if err != nil {
-		return err
-	}
-
-	if len(entries) == 0 {
-		return nil
-	}
-
-	d.log.Info("restoring write cache")
-
-	for _, ent := range entries {
-		err := d.restoreWriteCacheFile(ctx, ent)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
-	oc, err := NewObjectCreator(d.log, d.volName, path)
-	if err != nil {
-		return err
-	}
-
-	d.curOC = oc
 
 	return nil
 }
@@ -970,94 +567,6 @@ func (d *Disk) Close(ctx context.Context) error {
 	d.extentCache.Close()
 
 	return err
-}
-
-func (d *Disk) saveLBAMap(ctx context.Context) error {
-	f, err := os.Create(filepath.Join(d.path, "head.map"))
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	return saveLBAMap(d.lba2pba, f)
-}
-
-func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
-	f, err := os.Open(filepath.Join(d.path, "head.map"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-
-		return false, err
-	}
-
-	defer f.Close()
-
-	d.log.Trace("reloading lba map from head.map")
-
-	m, err := processLBAMap(d.log, f)
-	if err != nil {
-		return false, err
-	}
-
-	for i := m.m.Iterator(); i.Valid(); i.Next() {
-		ro := i.Value()
-
-		seg := d.segments[ro.Segment]
-		if seg == nil {
-			seg = &Segment{}
-			d.segments[ro.Segment] = seg
-		}
-
-		seg.UsedBytes += uint64(ro.Size)
-		seg.Used += uint64(ro.Range.Blocks)
-	}
-
-	d.lba2pba = m
-
-	return true, nil
-}
-
-func saveLBAMap(m *ExtentMap, f io.Writer) error {
-	for it := m.m.Iterator(); it.Valid(); it.Next() {
-		cur := it.Value()
-
-		hclog.L().Error("write to lba map", "extent", cur.Range, "flag", cur.Flags)
-
-		err := binary.Write(f, binary.BigEndian, cur)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
-	m := NewExtentMap(log)
-
-	for {
-		var (
-			pba PartialExtent
-		)
-
-		err := binary.Read(f, binary.BigEndian, &pba)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			return nil, err
-		}
-
-		log.Trace("read from lba map", "extent", pba.Range, "flag", pba.Flags)
-
-		m.m.Set(pba.Range.LBA, &pba)
-	}
-
-	return m, nil
 }
 
 func (d *Disk) LogSegmentInfo() {
@@ -1087,282 +596,6 @@ func (d *Disk) LogSegmentInfo() {
 			"used", e.stats.Used,
 		)
 	}
-}
-
-func (d *Disk) pickSegmentToGC(ctx context.Context, min float64) (SegmentId, bool, error) {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	var (
-		smallestId    SegmentId
-		smallestStats *Segment
-	)
-
-	for segId, stats := range d.segments {
-		if stats.deleted {
-			continue
-		}
-
-		d := stats.Density()
-		if d > min {
-			continue
-		}
-
-		if smallestStats == nil || d < smallestStats.Density() {
-			smallestStats = stats
-			smallestId = segId
-		}
-	}
-
-	if smallestStats == nil {
-		return SegmentId{}, false, nil
-	}
-
-	return smallestId, true, nil
-}
-
-func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
-	segId, ci, err := d.StartGC(ctx, 1.0)
-	if err != nil {
-		return SegmentId{}, err
-	}
-
-	if ci == nil {
-		return segId, nil
-	}
-
-	d.log.Trace("copying live data from object", "seg", segId)
-
-	defer ci.Close()
-
-	var done bool
-	for !done {
-		done, err = ci.Process(ctx, 5*time.Minute)
-		if err != nil {
-			return SegmentId{}, err
-		}
-	}
-
-	return segId, nil
-}
-
-func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	var toDelete []SegmentId
-
-	for i, s := range d.segments {
-		if s.deleted {
-			toDelete = append(toDelete, i)
-		}
-	}
-
-	for _, i := range toDelete {
-		delete(d.segments, i)
-		d.log.Debug("removing segment from volume", "volume", d.volName, "segment", i)
-		err := d.sa.RemoveSegmentFromVolume(ctx, d.volName, i)
-		if err != nil {
-			return err
-		}
-
-		err = d.removeSegmentIfPossible(ctx, i)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterator, error) {
-	toGC, ok, err := d.pickSegmentToGC(ctx, min)
-	if !ok {
-		return SegmentId{}, nil, nil
-	}
-
-	if err != nil {
-		return SegmentId{}, nil, err
-	}
-
-	d.log.Trace("copying live data from object", "seg", toGC)
-
-	ci, err := d.CopyIterator(ctx, toGC)
-	if err != nil {
-		return SegmentId{}, nil, err
-	}
-
-	return toGC, ci, nil
-}
-
-type CopyIterator struct {
-	seg SegmentId
-	d   *Disk
-	or  ObjectReader
-	br  *bufio.Reader
-
-	hdr SegmentHeader
-
-	left uint32
-
-	totalBlocks   uint64
-	copiedExtents int
-	copiedBlocks  uint64
-}
-
-func (c *CopyIterator) Process(ctx context.Context, dur time.Duration) (bool, error) {
-	view := make([]byte, BlockSize*10)
-
-	br := c.br
-
-	s := time.Now()
-
-loop:
-	for c.left > 0 {
-		c.left--
-
-		var eh ExtentHeader
-
-		err := eh.Read(br)
-		if err != nil {
-			return false, err
-		}
-
-		if len(view) < int(eh.Size) {
-			view = make([]byte, eh.Size)
-		}
-
-		extent := eh.Extent
-
-		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
-
-		opbas, err := c.d.computeOPBAs(extent)
-		if err != nil {
-			return false, err
-		}
-
-		for _, opba := range opbas {
-			if opba.Segment != c.seg {
-				c.d.log.Trace("discarding segment", "extent", extent, "target", opba.Extent, "segment", opba.Segment, "seg", c.seg)
-				continue loop
-			}
-		}
-
-		c.copiedBlocks += uint64(eh.Blocks)
-		c.copiedExtents++
-
-		// This it's an extent of empty blocks, zero.
-		if eh.Size == 0 {
-			c.d.ZeroBlocks(ctx, extent)
-		} else {
-			view := view[:eh.Size]
-
-			offset := int64(c.hdr.DataOffset + uint32(eh.Offset))
-
-			_, err = c.or.ReadAt(view, offset)
-			if err != nil {
-				return false, err
-			}
-
-			if eh.Flags == 1 {
-				sz := eh.RawSize // binary.BigEndian.Uint32(view)
-
-				if eh.RawSize == 0 {
-					panic("missing rawsize 3")
-				}
-
-				uncomp := buffers.Get(int(sz))
-				defer buffers.Return(uncomp)
-
-				n, err := lz4decode.UncompressBlock(view, uncomp, nil)
-				if err != nil {
-					return false, err
-				}
-
-				if n != int(sz) {
-					return false, fmt.Errorf("failed to uncompress correctly")
-				}
-
-				view = uncomp
-			}
-
-			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
-
-			err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(eh.LBA))
-			if err != nil {
-				return false, err
-			}
-		}
-
-		if time.Since(s) >= dur {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-func (c *CopyIterator) Close() error {
-	c.d.segmentsMu.Lock()
-	defer c.d.segmentsMu.Unlock()
-
-	c.d.segments[c.seg].deleted = true
-
-	c.d.log.Info("gc cycle complete",
-		"extents", c.copiedExtents,
-		"blocks", c.copiedBlocks,
-		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
-	)
-	return c.or.Close()
-}
-
-func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, error) {
-	f, err := d.sa.OpenSegment(ctx, seg)
-	if err != nil {
-		return nil, errors.Wrapf(err, "opening segment %s", seg)
-	}
-
-	br := bufio.NewReader(ToReader(f))
-
-	ci := &CopyIterator{
-		d:   d,
-		or:  f,
-		br:  br,
-		seg: seg,
-	}
-
-	err = ci.hdr.Read(br)
-	if err != nil {
-		return nil, err
-	}
-
-	ci.totalBlocks = uint64(ci.hdr.ExtentCount)
-	ci.left = ci.hdr.ExtentCount
-
-	return ci, nil
-}
-
-func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error {
-	volumes, err := d.sa.ListVolumes(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, vol := range volumes {
-		segments, err := d.sa.ListSegments(ctx, vol)
-		if err != nil {
-			return err
-		}
-
-		if slices.Index(segments, seg) != -1 {
-			// ok, someone holding on to it, return early
-			return nil
-		}
-	}
-
-	d.log.Info("removing segment", "segment", seg)
-	// ok, no volume has it, we can remove it.
-	return d.sa.RemoveSegment(ctx, seg)
 }
 
 func (d *Disk) Size() int64 {

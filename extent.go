@@ -5,6 +5,8 @@ import (
 	"sort"
 )
 
+type LBA uint64
+
 type Extent struct {
 	LBA    LBA
 	Blocks uint32

@@ -200,6 +200,15 @@ func (n *nbdWrapper) Trim(off, size int64) error {
 	return nil
 }
 
+func RoundToBlockSize(sz int64) int64 {
+	diff := sz % BlockSize
+	if diff == 0 {
+		return sz
+	}
+
+	return sz - diff
+}
+
 var maxSize = RoundToBlockSize(1024 * 1024 * 1024 * 100) // 100GB
 
 func (n *nbdWrapper) Size() (int64, error) {

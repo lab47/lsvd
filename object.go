@@ -92,18 +92,6 @@ func (o *ObjectCreator) OpenWrite(path string) error {
 	return nil
 }
 
-func emptyBytes(b []byte) bool {
-	for len(b) > BlockSize {
-		if !bytes.Equal(b[:BlockSize], emptyBlock) {
-			return false
-		}
-
-		b = b[BlockSize:]
-	}
-
-	return bytes.Equal(b, emptyBlock[:len(b)])
-}
-
 func (o *ObjectCreator) TotalBlocks() int {
 	return o.totalBlocks
 }
@@ -236,7 +224,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 	var ret []Extent
 
 	for _, srcRng := range ranges {
-		subDest, ok := data.SubRange(srcRng.Range)
+		subDest, ok := data.SubRange(srcRng.Partial)
 		if !ok {
 			o.log.Error("error calculating subrange")
 			return nil, fmt.Errorf("error calculating subrange")
@@ -244,7 +232,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		o.log.Trace("calculating relevant ranges",
 			"data", rng,
-			"src", srcRng.Range,
+			"src", srcRng.Partial,
 			"dest", subDest.Extent,
 			"offset", srcRng.Offset,
 		)
@@ -258,7 +246,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		srcBytes := body[srcRng.Offset:]
 
-		o.log.Trace("reading partial from write cache", "rng", srcRng.Range, "dest", subDest.Extent, "flags", srcRng.Flags)
+		o.log.Trace("reading partial from write cache", "rng", srcRng.Partial, "dest", subDest.Extent, "flags", srcRng.Flags)
 
 		var srcData []byte
 

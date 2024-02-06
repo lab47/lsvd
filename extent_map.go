@@ -75,13 +75,13 @@ loop:
 			break
 		}
 
-		e.log.Trace("found bound", "key", i.Key(), "match", i.Value().Range, "from", rng.LBA)
+		e.log.Trace("found bound", "key", i.Key(), "match", i.Value().Partial, "from", rng.LBA)
 
 		cur := i.Value()
 
-		orig := cur.Range
+		orig := cur.Partial
 
-		coverage := cur.Range.Cover(rng)
+		coverage := cur.Partial.Cover(rng)
 
 		e.log.Trace("considering",
 			"a", orig, "b", rng,
@@ -103,55 +103,55 @@ loop:
 			// into the existing range, so we need to adjust
 			// and add a new range before and after the hole.
 
-			suffix, ok := ExtentFrom(rng.Last()+1, cur.Range.Last())
+			suffix, ok := ExtentFrom(rng.Last()+1, cur.Partial.Last())
 			if ok {
 				dup := *cur
-				dup.Range = suffix
+				dup.Partial = suffix
 				toAdd = append(toAdd, &dup)
 			}
 
 			if rng.LBA > 0 {
-				prefix, ok := ExtentFrom(cur.Range.LBA, rng.LBA-1)
+				prefix, ok := ExtentFrom(cur.Partial.LBA, rng.LBA-1)
 				if ok {
-					cur.Range = prefix
+					cur.Partial = prefix
 				}
 			}
 
 			rem := *cur
-			rem.Range = rng
+			rem.Partial = rng
 			affected = append(affected, rem)
 
-			e.checkExtent(cur.Range)
+			e.checkExtent(cur.Partial)
 		case CoverPartly:
 			var masked Extent
 
-			if rng.Cover(cur.Range) == CoverSuperRange {
+			if rng.Cover(cur.Partial) == CoverSuperRange {
 				// The new range completely covers the current one
 				// so we can clobber it.
 				masked = rng
 			} else {
 				// We need to shrink the range of cur down to not overlap
 				// with the new range.
-				update, ok := ExtentFrom(cur.Range.LBA, rng.LBA-1)
+				update, ok := ExtentFrom(cur.Partial.LBA, rng.LBA-1)
 				if !ok {
-					e.log.Error("error calculate updated range", "orig", cur.Range, "target", rng.LBA-1)
+					e.log.Error("error calculate updated range", "orig", cur.Partial, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
-				masked, ok = ExtentFrom(rng.LBA, cur.Range.Last())
+				masked, ok = ExtentFrom(rng.LBA, cur.Partial.Last())
 				if !ok {
-					e.log.Error("error calculate masked range", "orig", cur.Range, "target", rng.LBA-1)
+					e.log.Error("error calculate masked range", "orig", cur.Partial, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
-				cur.Range = update
+				cur.Partial = update
 			}
 
 			rem := *cur
-			rem.Range = masked
+			rem.Partial = masked
 			affected = append(affected, rem)
 
-			e.checkExtent(cur.Range)
+			e.checkExtent(cur.Partial)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
@@ -161,9 +161,9 @@ loop2:
 	// Also check for ranges that start higher to be considered
 	for i := e.m.LowerBound(rng.LBA); i.Valid(); i.Next() {
 		cur := i.Value()
-		coverage := rng.Cover(cur.Range)
+		coverage := rng.Cover(cur.Partial)
 
-		orig := cur.Range
+		orig := cur.Partial
 
 		e.log.Trace("considering",
 			"a", rng, "b", orig,
@@ -179,7 +179,7 @@ loop2:
 			affected = append(affected, *cur)
 			toDelete = append(toDelete, i.Key())
 		case CoverPartly:
-			old := cur.Range
+			old := cur.Partial
 			pivot := rng.Last() + 1
 			update, ok := ExtentFrom(pivot, old.Last())
 			if !ok {
@@ -189,19 +189,19 @@ loop2:
 
 			rem := *cur
 
-			rem.Range, ok = ExtentFrom(old.LBA, rng.Last())
+			rem.Partial, ok = ExtentFrom(old.LBA, rng.Last())
 			if !ok {
 				e.log.Error("error calculating masked extent", "pivot", pivot, "old", old)
 				return nil, fmt.Errorf("error calculating new extent")
 			}
 			affected = append(affected, rem)
 
-			cur.Range = update
+			cur.Partial = update
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, cur)
-			e.log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Range)
-			e.checkExtent(cur.Range)
+			e.log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Partial)
+			e.checkExtent(cur.Partial)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
@@ -213,9 +213,9 @@ loop2:
 	}
 
 	for _, pba := range toAdd {
-		e.checkExtent(pba.Range)
-		e.log.Trace("adding range", "rng", pba.Range)
-		e.m.Set(pba.Range.LBA, pba)
+		e.checkExtent(pba.Partial)
+		e.log.Trace("adding range", "rng", pba.Partial)
+		e.m.Set(pba.Partial.LBA, pba)
 	}
 
 	e.checkExtent(rng)
@@ -227,7 +227,7 @@ loop2:
 		// This value is updated as the range is shrunk
 		// when new, overlapping ranges are added. Full does not
 		// change size though.
-		Range: rng,
+		Partial: rng,
 	})
 
 	if false { // mode.Debug() {
@@ -245,23 +245,23 @@ func (e *ExtentMap) Validate() error {
 		lba := i.Key()
 		pba := i.Value()
 
-		if pba.Range.Blocks == 0 || pba.Blocks == 0 {
-			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.Range.LBA)
+		if pba.Partial.Blocks == 0 || pba.Blocks == 0 {
+			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.Partial.LBA)
 		}
 
-		if pba.Range.Blocks >= 1_000_000_000 {
-			e.log.Error("extremely large block range detected", "range", pba.Range)
-			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Range)
+		if pba.Partial.Blocks >= 1_000_000_000 {
+			e.log.Error("extremely large block range detected", "range", pba.Partial)
+			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Partial)
 		}
 
-		if lba != pba.Range.LBA {
-			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.Range.LBA)
+		if lba != pba.Partial.LBA {
+			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.Partial.LBA)
 		}
 
 		if prev != nil {
-			if prev.Range.Last() >= lba {
+			if prev.Partial.Last() >= lba {
 				return fmt.Errorf("overlapping ranges detected: %s <=> %s",
-					prev.Range, pba.Range)
+					prev.Partial, pba.Partial)
 			}
 		}
 
@@ -276,10 +276,10 @@ func (e *ExtentMap) Render() string {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		pba := i.Value()
 
-		if pba.Range.Blocks == 1 {
-			parts = append(parts, fmt.Sprintf("%d", pba.Range.LBA))
+		if pba.Partial.Blocks == 1 {
+			parts = append(parts, fmt.Sprintf("%d", pba.Partial.LBA))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d-%d", pba.Range.LBA, pba.Range.Last()))
+			parts = append(parts, fmt.Sprintf("%d-%d", pba.Partial.LBA, pba.Partial.Last()))
 		}
 	}
 
@@ -298,9 +298,9 @@ loop:
 
 		cur := i.Value()
 
-		e.log.Trace("consider for resolve", "cur", cur.Range, "against", rng)
+		e.log.Trace("consider for resolve", "cur", cur.Partial, "against", rng)
 
-		switch cur.Range.Cover(rng) {
+		switch cur.Partial.Cover(rng) {
 		case CoverPartly:
 			ret = append(ret, cur)
 		case CoverSuperRange, CoverExact:
@@ -315,9 +315,9 @@ loop2:
 	// Also check for ranges that start higher to be considered
 	for i := e.m.LowerBound(rng.LBA); i.Valid(); i.Next() {
 		cur := i.Value()
-		coverage := cur.Range.Cover(rng)
+		coverage := cur.Partial.Cover(rng)
 
-		orig := cur.Range
+		orig := cur.Partial
 
 		e.log.Trace("considering",
 			"a", rng, "b", orig,
