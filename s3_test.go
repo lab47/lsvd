@@ -58,7 +58,7 @@ func TestS3(t *testing.T) {
 		seg, err := ulid.New(ulid.Now(), monoRead)
 		r.NoError(err)
 
-		objName := "objects/object." + ulid.ULID(seg).String()
+		objName := "segments/segment." + ulid.ULID(seg).String()
 
 		_, err = sc.PutObject(ctx, &s3.PutObjectInput{
 			Bucket: &bucketName,
@@ -92,7 +92,7 @@ func TestS3(t *testing.T) {
 		seg, err := ulid.New(ulid.Now(), monoRead)
 		r.NoError(err)
 
-		objName := "object." + ulid.ULID(seg).String()
+		objName := "segment." + ulid.ULID(seg).String()
 
 		defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: &bucketName,
@@ -126,7 +126,7 @@ func TestS3(t *testing.T) {
 		seg, err := ulid.New(ulid.Now(), monoRead)
 		r.NoError(err)
 
-		objName := "object." + ulid.ULID(seg).String()
+		objName := "segment." + ulid.ULID(seg).String()
 
 		_, err = sc.PutObject(ctx, &s3.PutObjectInput{
 			Bucket: &bucketName,
@@ -150,7 +150,7 @@ func TestS3(t *testing.T) {
 		r.Error(err)
 	})
 
-	t.Run("lists objects", func(t *testing.T) {
+	t.Run("lists segments", func(t *testing.T) {
 		r := require.New(t)
 
 		var expected []SegmentId
@@ -158,7 +158,7 @@ func TestS3(t *testing.T) {
 		s, err := NewS3Access(log, host, bucketName, cfg)
 		r.NoError(err)
 
-		objName := "volumes/default/objects"
+		objName := "volumes/default/segments"
 
 		defer sc.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: &bucketName,

@@ -28,7 +28,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	oc := d.curOC
 
 	var err error
-	d.curOC, err = d.newObjectCreator()
+	d.curOC, err = d.newSegmentCreator()
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		for {
 			entries, stats, err = oc.Flush(ctx, d.sa, segId)
 			if err != nil {
-				d.log.Error("error flushing data to object, retrying", "error", err)
+				d.log.Error("error flushing data to segment, retrying", "error", err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -69,7 +69,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		flushDur := time.Since(start)
 
-		d.log.Debug("object published, resetting write cache")
+		d.log.Debug("segment published, resetting write cache")
 
 		sums := map[Extent]string{}
 		resi := map[Extent][]*PartialExtent{}
@@ -175,14 +175,14 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		finDur := time.Since(start)
 
-		d.log.Info("uploaded new object", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
+		d.log.Info("uploaded new segment", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
 
 		err = d.cleanupDeletedSegments(ctx)
 		if err != nil {
 			d.log.Error("error cleaning up deleted segments", "error", err)
 		}
 
-		d.log.Debug("finished background object flush")
+		d.log.Debug("finished background segment flush")
 	}()
 
 	return done, nil

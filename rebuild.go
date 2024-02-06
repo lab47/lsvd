@@ -12,14 +12,14 @@ import (
 	"github.com/pkg/errors"
 )
 
-func (d *Disk) rebuildFromObjects(ctx context.Context) error {
+func (d *Disk) rebuildFromSegments(ctx context.Context) error {
 	entries, err := d.sa.ListSegments(ctx, d.volName)
 	if err != nil {
 		return err
 	}
 
 	for _, ent := range entries {
-		err := d.rebuildFromObject(ctx, ent)
+		err := d.rebuildFromSegment(ctx, ent)
 		if err != nil {
 			return err
 		}
@@ -28,8 +28,8 @@ func (d *Disk) rebuildFromObjects(ctx context.Context) error {
 	return nil
 }
 
-func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
-	d.log.Info("rebuilding mappings from object", "id", seg)
+func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
+	d.log.Info("rebuilding mappings from segment", "id", seg)
 
 	f, err := d.sa.OpenSegment(ctx, seg)
 	if err != nil {
@@ -106,7 +106,7 @@ func (d *Disk) restoreWriteCache(ctx context.Context) error {
 }
 
 func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
-	oc, err := NewObjectCreator(d.log, d.volName, path)
+	oc, err := NewSegmentCreator(d.log, d.volName, path)
 	if err != nil {
 		return err
 	}

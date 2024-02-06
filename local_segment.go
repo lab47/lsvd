@@ -39,9 +39,9 @@ type LocalFileAccess struct {
 	Dir string
 }
 
-func (l *LocalFileAccess) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
+func (l *LocalFileAccess) OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error) {
 	return OpenLocalFile(
-		filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String()))
+		filepath.Join(l.Dir, "segments", "segment."+ulid.ULID(seg).String()))
 }
 
 func ReadSegments(f io.Reader) ([]SegmentId, error) {
@@ -67,7 +67,7 @@ func ReadSegments(f io.Reader) ([]SegmentId, error) {
 }
 
 func (l *LocalFileAccess) ListSegments(ctx context.Context, vol string) ([]SegmentId, error) {
-	f, err := os.Open(filepath.Join(l.Dir, "volumes", vol, "objects"))
+	f, err := os.Open(filepath.Join(l.Dir, "volumes", vol, "segments"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -93,11 +93,11 @@ func (l *LocalFileAccess) ReadMetadata(ctx context.Context, vol, name string) (i
 
 func (l *LocalFileAccess) RemoveSegment(ctx context.Context, seg SegmentId) error {
 	return os.Remove(
-		filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String()))
+		filepath.Join(l.Dir, "segments", "segment."+ulid.ULID(seg).String()))
 }
 
 func (l *LocalFileAccess) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
-	path := filepath.Join(l.Dir, "objects", "object."+ulid.ULID(seg).String())
+	path := filepath.Join(l.Dir, "segments", "segment."+ulid.ULID(seg).String())
 	return os.Create(path)
 }
 
@@ -107,7 +107,7 @@ func (l *LocalFileAccess) AppendToObjects(ctx context.Context, vol string, seg S
 		return err
 	}
 
-	path := filepath.Join(l.Dir, "volumes", vol, "objects")
+	path := filepath.Join(l.Dir, "volumes", vol, "segments")
 
 	segments = append(segments, seg)
 
@@ -132,8 +132,8 @@ func (l *LocalFileAccess) AppendToObjects(ctx context.Context, vol string, seg S
 func (l *LocalFileAccess) RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error {
 	var buf bytes.Buffer
 
-	objectsPath := filepath.Join(l.Dir, "volumes", vol, "objects")
-	f, err := os.OpenFile(objectsPath, os.O_RDONLY, 0644)
+	segmentsPath := filepath.Join(l.Dir, "volumes", vol, "segments")
+	f, err := os.OpenFile(segmentsPath, os.O_RDONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (l *LocalFileAccess) RemoveSegmentFromVolume(ctx context.Context, vol strin
 
 	f.Close()
 
-	f, err = os.Create(objectsPath)
+	f, err = os.Create(segmentsPath)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (l *LocalFileAccess) RemoveSegmentFromVolume(ctx context.Context, vol strin
 }
 
 func (l *LocalFileAccess) InitContainer(ctx context.Context) error {
-	for _, p := range []string{"objects", "volumes"} {
+	for _, p := range []string{"segments", "volumes"} {
 		path := filepath.Join(l.Dir, p)
 		fi, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {

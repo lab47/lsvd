@@ -186,7 +186,7 @@ func TestLSVD(t *testing.T) {
 		blockEqual(t, data.data[BlockSize*3:BlockSize*11], d2.data)
 	})
 
-	t.Run("can read from objects", func(t *testing.T) {
+	t.Run("can read from segments", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")
@@ -220,7 +220,7 @@ func TestLSVD(t *testing.T) {
 		})
 	})
 
-	t.Run("can read from partial objects", func(t *testing.T) {
+	t.Run("can read from partial segments", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")
@@ -313,7 +313,7 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, testExtent2, d3)
 	})
 
-	t.Run("writes written out to an object", func(t *testing.T) {
+	t.Run("writes written out to an segment", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")
@@ -332,7 +332,7 @@ func TestLSVD(t *testing.T) {
 		r.NoError(d.Close(ctx))
 
 		t.Log("reopening disk")
-		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -398,7 +398,7 @@ func TestLSVD(t *testing.T) {
 
 		blockEqual(t, testData, view)
 
-		g, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "objects"))
+		g, err := os.Open(filepath.Join(tmpdir, "volumes", "default", "segments"))
 		r.NoError(err)
 
 		defer g.Close()
@@ -413,7 +413,7 @@ func TestLSVD(t *testing.T) {
 		r.Equal(ulid.ULID(iseg), testUlid)
 	})
 
-	t.Run("objects that can't be compressed are flagged", func(t *testing.T) {
+	t.Run("segments that can't be compressed are flagged", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")
@@ -430,7 +430,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -510,7 +510,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "objects", "object."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -652,7 +652,7 @@ func TestLSVD(t *testing.T) {
 
 		d.lba2pba.m.Clear()
 
-		r.NoError(d.rebuildFromObjects(ctx))
+		r.NoError(d.rebuildFromSegments(ctx))
 		r.NotZero(d.lba2pba.Len())
 
 		_, ok := d.lba2pba.m.Get(47)
@@ -1066,8 +1066,8 @@ func TestLSVD(t *testing.T) {
 
 		d.Close(ctx)
 
-		// We delete entries AFTER we write the object that contains the remaints
-		_, err = os.Stat(filepath.Join(tmpdir, "objects", "object."+origSeq.String()))
+		// We delete entries AFTER we write the segment that contains the remaints
+		_, err = os.Stat(filepath.Join(tmpdir, "segments", "segment."+origSeq.String()))
 		r.ErrorIs(err, os.ErrNotExist)
 
 		t.Log("reloading disk")
@@ -1139,7 +1139,7 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, testRandX, d2)
 	})
 
-	t.Run("reads partly from both write caches and an object", func(t *testing.T) {
+	t.Run("reads partly from both write caches and an segment", func(t *testing.T) {
 		r := require.New(t)
 
 		tmpdir, err := os.MkdirTemp("", "lsvd")

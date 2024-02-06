@@ -21,7 +21,7 @@ func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
 		return segId, nil
 	}
 
-	d.log.Trace("copying live data from object", "seg", segId)
+	d.log.Trace("copying live data from segment", "seg", segId)
 
 	defer ci.Close()
 
@@ -46,7 +46,7 @@ func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterat
 		return SegmentId{}, nil, err
 	}
 
-	d.log.Trace("copying live data from object", "seg", toGC)
+	d.log.Trace("copying live data from segment", "seg", toGC)
 
 	ci, err := d.CopyIterator(ctx, toGC)
 	if err != nil {
@@ -91,7 +91,7 @@ func (d *Disk) pickSegmentToGC(ctx context.Context, min float64) (SegmentId, boo
 type CopyIterator struct {
 	seg SegmentId
 	d   *Disk
-	or  ObjectReader
+	or  SegmentReader
 	br  *bufio.Reader
 
 	hdr SegmentHeader

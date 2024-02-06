@@ -22,7 +22,7 @@ const (
 	// The size of all blocks in bytes
 	BlockSize = 4 * 1024
 
-	// How big the object gets before we flush it to S3
+	// How big the segment gets before we flush it to S3
 	FlushThreshHold = 15 * 1024 * 1024
 )
 
@@ -36,7 +36,7 @@ type Disk struct {
 
 	prevCacheMu   sync.Mutex
 	prevCacheCond *sync.Cond
-	prevCache     *ObjectCreator
+	prevCache     *SegmentCreator
 
 	curSeq ulid.ULID
 
@@ -44,10 +44,10 @@ type Disk struct {
 	lba2pba *ExtentMap
 
 	extentCache  *ExtentCache
-	openSegments *lru.Cache[SegmentId, ObjectReader]
+	openSegments *lru.Cache[SegmentId, SegmentReader]
 
 	sa    SegmentAccess
-	curOC *ObjectCreator
+	curOC *SegmentCreator
 
 	segmentsMu sync.Mutex
 	segments   map[SegmentId]*Segment
@@ -114,8 +114,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
 
-	openSegments, err := lru.NewWithEvict[SegmentId, ObjectReader](
-		256, func(key SegmentId, value ObjectReader) {
+	openSegments, err := lru.NewWithEvict[SegmentId, SegmentReader](
+		256, func(key SegmentId, value SegmentReader) {
 			openSegments.Dec()
 			value.Close()
 		})
@@ -131,7 +131,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	}
 
 	if d.curOC == nil {
-		d.curOC, err = d.newObjectCreator()
+		d.curOC, err = d.newSegmentCreator()
 		if err != nil {
 			return nil, err
 		}
@@ -145,7 +145,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 	if goodMap {
 		log.Info("reusing serialized LBA map", "blocks", d.lba2pba.Len())
 	} else {
-		err = d.rebuildFromObjects(ctx)
+		err = d.rebuildFromSegments(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +187,7 @@ func (d *Disk) nextSeq() (ulid.ULID, error) {
 	return ul, nil
 }
 
-func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
+func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 	seq, err := d.nextSeq()
 	if err != nil {
 		return nil, errors.Wrapf(err, "error generating sequence number")
@@ -196,7 +196,7 @@ func (d *Disk) newObjectCreator() (*ObjectCreator, error) {
 	d.curSeq = seq
 
 	path := filepath.Join(d.path, "writecache."+seq.String())
-	return NewObjectCreator(d.log, d.volName, path)
+	return NewSegmentCreator(d.log, d.volName, path)
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
@@ -263,7 +263,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 				// Because the holes can be smaller than the read ranges,
 				// 2 or more holes in sequence might be served by the same
-				// object range.
+				// segment range.
 				if last == pe {
 					reqs[len(reqs)-1].extents = append(reqs[len(reqs)-1].extents, h)
 				} else {
@@ -466,7 +466,7 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error clamping range")
 		}
 
-		d.log.Trace("preparing to copy data from object", "request", x, "clamped", overlap)
+		d.log.Trace("preparing to copy data from segment", "request", x, "clamped", overlap)
 
 		// Compute our source range and destination range against overlap
 
@@ -486,7 +486,7 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error calculate source subrange")
 		}
 
-		d.log.Trace("copying object data",
+		d.log.Trace("copying segment data",
 			"src", src.Extent,
 			"dest", dest.Extent,
 			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
@@ -518,12 +518,12 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 
 	err := d.curOC.WriteExtent(data)
 	if err != nil {
-		d.log.Error("error write extents to object creator", "error", err)
+		d.log.Error("error write extents to segment creator", "error", err)
 		return err
 	}
 
 	if d.curOC.BodySize() >= FlushThreshHold {
-		d.log.Info("flushing new object",
+		d.log.Info("flushing new segment",
 			"body-size", d.curOC.BodySize(),
 			"extents", d.curOC.Entries(),
 			"blocks", d.curOC.TotalBlocks(),
@@ -537,7 +537,7 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 		if mode.Debug() {
 			select {
 			case <-ch:
-				d.log.Debug("object has been flushed")
+				d.log.Debug("segment has been flushed")
 			case <-ctx.Done():
 			}
 		}

@@ -81,10 +81,10 @@ func (s *S3ObjectReader) ReadAt(dest []byte, off int64) (int, error) {
 	return n, err
 }
 
-func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error) {
-	key := "objects/object." + ulid.ULID(seg).String()
+func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error) {
+	key := "segments/segment." + ulid.ULID(seg).String()
 
-	// Validate the object exists.
+	// Validate the segment exists.
 	_, err := s.sc.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
@@ -103,7 +103,7 @@ func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader
 }
 
 func (s *S3Access) ListSegments(ctx context.Context, vol string) ([]SegmentId, error) {
-	name := filepath.Join("volumes", vol, "objects")
+	name := filepath.Join("volumes", vol, "segments")
 
 	out, err := s.sc.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
@@ -180,7 +180,7 @@ func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteClo
 		ctx:    ctx,
 	}
 
-	key := "objects/object." + ulid.ULID(seg).String()
+	key := "segments/segment." + ulid.ULID(seg).String()
 
 	go func() {
 		defer cancel()
@@ -230,7 +230,7 @@ func (s *S3Access) ReadMetadata(ctx context.Context, volName, name string) (io.R
 }
 
 func (s *S3Access) RemoveSegment(ctx context.Context, seg SegmentId) error {
-	key := "objects/object." + ulid.ULID(seg).String()
+	key := "segments/segment." + ulid.ULID(seg).String()
 
 	_, err := s.sc.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
@@ -254,7 +254,7 @@ func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg 
 		buf.Write(seg[:])
 	}
 
-	name := filepath.Join("volumes", vol, "objects")
+	name := filepath.Join("volumes", vol, "segments")
 
 	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket,
@@ -278,7 +278,7 @@ func (s *S3Access) AppendToObjects(ctx context.Context, vol string, seg SegmentI
 		buf.Write(seg[:])
 	}
 
-	name := filepath.Join("volumes", vol, "objects")
+	name := filepath.Join("volumes", vol, "segments")
 
 	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket,

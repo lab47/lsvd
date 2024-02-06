@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestObjectCreator(t *testing.T) {
+func TestSegmentCreator(t *testing.T) {
 	log := hclog.New(&hclog.LoggerOptions{
 		Name:  "octest",
 		Level: hclog.Trace,
@@ -30,7 +30,7 @@ func TestObjectCreator(t *testing.T) {
 
 		defer f.Close()
 
-		oc := &ObjectCreator{
+		oc := &SegmentCreator{
 			log: log,
 
 			logF: f,
@@ -49,7 +49,7 @@ func TestObjectCreator(t *testing.T) {
 		_, err = f.Seek(0, io.SeekStart)
 		r.NoError(err)
 
-		oc2 := &ObjectCreator{
+		oc2 := &SegmentCreator{
 			log: log,
 			em:  NewExtentMap(log),
 		}
@@ -73,7 +73,7 @@ func TestObjectCreator(t *testing.T) {
 
 		defer f.Close()
 
-		oc := &ObjectCreator{
+		oc := &SegmentCreator{
 			log: log,
 
 			logF: f,
@@ -114,7 +114,7 @@ func TestObjectCreator(t *testing.T) {
 
 		defer f.Close()
 
-		oc := &ObjectCreator{
+		oc := &SegmentCreator{
 			log: log,
 
 			logF: f,

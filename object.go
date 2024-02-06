@@ -21,7 +21,7 @@ type ocBlock struct {
 	size, offset uint64
 }
 
-type ObjectCreator struct {
+type SegmentCreator struct {
 	log hclog.Logger
 	cnt int
 
@@ -45,8 +45,8 @@ type ObjectCreator struct {
 	comp lz4.Compressor
 }
 
-func NewObjectCreator(log hclog.Logger, vol, path string) (*ObjectCreator, error) {
-	oc := &ObjectCreator{
+func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, error) {
+	oc := &SegmentCreator{
 		log:     log,
 		volName: vol,
 		em:      NewExtentMap(log),
@@ -60,7 +60,7 @@ func NewObjectCreator(log hclog.Logger, vol, path string) (*ObjectCreator, error
 	return oc, nil
 }
 
-func (o *ObjectCreator) Sync() error {
+func (o *SegmentCreator) Sync() error {
 	if o.logW != nil {
 		o.logW.Flush()
 	}
@@ -72,7 +72,7 @@ func (o *ObjectCreator) Sync() error {
 	return nil
 }
 
-func (o *ObjectCreator) OpenWrite(path string) error {
+func (o *SegmentCreator) OpenWrite(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return err
@@ -80,7 +80,7 @@ func (o *ObjectCreator) OpenWrite(path string) error {
 
 	err = o.readLog(f)
 	if err != nil {
-		return errors.Wrapf(err, "error reading object log")
+		return errors.Wrapf(err, "error reading segment log")
 	}
 
 	o.logF = f
@@ -89,11 +89,11 @@ func (o *ObjectCreator) OpenWrite(path string) error {
 	return nil
 }
 
-func (o *ObjectCreator) TotalBlocks() int {
+func (o *SegmentCreator) TotalBlocks() int {
 	return o.totalBlocks
 }
 
-func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
+func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
 	_, err := o.em.Update(ExtentLocation{
 		ExtentHeader: ExtentHeader{
@@ -113,21 +113,21 @@ func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 	return nil
 }
 
-func (o *ObjectCreator) BodySize() int {
+func (o *SegmentCreator) BodySize() int {
 	return o.body.Len()
 }
 
-func (o *ObjectCreator) Entries() int {
+func (o *SegmentCreator) Entries() int {
 	return o.cnt
 }
 
-func (o *ObjectCreator) AvgStorageRatio() float64 {
+func (o *SegmentCreator) AvgStorageRatio() float64 {
 	return o.storageRatio / float64(o.cnt)
 }
 
 // writeLog writes the header and the data to the log so that we can
 // recover the write with readLog if need be.
-func (o *ObjectCreator) writeLog(
+func (o *SegmentCreator) writeLog(
 	eh ExtentHeader,
 	data []byte,
 ) error {
@@ -153,9 +153,9 @@ func (o *ObjectCreator) writeLog(
 	return dw.Flush()
 }
 
-// readLog is used to restore the state of the ObjectCreator from the
+// readLog is used to restore the state of the SegmentCreator from the
 // log written to data.
-func (o *ObjectCreator) readLog(f *os.File) error {
+func (o *SegmentCreator) readLog(f *os.File) error {
 	o.log.Trace("rebuilding memory from log", "path", f.Name())
 
 	br := bufio.NewReader(f)
@@ -215,7 +215,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 // FillExtent attempts to fill as much of +data+ as possible, returning
 // a list of Extents that was unable to fill. That later list is then
 // feed to the system that reads data from segments.
-func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
+func (o *SegmentCreator) FillExtent(data RangeData) ([]Extent, error) {
 	rng := data.Extent
 
 	ranges, err := o.em.Resolve(rng)
@@ -314,7 +314,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 	return ret, nil
 }
 
-func (o *ObjectCreator) WriteExtent(ext RangeData) error {
+func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 	if o.buf == nil {
 		o.buf = make([]byte, len(ext.data)*2)
 	}
@@ -410,7 +410,7 @@ type SegmentStats struct {
 	TotalBytes uint64
 }
 
-func (o *ObjectCreator) Flush(ctx context.Context,
+func (o *SegmentCreator) Flush(ctx context.Context,
 	sa SegmentAccess, seg SegmentId,
 ) ([]ExtentLocation, *SegmentStats, error) {
 	start := time.Now()
@@ -430,7 +430,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	dataBegin := uint32(o.header.Len() + 8)
 
-	o.log.Debug("object constructed",
+	o.log.Debug("segment constructed",
 		"header-size", o.header.Len(),
 		"body-size", o.offset,
 		"blocks", len(o.extents),
@@ -497,7 +497,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 	return entries, stats, nil
 }
 
-type ObjectReader interface {
+type SegmentReader interface {
 	io.ReaderAt
 	io.Closer
 }
@@ -514,7 +514,7 @@ type SegmentAccess interface {
 	GetVolumeInfo(ctx context.Context, vol string) (*VolumeInfo, error)
 
 	ListSegments(ctx context.Context, vol string) ([]SegmentId, error)
-	OpenSegment(ctx context.Context, seg SegmentId) (ObjectReader, error)
+	OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error)
 	WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error)
 
 	RemoveSegment(ctx context.Context, seg SegmentId) error
