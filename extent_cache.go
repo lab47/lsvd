@@ -122,8 +122,8 @@ func (e *ExtentCache) makeRoom(buk *bbolt.Bucket, blks int) error {
 	return nil
 }
 
-func (e *ExtentCache) WriteExtent(robpb *RangedOPBA, data []byte) error {
-	ext := robpb.Full
+func (e *ExtentCache) WriteExtent(robpb *PartialExtent, data []byte) error {
+	ext := robpb.Extent
 	seg := robpb.Segment
 	off := robpb.Offset
 
@@ -149,8 +149,8 @@ func (e *ExtentCache) WriteExtent(robpb *RangedOPBA, data []byte) error {
 	})
 }
 
-func (e *ExtentCache) ReadExtent(robpb *RangedOPBA, data []byte) (bool, error) {
-	ext := robpb.Full
+func (e *ExtentCache) ReadExtent(robpb *PartialExtent, data []byte) (bool, error) {
+	ext := robpb.Extent
 	seg := robpb.Segment
 	off := robpb.Offset
 

@@ -110,7 +110,11 @@ func (o *ObjectCreator) TotalBlocks() int {
 
 func (o *ObjectCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
-	_, err := o.em.Update(rng, OPBA{})
+	_, err := o.em.Update(ExtentLocation{
+		ExtentHeader: ExtentHeader{
+			Extent: rng,
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -206,7 +210,7 @@ func (o *ObjectCreator) readLog(f *os.File) error {
 
 		o.extents = append(o.extents, eh)
 
-		_, err := o.em.Update(eh.Extent, OPBA{
+		_, err := o.em.Update(ExtentLocation{
 			ExtentHeader: eh,
 		})
 		if err != nil {
@@ -295,7 +299,7 @@ func (o *ObjectCreator) FillExtent(data RangeData) ([]Extent, error) {
 		}
 
 		src := RangeData{
-			Extent: srcRng.Full,
+			Extent: srcRng.Extent,
 			BlockData: BlockData{
 				blocks: len(srcData) / BlockSize,
 				data:   srcData,
@@ -328,8 +332,6 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 	}
 
 	o.totalBlocks += int(ext.Extent.Blocks)
-
-	rng := ext.Extent
 
 	var data []byte
 
@@ -385,7 +387,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 		o.storageRatio += (float64(n) / float64(len(ext.data)))
 
 		eh.Offset = uint32(o.offset)
-		_, err = o.em.Update(rng, OPBA{
+		_, err = o.em.Update(ExtentLocation{
 			ExtentHeader: eh,
 		})
 		if err != nil {
@@ -397,7 +399,7 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 
 	o.extents = append(o.extents, eh)
 
-	_, err := o.em.Update(rng, OPBA{
+	_, err := o.em.Update(ExtentLocation{
 		ExtentHeader: eh,
 	})
 
@@ -411,11 +413,6 @@ func (o *ObjectCreator) WriteExtent(ext RangeData) error {
 	)
 }
 
-type objectEntry struct {
-	extent Extent
-	opba   OPBA
-}
-
 type SegmentStats struct {
 	Blocks     uint64
 	TotalBytes uint64
@@ -423,7 +420,7 @@ type SegmentStats struct {
 
 func (o *ObjectCreator) Flush(ctx context.Context,
 	sa SegmentAccess, seg SegmentId,
-) ([]objectEntry, *SegmentStats, error) {
+) ([]ExtentLocation, *SegmentStats, error) {
 	start := time.Now()
 	defer func() {
 		segmentTime.Observe(time.Since(start).Seconds())
@@ -449,7 +446,7 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 
 	segmentsBytes.Add(float64(o.header.Len() + int(o.offset)))
 
-	entries := make([]objectEntry, len(o.extents))
+	entries := make([]ExtentLocation, len(o.extents))
 
 	for i, eh := range o.extents {
 		if eh.Flags == 1 && eh.RawSize == 0 {
@@ -457,12 +454,9 @@ func (o *ObjectCreator) Flush(ctx context.Context,
 		}
 
 		eh.Offset += dataBegin
-		entries[i] = objectEntry{
-			extent: eh.Extent,
-			opba: OPBA{
-				ExtentHeader: eh,
-				Segment:      seg,
-			},
+		entries[i] = ExtentLocation{
+			ExtentHeader: eh,
+			Segment:      seg,
 		}
 	}
 

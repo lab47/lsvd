@@ -31,15 +31,14 @@ type (
 	SegmentId ulid.ULID
 	LBA       uint64
 
-	OPBA struct {
+	ExtentLocation struct {
 		ExtentHeader
 		Segment SegmentId
 	}
 
-	RangedOPBA struct {
+	PartialExtent struct {
 		Range Extent
-		Full  Extent
-		OPBA
+		ExtentLocation
 	}
 )
 
@@ -209,8 +208,8 @@ func (r *Disk) SetAfterNS(f func(SegmentId)) {
 	r.afterNS = f
 }
 
-func (r *RangedOPBA) String() string {
-	return fmt.Sprintf("%s (%s): %s %d:%d", r.Range, r.Full, r.Segment, r.Offset, r.Size)
+func (r *PartialExtent) String() string {
+	return fmt.Sprintf("%s (%s): %s %d:%d", r.Range, r.Extent, r.Segment, r.Offset, r.Size)
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -268,7 +267,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		defer segmentsWritten.Inc()
 
 		var (
-			entries []objectEntry
+			entries []ExtentLocation
 			stats   *SegmentStats
 			err     error
 		)
@@ -290,7 +289,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		d.log.Debug("object published, resetting write cache")
 
 		sums := map[Extent]string{}
-		resi := map[Extent][]*RangedOPBA{}
+		resi := map[Extent][]*PartialExtent{}
 
 		if mode.Debug() {
 			sums = map[Extent]string{}
@@ -298,20 +297,20 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			var data RangeData
 
 			for _, ent := range entries {
-				data.Reset(ent.extent)
+				data.Reset(ent.Extent)
 
 				_, err := oc.FillExtent(data)
 				if err != nil {
 					d.log.Error("error reading extent for validation", "error", err)
 				}
 				sum := rangeSum(data.data)
-				sums[ent.extent] = sum
+				sums[ent.Extent] = sum
 
-				ranges, err := d.lba2pba.Resolve(ent.extent)
+				ranges, err := d.lba2pba.Resolve(ent.Extent)
 				if err != nil {
 					d.log.Error("error performing resolution for block read check")
 				} else {
-					resi[ent.extent] = ranges
+					resi[ent.Extent] = ranges
 				}
 
 				//d.log.Info("extent sum", "extent", ent.extent, "sum", sum)
@@ -332,11 +331,9 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		d.lbaMu.Lock()
 		for _, ent := range entries {
 			if mode.Debug() {
-				d.log.Trace("updating read map", "extent", ent.extent)
+				d.log.Trace("updating read map", "extent", ent.Extent)
 			}
-			affected, err := d.lba2pba.Update(ent.extent, ent.opba)
-			spew.Config.DisableMethods = true
-			spew.Dump(ent.opba)
+			affected, err := d.lba2pba.Update(ent)
 			if err != nil {
 				d.log.Error("error updating read map", "error", err)
 			}
@@ -356,21 +353,21 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			d.log.Info("performing extent validation")
 			passed := 0
 			for _, ent := range entries {
-				data, err := d.ReadExtent(ctx, ent.extent)
+				data, err := d.ReadExtent(ctx, ent.Extent)
 				if err != nil {
 					d.log.Error("error reading extent for validation", "error", err)
 				}
 				sum := rangeSum(data.data)
 
-				if sum != sums[ent.extent] {
-					d.log.Error("block read validation failed", "extent", ent.extent,
-						"sum", sum, "expected", sums[ent.extent])
-					ranges, err := d.lba2pba.Resolve(ent.extent)
+				if sum != sums[ent.Extent] {
+					d.log.Error("block read validation failed", "extent", ent.Extent,
+						"sum", sum, "expected", sums[ent.Extent])
+					ranges, err := d.lba2pba.Resolve(ent.Extent)
 					if err != nil {
 						d.log.Error("unable to resolve for check", "error", err)
 					} else {
 						var before []string
-						for _, r := range resi[ent.extent] {
+						for _, r := range resi[ent.Extent] {
 							before = append(before, r.String())
 						}
 
@@ -410,7 +407,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	return done, nil
 }
 
-func (d *Disk) updateUsage(self SegmentId, affected []RangedOPBA) {
+func (d *Disk) updateUsage(self SegmentId, affected []PartialExtent) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
 
@@ -477,7 +474,7 @@ func (c Cover) String() string {
 	}
 }
 
-func (d *Disk) computeOPBAs(rng Extent) ([]*RangedOPBA, error) {
+func (d *Disk) computeOPBAs(rng Extent) ([]*PartialExtent, error) {
 	d.lbaMu.Lock()
 	defer d.lbaMu.Unlock()
 
@@ -551,7 +548,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 }
 
 type readRequest struct {
-	obpa    *RangedOPBA
+	obpa    *PartialExtent
 	extents []Extent
 }
 
@@ -589,7 +586,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 	var (
 		opbas []*readRequest
-		last  *RangedOPBA
+		last  *PartialExtent
 	)
 
 	for _, h := range remaining {
@@ -634,7 +631,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		for _, o := range opbas {
 			d.log.Trace("opba needed",
 				"segment", o.obpa.Segment, "offset", o.obpa.Offset, "size", o.obpa.Size,
-				"usable", o.obpa.Range, "full", o.obpa.Full)
+				"usable", o.obpa.Range, "full", o.obpa.Extent)
 		}
 	}
 
@@ -650,12 +647,12 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 func (d *Disk) readOPBA(
 	ctx context.Context,
-	ranged *RangedOPBA,
+	ranged *PartialExtent,
 	rngs []Extent,
 	dataRange Extent,
 	dest RangeData,
 ) error {
-	addr := ranged.OPBA
+	addr := ranged.ExtentLocation
 
 	spew.Dump(ranged)
 
@@ -722,7 +719,7 @@ func (d *Disk) readOPBA(
 	}
 
 	src := RangeData{
-		Extent: ranged.Full, // got to be full, that's what rawData has.
+		Extent: ranged.Extent, // got to be full, that's what rawData has.
 		BlockData: BlockData{
 			blocks: int(ranged.Range.Blocks),
 			data:   rawData,
@@ -755,7 +752,7 @@ func (d *Disk) readOPBA(
 			d.log.Error("error calculate source subrange",
 				"input", src.Extent, "sub", rng,
 				"request", rrng, "usable", ranged.Range,
-				"full", ranged.Full,
+				"full", ranged.Extent,
 			)
 			return fmt.Errorf("error calculate source subrange")
 		}
@@ -899,7 +896,7 @@ func (d *Disk) rebuildFromObject(ctx context.Context, seg SegmentId) error {
 
 		eh.Offset += hdr.DataOffset
 
-		affected, err := d.lba2pba.Update(eh.Extent, OPBA{
+		affected, err := d.lba2pba.Update(ExtentLocation{
 			ExtentHeader: eh,
 			Segment:      seg,
 		})
@@ -1043,7 +1040,7 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 
 	for {
 		var (
-			pba RangedOPBA
+			pba PartialExtent
 		)
 
 		err := binary.Read(f, binary.BigEndian, &pba)
@@ -1246,7 +1243,7 @@ loop:
 
 		for _, opba := range opbas {
 			if opba.Segment != c.seg {
-				c.d.log.Trace("discarding segment", "extent", extent, "target", opba.Full, "segment", opba.Segment, "seg", c.seg)
+				c.d.log.Trace("discarding segment", "extent", extent, "target", opba.Extent, "segment", opba.Segment, "seg", c.seg)
 				continue loop
 			}
 		}

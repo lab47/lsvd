@@ -11,7 +11,7 @@ import (
 
 type ExtentMap struct {
 	log hclog.Logger
-	m   *treemap.TreeMap[LBA, *RangedOPBA]
+	m   *treemap.TreeMap[LBA, *PartialExtent]
 
 	coverBlocks int
 }
@@ -19,7 +19,7 @@ type ExtentMap struct {
 func NewExtentMap(log hclog.Logger) *ExtentMap {
 	return &ExtentMap{
 		log: log,
-		m:   treemap.New[LBA, *RangedOPBA](),
+		m:   treemap.New[LBA, *PartialExtent](),
 	}
 }
 
@@ -27,7 +27,7 @@ func (e *ExtentMap) Len() int {
 	return e.m.Len()
 }
 
-func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, *RangedOPBA] {
+func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, *PartialExtent] {
 	i := e.m.Floor(lba)
 	if i.Valid() {
 		return i
@@ -50,11 +50,13 @@ func (m *ExtentMap) checkExtent(e Extent) Extent {
 	return e
 }
 
-func (e *ExtentMap) Update(rng Extent, pba OPBA) ([]RangedOPBA, error) {
+func (e *ExtentMap) Update(pba ExtentLocation) ([]PartialExtent, error) {
 	var (
 		toDelete []LBA
-		toAdd    []*RangedOPBA
-		affected []RangedOPBA
+		toAdd    []*PartialExtent
+		affected []PartialExtent
+
+		rng = pba.Extent
 	)
 
 	if pba.Flags == 1 && pba.RawSize == 0 {
@@ -219,9 +221,8 @@ loop2:
 	e.checkExtent(rng)
 
 	e.log.Trace("adding read range", "range", rng)
-	e.m.Set(rng.LBA, &RangedOPBA{
-		OPBA: pba,
-		Full: rng,
+	e.m.Set(rng.LBA, &PartialExtent{
+		ExtentLocation: pba,
 
 		// This value is updated as the range is shrunk
 		// when new, overlapping ranges are added. Full does not
@@ -238,13 +239,13 @@ loop2:
 }
 
 func (e *ExtentMap) Validate() error {
-	var prev *RangedOPBA
+	var prev *PartialExtent
 
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		lba := i.Key()
 		pba := i.Value()
 
-		if pba.Range.Blocks == 0 || pba.Full.Blocks == 0 {
+		if pba.Range.Blocks == 0 || pba.Blocks == 0 {
 			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.Range.LBA)
 		}
 
@@ -285,8 +286,8 @@ func (e *ExtentMap) Render() string {
 	return strings.Join(parts, " ")
 }
 
-func (e *ExtentMap) Resolve(rng Extent) ([]*RangedOPBA, error) {
-	var ret []*RangedOPBA
+func (e *ExtentMap) Resolve(rng Extent) ([]*PartialExtent, error) {
+	var ret []*PartialExtent
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
