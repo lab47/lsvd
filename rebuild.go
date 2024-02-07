@@ -51,8 +51,6 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 
 	segTrack := &Segment{}
 
-	d.segments[seg] = segTrack
-
 	for i := uint32(0); i < hdr.ExtentCount; i++ {
 		var eh ExtentHeader
 
@@ -77,7 +75,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		d.updateUsage(seg, affected)
+		d.s.UpdateUsage(d.log, seg, affected)
 	}
 
 	return nil
@@ -149,14 +147,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	for i := m.m.Iterator(); i.Valid(); i.Next() {
 		ro := i.Value()
 
-		seg := d.segments[ro.Segment]
-		if seg == nil {
-			seg = &Segment{}
-			d.segments[ro.Segment] = seg
-		}
-
-		seg.UsedBytes += uint64(ro.Size)
-		seg.Used += uint64(ro.Partial.Blocks)
+		d.s.CreateOrUpdate(ro.Segment, ro.Size, uint64(ro.Partial.Blocks))
 	}
 
 	d.lba2pba = m

@@ -37,7 +37,7 @@ func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
 }
 
 func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterator, error) {
-	toGC, ok, err := d.pickSegmentToGC(ctx, min)
+	toGC, ok, err := d.s.PickSegmentToGC(min)
 	if !ok {
 		return SegmentId{}, nil, nil
 	}
@@ -54,38 +54,6 @@ func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterat
 	}
 
 	return toGC, ci, nil
-}
-
-func (d *Disk) pickSegmentToGC(ctx context.Context, min float64) (SegmentId, bool, error) {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	var (
-		smallestId    SegmentId
-		smallestStats *Segment
-	)
-
-	for segId, stats := range d.segments {
-		if stats.deleted {
-			continue
-		}
-
-		d := stats.Density()
-		if d > min {
-			continue
-		}
-
-		if smallestStats == nil || d < smallestStats.Density() {
-			smallestStats = stats
-			smallestId = segId
-		}
-	}
-
-	if smallestStats == nil {
-		return SegmentId{}, false, nil
-	}
-
-	return smallestId, true, nil
 }
 
 type CopyIterator struct {
@@ -196,10 +164,7 @@ loop:
 }
 
 func (c *CopyIterator) Close() error {
-	c.d.segmentsMu.Lock()
-	defer c.d.segmentsMu.Unlock()
-
-	c.d.segments[c.seg].deleted = true
+	c.d.s.SetDeleted(c.seg)
 
 	c.d.log.Info("gc cycle complete",
 		"extents", c.copiedExtents,

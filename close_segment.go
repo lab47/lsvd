@@ -35,12 +35,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 	d.log.Debug("starting goroutine to close segment")
 
-	d.prevCacheMu.Lock()
-	for d.prevCache != nil {
-		d.prevCacheCond.Wait()
-	}
-	d.prevCache = oc
-	d.prevCacheMu.Unlock()
+	d.prevCache.SetWhenClear(oc)
 
 	done := make(chan struct{})
 
@@ -100,14 +95,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		mapStart := time.Now()
 
-		d.segmentsMu.Lock()
-
-		d.segments[segId] = &Segment{
-			Size: stats.Blocks,
-			Used: stats.Blocks,
-		}
-
-		d.segmentsMu.Unlock()
+		d.s.Create(segId, stats)
 
 		d.lbaMu.Lock()
 		for _, ent := range entries {
@@ -119,14 +107,11 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 				d.log.Error("error updating read map", "error", err)
 			}
 
-			d.updateUsage(segId, affected)
+			d.s.UpdateUsage(d.log, segId, affected)
 		}
 		d.lbaMu.Unlock()
 
-		d.prevCacheMu.Lock()
-		d.prevCache = nil
-		d.prevCacheCond.Signal()
-		d.prevCacheMu.Unlock()
+		d.prevCache.Clear()
 
 		mapDur := time.Since(mapStart)
 
@@ -188,45 +173,8 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	return done, nil
 }
 
-func (d *Disk) updateUsage(self SegmentId, affected []PartialExtent) {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	for _, r := range affected {
-		if r.Segment != self {
-			rng := r.Partial
-
-			if seg, ok := d.segments[r.Segment]; ok {
-				if seg.deleted {
-					continue
-				}
-
-				if o, ok := seg.detectedCleared(rng); ok {
-					d.log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
-				}
-				seg.cleared = append(seg.cleared, rng)
-				seg.Used -= uint64(rng.Blocks)
-			} else {
-				d.log.Warn("missing segment during usage update", "id", r.Segment.String())
-			}
-		}
-	}
-}
-
 func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	var toDelete []SegmentId
-
-	for i, s := range d.segments {
-		if s.deleted {
-			toDelete = append(toDelete, i)
-		}
-	}
-
-	for _, i := range toDelete {
-		delete(d.segments, i)
+	for _, i := range d.s.FindDeleted() {
 		d.log.Debug("removing segment from volume", "volume", d.volName, "segment", i)
 		err := d.sa.RemoveSegmentFromVolume(ctx, d.volName, i)
 		if err != nil {

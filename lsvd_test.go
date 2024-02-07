@@ -1010,9 +1010,9 @@ func TestLSVD(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
-		r.Len(d.segments, 1)
+		r.Len(d.s.segments, 1)
 
-		stats, ok := d.segments[s1]
+		stats, ok := d.s.segments[s1]
 		r.True(ok)
 
 		r.Equal(uint64(2), stats.Used)
@@ -1023,7 +1023,7 @@ func TestLSVD(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
-		r.Len(d.segments, 2)
+		r.Len(d.s.segments, 2)
 
 		r.Equal(uint64(1), stats.Used)
 	})

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -34,9 +33,7 @@ type Disk struct {
 	size    int64
 	volName string
 
-	prevCacheMu   sync.Mutex
-	prevCacheCond *sync.Cond
-	prevCache     *SegmentCreator
+	prevCache *PreviousCache
 
 	curSeq ulid.ULID
 
@@ -49,8 +46,7 @@ type Disk struct {
 	sa    SegmentAccess
 	curOC *SegmentCreator
 
-	segmentsMu sync.Mutex
-	segments   map[SegmentId]*Segment
+	s *Segments
 
 	afterNS func(SegmentId)
 }
@@ -108,11 +104,10 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		sa:          o.sa,
 		volName:     o.volName,
 		SeqGen:      o.seqGen,
-		segments:    make(map[SegmentId]*Segment),
 		afterNS:     o.afterNS,
+		prevCache:   NewPreviousCache(),
+		s:           NewSegments(),
 	}
-
-	d.prevCacheCond = sync.NewCond(&d.prevCacheMu)
 
 	openSegments, err := lru.NewWithEvict[SegmentId, SegmentReader](
 		256, func(key SegmentId, value SegmentReader) {
@@ -328,12 +323,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 }
 
 func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, holes []Extent) ([]Extent, error) {
-	// This is broken out from fillFromWriteCache because we need to hold prevCacheMu since
-	// the segment closing goroutine is running elsewhere and touches it.
-	d.prevCacheMu.Lock()
-	defer d.prevCacheMu.Unlock()
-
-	oc := d.prevCache
+	oc := d.prevCache.Load()
 
 	// If there is no previous cache, bail.
 	if oc == nil {
@@ -573,35 +563,6 @@ func (d *Disk) Close(ctx context.Context) error {
 	d.extentCache.Close()
 
 	return err
-}
-
-func (d *Disk) LogSegmentInfo() {
-	d.segmentsMu.Lock()
-	defer d.segmentsMu.Unlock()
-
-	type ent struct {
-		seg     SegmentId
-		density float64
-		stats   *Segment
-	}
-
-	var entries []ent
-
-	for segId, stats := range d.segments {
-		entries = append(entries, ent{segId, stats.Density(), stats})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].density < entries[j].density
-	})
-
-	for _, e := range entries {
-		d.log.Info("segment density", "segment", e.seg,
-			"density", e.density,
-			"total", e.stats.Size,
-			"used", e.stats.Used,
-		)
-	}
 }
 
 func (d *Disk) Size() int64 {
