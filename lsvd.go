@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/lab47/lz4decode"
@@ -37,7 +36,6 @@ type Disk struct {
 
 	curSeq ulid.ULID
 
-	lbaMu   sync.Mutex
 	lba2pba *ExtentMap
 
 	extentCache  *ExtentCache
@@ -237,7 +235,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	)
 
 	for _, h := range remaining {
-		pes, err := d.resolvePartialExtents(h)
+		pes, err := d.lba2pba.Resolve(rng)
 		if err != nil {
 			d.log.Error("error computing opbas", "error", err, "rng", h)
 			return RangeData{}, err
@@ -358,13 +356,6 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 	d.log.Trace("write cache didn't find", "input", holes, "holes", remaining)
 
 	return remaining, nil
-}
-
-func (d *Disk) resolvePartialExtents(rng Extent) ([]*PartialExtent, error) {
-	d.lbaMu.Lock()
-	defer d.lbaMu.Unlock()
-
-	return d.lba2pba.Resolve(rng)
 }
 
 func (d *Disk) readPartialExtent(

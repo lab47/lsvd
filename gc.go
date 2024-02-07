@@ -97,14 +97,14 @@ loop:
 
 		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
 
-		opbas, err := c.d.resolvePartialExtents(extent)
+		pes, err := c.d.lba2pba.Resolve(extent)
 		if err != nil {
 			return false, err
 		}
 
-		for _, opba := range opbas {
-			if opba.Segment != c.seg {
-				c.d.log.Trace("discarding segment", "extent", extent, "target", opba.Extent, "segment", opba.Segment, "seg", c.seg)
+		for _, pe := range pes {
+			if pe.Segment != c.seg {
+				c.d.log.Trace("discarding segment", "extent", extent, "target", pe.Extent, "segment", pe.Segment, "seg", c.seg)
 				continue loop
 			}
 		}

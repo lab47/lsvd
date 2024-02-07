@@ -22,6 +22,79 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
+type extentValidator struct {
+	sums    map[Extent]string
+	resi    map[Extent][]*PartialExtent
+	entries []ExtentLocation
+}
+
+func (e *extentValidator) populate(d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
+	e.sums = map[Extent]string{}
+	e.resi = map[Extent][]*PartialExtent{}
+	e.entries = entries
+
+	var data RangeData
+
+	for _, ent := range entries {
+		data.Reset(ent.Extent)
+
+		_, err := oc.FillExtent(data)
+		if err != nil {
+			d.log.Error("error reading extent for validation", "error", err)
+		}
+		sum := rangeSum(data.data)
+		e.sums[ent.Extent] = sum
+
+		ranges, err := d.lba2pba.Resolve(ent.Extent)
+		if err != nil {
+			d.log.Error("error performing resolution for block read check")
+		} else {
+			e.resi[ent.Extent] = ranges
+		}
+	}
+}
+
+func (e *extentValidator) validate(ctx context.Context, d *Disk) {
+	entries := e.entries
+
+	d.log.Info("performing extent validation")
+	passed := 0
+	for _, ent := range entries {
+		data, err := d.ReadExtent(ctx, ent.Extent)
+		if err != nil {
+			d.log.Error("error reading extent for validation", "error", err)
+		}
+		sum := rangeSum(data.data)
+
+		if sum != e.sums[ent.Extent] {
+			d.log.Error("block read validation failed", "extent", ent.Extent,
+				"sum", sum, "expected", e.sums[ent.Extent])
+			ranges, err := d.lba2pba.Resolve(ent.Extent)
+			if err != nil {
+				d.log.Error("unable to resolve for check", "error", err)
+			} else {
+				var before []string
+				for _, r := range e.resi[ent.Extent] {
+					before = append(before, r.String())
+				}
+
+				var after []string
+				for _, r := range ranges {
+					after = append(after, r.String())
+				}
+
+				d.log.Error("block read validation ranges",
+					"before", strings.Join(before, " "),
+					"after", strings.Join(after, " "))
+			}
+		} else {
+			passed++
+		}
+	}
+
+	d.log.Warn("finished block read validation", "passed", passed)
+}
+
 func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	segId := SegmentId(d.curSeq)
 
@@ -50,6 +123,8 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			err     error
 		)
 
+		// We retry because flush does network calls and we want to just keep trying
+		// forever.
 		start := time.Now()
 		for {
 			entries, stats, err = oc.Flush(ctx, d.sa, segId)
@@ -66,92 +141,25 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		d.log.Debug("segment published, resetting write cache")
 
-		sums := map[Extent]string{}
-		resi := map[Extent][]*PartialExtent{}
+		var validator *extentValidator
 
 		if mode.Debug() {
-			sums = map[Extent]string{}
-
-			var data RangeData
-
-			for _, ent := range entries {
-				data.Reset(ent.Extent)
-
-				_, err := oc.FillExtent(data)
-				if err != nil {
-					d.log.Error("error reading extent for validation", "error", err)
-				}
-				sum := rangeSum(data.data)
-				sums[ent.Extent] = sum
-
-				ranges, err := d.lba2pba.Resolve(ent.Extent)
-				if err != nil {
-					d.log.Error("error performing resolution for block read check")
-				} else {
-					resi[ent.Extent] = ranges
-				}
-			}
+			validator = &extentValidator{}
+			validator.populate(d, oc, entries)
 		}
 
 		mapStart := time.Now()
 
 		d.s.Create(segId, stats)
 
-		d.lbaMu.Lock()
-		for _, ent := range entries {
-			if mode.Debug() {
-				d.log.Trace("updating read map", "extent", ent.Extent)
-			}
-			affected, err := d.lba2pba.Update(ent)
-			if err != nil {
-				d.log.Error("error updating read map", "error", err)
-			}
-
-			d.s.UpdateUsage(d.log, segId, affected)
-		}
-		d.lbaMu.Unlock()
+		d.lba2pba.UpdateBatch(d.log, entries, segId, d.s)
 
 		d.prevCache.Clear()
 
 		mapDur := time.Since(mapStart)
 
-		if mode.Debug() {
-			d.log.Info("performing extent validation")
-			passed := 0
-			for _, ent := range entries {
-				data, err := d.ReadExtent(ctx, ent.Extent)
-				if err != nil {
-					d.log.Error("error reading extent for validation", "error", err)
-				}
-				sum := rangeSum(data.data)
-
-				if sum != sums[ent.Extent] {
-					d.log.Error("block read validation failed", "extent", ent.Extent,
-						"sum", sum, "expected", sums[ent.Extent])
-					ranges, err := d.lba2pba.Resolve(ent.Extent)
-					if err != nil {
-						d.log.Error("unable to resolve for check", "error", err)
-					} else {
-						var before []string
-						for _, r := range resi[ent.Extent] {
-							before = append(before, r.String())
-						}
-
-						var after []string
-						for _, r := range ranges {
-							after = append(after, r.String())
-						}
-
-						d.log.Error("block read validation ranges",
-							"before", strings.Join(before, " "),
-							"after", strings.Join(after, " "))
-					}
-				} else {
-					passed++
-				}
-			}
-
-			d.log.Warn("finished block read validation", "passed", passed)
+		if validator != nil {
+			validator.validate(ctx, d)
 		}
 
 		if d.afterNS != nil {

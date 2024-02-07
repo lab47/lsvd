@@ -3,6 +3,7 @@ package lsvd
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/pkg/treemap"
@@ -11,6 +12,7 @@ import (
 
 type ExtentMap struct {
 	log hclog.Logger
+	mu  sync.Mutex
 	m   *treemap.TreeMap[LBA, *PartialExtent]
 
 	coverBlocks int
@@ -50,7 +52,33 @@ func (m *ExtentMap) checkExtent(e Extent) Extent {
 	return e
 }
 
+func (e *ExtentMap) UpdateBatch(log hclog.Logger, entries []ExtentLocation, segId SegmentId, s *Segments) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, ent := range entries {
+		if mode.Debug() {
+			log.Trace("updating read map", "extent", ent.Extent)
+		}
+		affected, err := e.update(ent)
+		if err != nil {
+			log.Error("error updating read map", "error", err)
+		}
+
+		s.UpdateUsage(log, segId, affected)
+	}
+
+	return nil
+}
+
 func (e *ExtentMap) Update(pba ExtentLocation) ([]PartialExtent, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.update(pba)
+}
+
+func (e *ExtentMap) update(pba ExtentLocation) ([]PartialExtent, error) {
 	var (
 		toDelete []LBA
 		toAdd    []*PartialExtent
@@ -287,6 +315,9 @@ func (e *ExtentMap) Render() string {
 }
 
 func (e *ExtentMap) Resolve(rng Extent) ([]*PartialExtent, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	var ret []*PartialExtent
 
 loop:
