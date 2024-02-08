@@ -159,8 +159,6 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 	for it := m.m.Iterator(); it.Valid(); it.Next() {
 		cur := it.Value()
 
-		hclog.L().Error("write to lba map", "extent", cur.Partial, "flag", cur.Flags)
-
 		err := binary.Write(f, binary.BigEndian, cur)
 		if err != nil {
 			return err

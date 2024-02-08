@@ -1189,6 +1189,36 @@ func TestLSVD(t *testing.T) {
 			d2.data[BlockSize*2:BlockSize*4],
 		)
 	})
+
+	t.Run("supports writing multiple ranges at once", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtents(ctx, []RangeData{
+			testRandX.MapTo(0),
+			testRandX.MapTo(47),
+		})
+		r.NoError(err)
+
+		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testRandX, d2)
+		r.NoError(err)
+
+		d3, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testRandX, d3)
+		r.NoError(err)
+	})
+
 }
 
 type slowLocal struct {

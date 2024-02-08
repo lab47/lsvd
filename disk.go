@@ -527,6 +527,50 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 	return nil
 }
 
+// WriteExtents writes multiple extents without performing any segment
+// flush checking between them, thusly making sure that all of them end
+// up in the same segment.
+func (d *Disk) WriteExtents(ctx context.Context, ranges []RangeData) error {
+	start := time.Now()
+
+	defer func() {
+		blocksWriteLatency.Observe(time.Since(start).Seconds())
+	}()
+
+	iops.Add(float64(len(ranges)))
+
+	for _, data := range ranges {
+		err := d.curOC.WriteExtent(data)
+		if err != nil {
+			d.log.Error("error write extents to segment creator", "error", err)
+			return err
+		}
+	}
+
+	if d.curOC.BodySize() >= FlushThreshHold {
+		d.log.Info("flushing new segment",
+			"body-size", d.curOC.BodySize(),
+			"extents", d.curOC.Entries(),
+			"blocks", d.curOC.TotalBlocks(),
+			"storage-ratio", d.curOC.AvgStorageRatio(),
+		)
+		ch, err := d.closeSegmentAsync(ctx)
+		if err != nil {
+			return err
+		}
+
+		if mode.Debug() {
+			select {
+			case <-ch:
+				d.log.Debug("segment has been flushed")
+			case <-ctx.Done():
+			}
+		}
+	}
+
+	return nil
+}
+
 func (d *Disk) SyncWriteCache() error {
 	iops.Inc()
 
