@@ -235,7 +235,12 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	)
 
 	for _, h := range remaining {
-		pes, err := d.lba2pba.Resolve(rng)
+
+		// We resolve each one into a set of partial extents which have
+		// information about which segment the partials are in.
+		//
+		// Invariant: each of the pes.Partial extents must be a part of +h+.
+		pes, err := d.lba2pba.Resolve(log, h)
 		if err != nil {
 			d.log.Error("error computing opbas", "error", err, "rng", h)
 			return RangeData{}, err
