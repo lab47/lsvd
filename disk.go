@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lab47/hclogx"
 	"github.com/lab47/lz4decode"
 	"github.com/lab47/mode"
 
@@ -97,7 +98,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		log:         log,
 		path:        path,
 		size:        sz,
-		lba2pba:     NewExtentMap(log),
+		lba2pba:     NewExtentMap(),
 		extentCache: ec,
 		sa:          o.sa,
 		volName:     o.volName,
@@ -203,9 +204,11 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 	data := NewRangeData(rng)
 
-	d.log.Trace("attempting to fill request from write cache", "extent", rng)
+	log := hclogx.NewOpLogger(d.log)
 
-	remaining, err := d.fillFromWriteCache(ctx, data)
+	log.Trace("attempting to fill request from write cache", "extent", rng)
+
+	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
 		return RangeData{}, err
 	}
@@ -216,24 +219,25 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		return data, nil
 	}
 
-	d.log.Trace("remaining extents needed", "total", len(remaining))
+	log.Trace("remaining extents needed", "total", len(remaining))
 
-	if d.log.IsTrace() {
+	if log.IsTrace() {
 		for _, r := range remaining {
-			d.log.Trace("remaining", "extent", r)
+			log.Trace("remaining", "extent", r)
 		}
 	}
 
 	type readRequest struct {
-		pe      *PartialExtent
+		pe      PartialExtent
 		extents []Extent
 	}
 
 	var (
 		reqs []*readRequest
-		last *PartialExtent
+		last *readRequest
 	)
 
+	// remaining is the extents that we still need to fill.
 	for _, h := range remaining {
 
 		// We resolve each one into a set of partial extents which have
@@ -242,12 +246,12 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		// Invariant: each of the pes.Partial extents must be a part of +h+.
 		pes, err := d.lba2pba.Resolve(log, h)
 		if err != nil {
-			d.log.Error("error computing opbas", "error", err, "rng", h)
+			log.Error("error computing opbas", "error", err, "rng", h)
 			return RangeData{}, err
 		}
 
 		if len(pes) == 0 {
-			d.log.Trace("no partial extents found")
+			log.Trace("no partial extents found")
 			// nothing for range, and since the data is pre-zero'd, we
 			// don't need to clear anything here.
 		} else {
@@ -259,11 +263,16 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 					continue
 				}
 
+				if mode.Debug() && pe.Partial.Cover(h) == CoverNone {
+					log.Flush()
+					log.Error("resolve returned extent that doesn't cover", "hole", h, "pe", pe.Partial)
+				}
+
 				// Because the holes can be smaller than the read ranges,
 				// 2 or more holes in sequence might be served by the same
 				// segment range.
-				if last == pe {
-					reqs[len(reqs)-1].extents = append(reqs[len(reqs)-1].extents, h)
+				if last != nil && last.pe == pe {
+					last.extents = append(last.extents, h)
 				} else {
 					r := &readRequest{
 						pe:      pe,
@@ -271,17 +280,17 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 					}
 
 					reqs = append(reqs, r)
-					last = pe
+					last = r
 				}
 			}
 		}
 	}
 
-	if d.log.IsTrace() {
-		d.log.Trace("pes needed", "total", len(reqs))
+	if log.IsTrace() {
+		log.Trace("pes needed", "total", len(reqs))
 
 		for _, o := range reqs {
-			d.log.Trace("partial-extent needed",
+			log.Trace("partial-extent needed",
 				"segment", o.pe.Segment, "offset", o.pe.Offset, "size", o.pe.Size,
 				"usable", o.pe.Partial, "full", o.pe.Extent)
 		}
@@ -291,7 +300,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	// and populate data. This could be parallelized as each touches a different
 	// range of data.
 	for _, o := range reqs {
-		err := d.readPartialExtent(ctx, o.pe, o.extents, rng, data)
+		err := d.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
 		if err != nil {
 			return RangeData{}, err
 		}
@@ -300,7 +309,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	return data, nil
 }
 
-func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent, error) {
+func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {
 	used, err := d.curOC.FillExtent(data)
 	if err != nil {
 		return nil, err
@@ -308,7 +317,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 
 	var remaining []Extent
 
-	d.log.Trace("write cache used", "request", data.Extent, "used", used)
+	log.Trace("write cache used", "request", data.Extent, "used", used)
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -320,12 +329,12 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, data RangeData) ([]Extent
 		}
 	}
 
-	d.log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
 
-	return d.fillingFromPrevWriteCache(ctx, data, remaining)
+	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }
 
-func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, holes []Extent) ([]Extent, error) {
+func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log hclog.Logger, data RangeData, holes []Extent) ([]Extent, error) {
 	oc := d.prevCache.Load()
 
 	// If there is no previous cache, bail.
@@ -358,7 +367,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, data RangeData, ho
 		}
 	}
 
-	d.log.Trace("write cache didn't find", "input", holes, "holes", remaining)
+	log.Trace("write cache didn't find", "input", holes, "holes", remaining)
 
 	return remaining, nil
 }
@@ -448,7 +457,7 @@ func (d *Disk) readPartialExtent(
 	for _, x := range rngs {
 		overlap, ok := pe.Partial.Clamp(x)
 		if !ok {
-			d.log.Error("error clamping required range to usable range")
+			d.log.Error("error clamping required range to usable range", "request", x, "partial", pe.Partial)
 			return fmt.Errorf("error clamping range")
 		}
 

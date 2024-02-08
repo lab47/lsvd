@@ -51,7 +51,7 @@ func TestSegmentCreator(t *testing.T) {
 
 		oc2 := &SegmentCreator{
 			log: log,
-			em:  NewExtentMap(log),
+			em:  NewExtentMap(),
 		}
 
 		err = oc2.readLog(f)

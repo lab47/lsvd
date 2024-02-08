@@ -50,6 +50,13 @@ func TestExtent(t *testing.T) {
 		for _, x := range []Extent{e(0, 10), e(20, 1)} {
 			r.Equal(CoverNone, e(10, 10).Cover(x), "%s covers but shouldn't", x)
 		}
+
+		x := Extent{7238172, 21}
+		y := Extent{7238193, 15}
+
+		r.Equal(CoverNone, x.Cover(y))
+		r.Equal(CoverNone, y.Cover(x))
+
 	})
 
 	t.Run("clamp", func(t *testing.T) {

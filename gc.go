@@ -97,7 +97,7 @@ loop:
 
 		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
 
-		pes, err := c.d.lba2pba.Resolve(extent)
+		pes, err := c.d.lba2pba.Resolve(c.d.log, extent)
 		if err != nil {
 			return false, err
 		}

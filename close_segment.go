@@ -71,7 +71,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		if mode.Debug() {
 			validator = &extentValidator{}
-			validator.populate(d, oc, entries)
+			validator.populate(d.log, d, oc, entries)
 		}
 
 		mapStart := time.Now()
@@ -85,7 +85,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		mapDur := time.Since(mapStart)
 
 		if validator != nil {
-			validator.validate(ctx, d)
+			validator.validate(ctx, d.log, d)
 		}
 
 		if d.afterNS != nil {

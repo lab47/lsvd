@@ -43,7 +43,7 @@ func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, err
 	oc := &SegmentCreator{
 		log:     log,
 		volName: vol,
-		em:      NewExtentMap(log),
+		em:      NewExtentMap(),
 	}
 
 	err := oc.OpenWrite(path)
@@ -89,7 +89,7 @@ func (o *SegmentCreator) TotalBlocks() int {
 
 func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
-	_, err := o.em.Update(ExtentLocation{
+	_, err := o.em.Update(o.log, ExtentLocation{
 		ExtentHeader: ExtentHeader{
 			Extent: rng,
 		},
@@ -193,7 +193,7 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 
 		o.extents = append(o.extents, eh)
 
-		_, err := o.em.Update(ExtentLocation{
+		_, err := o.em.Update(o.log, ExtentLocation{
 			ExtentHeader: eh,
 		})
 		if err != nil {
@@ -212,7 +212,7 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 func (o *SegmentCreator) FillExtent(data RangeData) ([]Extent, error) {
 	rng := data.Extent
 
-	ranges, err := o.em.Resolve(rng)
+	ranges, err := o.em.Resolve(o.log, rng)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 	}
 
 	if o.em == nil {
-		o.em = NewExtentMap(o.log)
+		o.em = NewExtentMap()
 	}
 
 	o.totalBlocks += int(ext.Extent.Blocks)
@@ -373,7 +373,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 		o.storageRatio += (float64(n) / float64(len(ext.data)))
 
 		eh.Offset = uint32(o.offset)
-		_, err = o.em.Update(ExtentLocation{
+		_, err = o.em.Update(o.log, ExtentLocation{
 			ExtentHeader: eh,
 		})
 		if err != nil {
@@ -385,7 +385,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 
 	o.extents = append(o.extents, eh)
 
-	_, err := o.em.Update(ExtentLocation{
+	_, err := o.em.Update(o.log, ExtentLocation{
 		ExtentHeader: eh,
 	})
 

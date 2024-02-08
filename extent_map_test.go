@@ -24,10 +24,10 @@ func TestExtentMap(t *testing.T) {
 	t.Run("disjoint updates prefix", func(t *testing.T) {
 		r := require.New(t)
 
-		d := NewExtentMap(log)
+		d := NewExtentMap()
 
 		x := Extent{47, 10}
-		a, err := d.Update(ExtentLocation{
+		a, err := d.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{
 				Extent: x,
 				Offset: 47},
@@ -37,7 +37,7 @@ func TestExtentMap(t *testing.T) {
 		r.Len(a, 0)
 
 		y := Extent{0, 8}
-		a, err = d.Update(ExtentLocation{
+		a, err = d.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 0, Extent: y},
 			Segment:      s1,
 		})
@@ -58,10 +58,10 @@ func TestExtentMap(t *testing.T) {
 	t.Run("disjoint updates suffix", func(t *testing.T) {
 		r := require.New(t)
 
-		d := NewExtentMap(log)
+		d := NewExtentMap()
 
 		y := Extent{0, 8}
-		a, err := d.Update(ExtentLocation{
+		a, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 0, Extent: y},
 		})
@@ -69,7 +69,7 @@ func TestExtentMap(t *testing.T) {
 		r.Len(a, 0)
 
 		x := Extent{47, 10}
-		a, err = d.Update(ExtentLocation{
+		a, err = d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 47, Extent: x},
 		})
@@ -90,18 +90,18 @@ func TestExtentMap(t *testing.T) {
 	t.Run("splits the ranges on update", func(t *testing.T) {
 		r := require.New(t)
 
-		d := NewExtentMap(log)
+		d := NewExtentMap()
 
 		x := Extent{LBA: 0, Blocks: 10}
 
-		_, err := d.Update(ExtentLocation{
+		_, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: x},
 		})
 		r.NoError(err)
 
 		y := Extent{1, 1}
-		a, err := d.Update(ExtentLocation{
+		a, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: y},
 		})
@@ -135,14 +135,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("wipes out a smaller range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{2, 1}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 10}},
 		})
 		r.NoError(err)
@@ -164,14 +164,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("adjusts an earlier overlapping range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 5}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{3, 10}},
 		})
 		r.NoError(err)
@@ -196,14 +196,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("adjusts a later overlapping range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{3, 10}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
 		})
 		r.NoError(err)
@@ -228,14 +228,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("adjusts a later boundary range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{3, 2}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
 		})
 		r.NoError(err)
@@ -251,14 +251,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("removes a range that starts at the same place and is smaller", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{1, 1}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 5}},
 		})
 		r.NoError(err)
@@ -280,14 +280,14 @@ func TestExtentMap(t *testing.T) {
 	t.Run("doesn't removes non overlapping range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 1}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 1}},
 		})
 		r.NoError(err)
@@ -296,7 +296,7 @@ func TestExtentMap(t *testing.T) {
 
 		r.Equal(2, m.m.Len())
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 1}},
 		})
 		r.NoError(err)
@@ -312,19 +312,19 @@ func TestExtentMap(t *testing.T) {
 	t.Run("removes multiple ranges", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{1, 1}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{2, 1}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
 		})
 		r.NoError(err)
@@ -346,28 +346,28 @@ func TestExtentMap(t *testing.T) {
 	t.Run("adjusts multiple ranges", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{8, 1}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{11, 1}},
 		})
 		r.NoError(err)
 
 		r.Len(a, 0)
 
-		a, err = m.Update(ExtentLocation{
+		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{12, 10}},
 		})
 		r.NoError(err)
 
 		r.Len(a, 0)
 
-		a, err = m.Update(ExtentLocation{
+		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{10, 5}},
 		})
 		r.NoError(err)
@@ -402,28 +402,28 @@ func TestExtentMap(t *testing.T) {
 	t.Run("emits affected range once only", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{8, 1}},
 		})
 		r.NoError(err)
 
-		a, err := m.Update(ExtentLocation{
+		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{11, 1}},
 		})
 		r.NoError(err)
 
 		r.Len(a, 0)
 
-		a, err = m.Update(ExtentLocation{
+		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{12, 10}},
 		})
 		r.NoError(err)
 
 		r.Len(a, 0)
 
-		a, err = m.Update(ExtentLocation{
+		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{10, 5}},
 		})
 		r.NoError(err)
@@ -434,7 +434,7 @@ func TestExtentMap(t *testing.T) {
 		r.Equal(Extent{12, 3}, a[1].Partial)
 		r.Equal(uint32(3), a[1].Offset)
 
-		a, err = m.Update(ExtentLocation{
+		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 5, Extent: Extent{10, 5}},
 		})
 		r.NoError(err)
@@ -447,36 +447,36 @@ func TestExtentMap(t *testing.T) {
 	t.Run("report all pbas for a range", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 5}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{5, 5}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{10, 5}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{15, 5}},
 		})
 		r.NoError(err)
 
-		_, err = m.Update(ExtentLocation{
+		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{100, 5}},
 		})
 		r.NoError(err)
 
 		r.Equal(5, m.m.Len())
 
-		pbas, err := m.Resolve(Extent{7, 20})
+		pbas, err := m.Resolve(log, Extent{7, 20})
 		r.NoError(err)
 
 		r.Len(pbas, 3)
@@ -489,9 +489,9 @@ func TestExtentMap(t *testing.T) {
 	t.Run("resolves a range that matches the lba", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{
 				Extent: Extent{0, 5},
 				Offset: 1},
@@ -502,7 +502,7 @@ func TestExtentMap(t *testing.T) {
 
 		t.Log(m.Render())
 
-		pbas, err := m.Resolve(Extent{0, 5})
+		pbas, err := m.Resolve(log, Extent{0, 5})
 		r.NoError(err)
 
 		r.Len(pbas, 1)
@@ -513,9 +513,9 @@ func TestExtentMap(t *testing.T) {
 	t.Run("resolves a range that starts before the lba", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{
 				Extent: Extent{1, 1},
 				Offset: 1},
@@ -526,7 +526,7 @@ func TestExtentMap(t *testing.T) {
 
 		t.Log(m.Render())
 
-		pbas, err := m.Resolve(Extent{0, 5})
+		pbas, err := m.Resolve(log, Extent{0, 5})
 		r.NoError(err)
 
 		r.Len(pbas, 1)
@@ -537,7 +537,7 @@ func TestExtentMap(t *testing.T) {
 	t.Run("tc", func(t *testing.T) {
 		r := require.New(t)
 
-		m := NewExtentMap(log)
+		m := NewExtentMap()
 
 		inject := []Extent{
 			{5799956, 5},
@@ -546,7 +546,7 @@ func TestExtentMap(t *testing.T) {
 		}
 
 		for i, e := range inject {
-			_, err := m.Update(ExtentLocation{
+			_, err := m.Update(log, ExtentLocation{
 				ExtentHeader: ExtentHeader{Offset: uint32(i), Extent: e},
 			})
 			r.NoError(err)
@@ -556,7 +556,7 @@ func TestExtentMap(t *testing.T) {
 
 		t.Log(m.Render())
 
-		_, err := m.Update(ExtentLocation{
+		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{5799956, 13}},
 		})
 		r.NoError(err)
@@ -575,5 +575,38 @@ func TestExtentMap(t *testing.T) {
 		r.True(ok)
 
 		r.Equal(Extent{5799956, 13}, r2.Partial)
+	})
+
+	t.Run("tc2", func(t *testing.T) {
+		r := require.New(t)
+
+		m := NewExtentMap()
+
+		inject := []Extent{
+			{7234450, 40},
+			{7234490, 1},
+			{7234491, 5},
+			{7234496, 1},
+		}
+
+		for i, e := range inject {
+			_, err := m.Update(log, ExtentLocation{
+				ExtentHeader: ExtentHeader{Offset: uint32(i), Extent: e},
+			})
+			r.NoError(err)
+		}
+
+		r.Equal(4, m.m.Len())
+
+		t.Log(m.Render())
+
+		h := Extent{7234460, 31}
+		pes, err := m.Resolve(log, h)
+		r.NoError(err)
+
+		r.Len(pes, 2)
+
+		r.Equal(LBA(7234450), pes[0].LBA)
+		r.Equal(LBA(7234490), pes[1].LBA)
 	})
 }

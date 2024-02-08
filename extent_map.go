@@ -11,17 +11,15 @@ import (
 )
 
 type ExtentMap struct {
-	log hclog.Logger
-	mu  sync.Mutex
-	m   *treemap.TreeMap[LBA, *PartialExtent]
+	mu sync.Mutex
+	m  *treemap.TreeMap[LBA, *PartialExtent]
 
 	coverBlocks int
 }
 
-func NewExtentMap(log hclog.Logger) *ExtentMap {
+func NewExtentMap() *ExtentMap {
 	return &ExtentMap{
-		log: log,
-		m:   treemap.New[LBA, *PartialExtent](),
+		m: treemap.New[LBA, *PartialExtent](),
 	}
 }
 
@@ -60,7 +58,7 @@ func (e *ExtentMap) UpdateBatch(log hclog.Logger, entries []ExtentLocation, segI
 		if mode.Debug() {
 			log.Trace("updating read map", "extent", ent.Extent)
 		}
-		affected, err := e.update(ent)
+		affected, err := e.update(log, ent)
 		if err != nil {
 			log.Error("error updating read map", "error", err)
 		}
@@ -71,14 +69,14 @@ func (e *ExtentMap) UpdateBatch(log hclog.Logger, entries []ExtentLocation, segI
 	return nil
 }
 
-func (e *ExtentMap) Update(pba ExtentLocation) ([]PartialExtent, error) {
+func (e *ExtentMap) Update(log hclog.Logger, pba ExtentLocation) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.update(pba)
+	return e.update(log, pba)
 }
 
-func (e *ExtentMap) update(pba ExtentLocation) ([]PartialExtent, error) {
+func (e *ExtentMap) update(log hclog.Logger, pba ExtentLocation) ([]PartialExtent, error) {
 	var (
 		toDelete []LBA
 		toAdd    []*PartialExtent
@@ -93,7 +91,7 @@ func (e *ExtentMap) update(pba ExtentLocation) ([]PartialExtent, error) {
 
 	e.checkExtent(rng)
 
-	e.log.Trace("triggered update", "extent", rng)
+	log.Trace("triggered update", "extent", rng)
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
@@ -103,7 +101,7 @@ loop:
 			break
 		}
 
-		e.log.Trace("found bound", "key", i.Key(), "match", i.Value().Partial, "from", rng.LBA)
+		log.Trace("found bound", "key", i.Key(), "match", i.Value().Partial, "from", rng.LBA)
 
 		cur := i.Value()
 
@@ -111,7 +109,7 @@ loop:
 
 		coverage := cur.Partial.Cover(rng)
 
-		e.log.Trace("considering",
+		log.Trace("considering",
 			"a", orig, "b", rng,
 			"a-sub-b", coverage,
 		)
@@ -162,13 +160,13 @@ loop:
 				// with the new range.
 				update, ok := ExtentFrom(cur.Partial.LBA, rng.LBA-1)
 				if !ok {
-					e.log.Error("error calculate updated range", "orig", cur.Partial, "target", rng.LBA-1)
+					log.Error("error calculate updated range", "orig", cur.Partial, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
 				masked, ok = ExtentFrom(rng.LBA, cur.Partial.Last())
 				if !ok {
-					e.log.Error("error calculate masked range", "orig", cur.Partial, "target", rng.LBA-1)
+					log.Error("error calculate masked range", "orig", cur.Partial, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
@@ -193,7 +191,7 @@ loop2:
 
 		orig := cur.Partial
 
-		e.log.Trace("considering",
+		log.Trace("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)
@@ -211,7 +209,7 @@ loop2:
 			pivot := rng.Last() + 1
 			update, ok := ExtentFrom(pivot, old.Last())
 			if !ok {
-				e.log.Error("error calculating new extent", "pivot", pivot, "old", old)
+				log.Error("error calculating new extent", "pivot", pivot, "old", old)
 				return nil, fmt.Errorf("error calculating new extent")
 			}
 
@@ -219,7 +217,7 @@ loop2:
 
 			rem.Partial, ok = ExtentFrom(old.LBA, rng.Last())
 			if !ok {
-				e.log.Error("error calculating masked extent", "pivot", pivot, "old", old)
+				log.Error("error calculating masked extent", "pivot", pivot, "old", old)
 				return nil, fmt.Errorf("error calculating new extent")
 			}
 			affected = append(affected, rem)
@@ -228,7 +226,7 @@ loop2:
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, cur)
-			e.log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Partial)
+			log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Partial)
 			e.checkExtent(cur.Partial)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
@@ -236,19 +234,19 @@ loop2:
 	}
 
 	for _, lba := range toDelete {
-		e.log.Trace("deleting range", "lba", lba)
+		log.Trace("deleting range", "lba", lba)
 		e.m.Del(lba)
 	}
 
 	for _, pba := range toAdd {
 		e.checkExtent(pba.Partial)
-		e.log.Trace("adding range", "rng", pba.Partial)
+		log.Trace("adding range", "rng", pba.Partial)
 		e.m.Set(pba.Partial.LBA, pba)
 	}
 
 	e.checkExtent(rng)
 
-	e.log.Trace("adding read range", "range", rng)
+	log.Trace("adding read range", "range", rng)
 	e.m.Set(rng.LBA, &PartialExtent{
 		ExtentLocation: pba,
 
@@ -259,14 +257,14 @@ loop2:
 	})
 
 	if false { // mode.Debug() {
-		e.log.Debug("validating map post update")
-		return nil, e.Validate()
+		log.Debug("validating map post update")
+		return nil, e.Validate(log)
 	}
 
 	return affected, nil
 }
 
-func (e *ExtentMap) Validate() error {
+func (e *ExtentMap) Validate(log hclog.Logger) error {
 	var prev *PartialExtent
 
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
@@ -278,7 +276,7 @@ func (e *ExtentMap) Validate() error {
 		}
 
 		if pba.Partial.Blocks >= 1_000_000_000 {
-			e.log.Error("extremely large block range detected", "range", pba.Partial)
+			log.Error("extremely large block range detected", "range", pba.Partial)
 			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Partial)
 		}
 
@@ -314,11 +312,11 @@ func (e *ExtentMap) Render() string {
 	return strings.Join(parts, " ")
 }
 
-func (e *ExtentMap) Resolve(rng Extent) ([]*PartialExtent, error) {
+func (e *ExtentMap) Resolve(log hclog.Logger, rng Extent) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	var ret []*PartialExtent
+	var ret []PartialExtent
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
@@ -329,13 +327,13 @@ loop:
 
 		cur := i.Value()
 
-		e.log.Trace("consider for resolve", "cur", cur.Partial, "against", rng)
+		log.Trace("consider for resolve", "cur", cur.Partial, "against", rng)
 
 		switch cur.Partial.Cover(rng) {
 		case CoverPartly:
-			ret = append(ret, cur)
+			ret = append(ret, *cur)
 		case CoverSuperRange, CoverExact:
-			ret = append(ret, cur)
+			ret = append(ret, *cur)
 			break loop
 		case CoverNone:
 			break loop
@@ -350,7 +348,7 @@ loop2:
 
 		orig := cur.Partial
 
-		e.log.Trace("considering",
+		log.Trace("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)
@@ -359,14 +357,19 @@ loop2:
 		case CoverNone:
 			break loop2
 		case CoverSuperRange, CoverExact:
-			ret = append(ret, cur)
+			ret = append(ret, *cur)
 			break loop2
 		case CoverPartly:
-			ret = append(ret, cur)
+			ret = append(ret, *cur)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
+	}
 
+	for _, r := range ret {
+		if r.Partial.Cover(rng) == CoverNone {
+			log.Error("we fucked up, we included a covernone range", "rng", r, "req", rng)
+		}
 	}
 
 	return ret, nil

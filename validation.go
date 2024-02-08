@@ -3,17 +3,19 @@ package lsvd
 import (
 	"context"
 	"strings"
+
+	"github.com/hashicorp/go-hclog"
 )
 
 type extentValidator struct {
 	sums    map[Extent]string
-	resi    map[Extent][]*PartialExtent
+	resi    map[Extent][]PartialExtent
 	entries []ExtentLocation
 }
 
-func (e *extentValidator) populate(d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
+func (e *extentValidator) populate(log hclog.Logger, d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
 	e.sums = map[Extent]string{}
-	e.resi = map[Extent][]*PartialExtent{}
+	e.resi = map[Extent][]PartialExtent{}
 	e.entries = entries
 
 	var data RangeData
@@ -28,7 +30,7 @@ func (e *extentValidator) populate(d *Disk, oc *SegmentCreator, entries []Extent
 		sum := rangeSum(data.data)
 		e.sums[ent.Extent] = sum
 
-		ranges, err := d.lba2pba.Resolve(ent.Extent)
+		ranges, err := d.lba2pba.Resolve(log, ent.Extent)
 		if err != nil {
 			d.log.Error("error performing resolution for block read check")
 		} else {
@@ -37,7 +39,7 @@ func (e *extentValidator) populate(d *Disk, oc *SegmentCreator, entries []Extent
 	}
 }
 
-func (e *extentValidator) validate(ctx context.Context, d *Disk) {
+func (e *extentValidator) validate(ctx context.Context, log hclog.Logger, d *Disk) {
 	entries := e.entries
 
 	d.log.Info("performing extent validation")
@@ -52,7 +54,7 @@ func (e *extentValidator) validate(ctx context.Context, d *Disk) {
 		if sum != e.sums[ent.Extent] {
 			d.log.Error("block read validation failed", "extent", ent.Extent,
 				"sum", sum, "expected", e.sums[ent.Extent])
-			ranges, err := d.lba2pba.Resolve(ent.Extent)
+			ranges, err := d.lba2pba.Resolve(log, ent.Extent)
 			if err != nil {
 				d.log.Error("unable to resolve for check", "error", err)
 			} else {

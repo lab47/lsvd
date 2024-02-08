@@ -67,7 +67,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 
 		eh.Offset += hdr.DataOffset
 
-		affected, err := d.lba2pba.Update(ExtentLocation{
+		affected, err := d.lba2pba.Update(d.log, ExtentLocation{
 			ExtentHeader: eh,
 			Segment:      seg,
 		})
@@ -169,7 +169,7 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 }
 
 func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
-	m := NewExtentMap(log)
+	m := NewExtentMap()
 
 	for {
 		var (
