@@ -51,7 +51,7 @@ func (s *Segments) UpdateUsage(log hclog.Logger, self SegmentId, affected []Part
 
 	for _, r := range affected {
 		if r.Segment != self {
-			rng := r.Partial
+			rng := r.Live
 
 			if seg, ok := s.segments[r.Segment]; ok {
 				if seg.deleted {

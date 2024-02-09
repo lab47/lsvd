@@ -13,5 +13,9 @@ func emptyBytes(b []byte) bool {
 		b = b[BlockSize:]
 	}
 
+	if len(b) == 0 {
+		return true
+	}
+
 	return bytes.Equal(b, emptyBlock[:len(b)])
 }

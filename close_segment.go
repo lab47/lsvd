@@ -24,6 +24,7 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 	segId := SegmentId(d.curSeq)
 
+	s := time.Now()
 	oc := d.curOC
 
 	var err error
@@ -42,6 +43,10 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		defer d.log.Debug("finished goroutine to close segment")
 		defer close(done)
 		defer segmentsWritten.Inc()
+
+		defer func() {
+			segmentTotalTime.Add(time.Since(s).Seconds())
+		}()
 
 		var (
 			entries []ExtentLocation

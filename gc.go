@@ -125,7 +125,7 @@ loop:
 				return false, err
 			}
 
-			if eh.Flags == 1 {
+			if eh.Flags == Compressed {
 				sz := eh.RawSize // binary.BigEndian.Uint32(view)
 
 				if eh.RawSize == 0 {
@@ -135,13 +135,14 @@ loop:
 				uncomp := buffers.Get(int(sz))
 				defer buffers.Return(uncomp)
 
+				//n := lz4decode.UncompressOrig(view, uncomp, nil)
 				n, err := lz4decode.UncompressBlock(view, uncomp, nil)
 				if err != nil {
 					return false, err
 				}
 
 				if n != int(sz) {
-					return false, fmt.Errorf("failed to uncompress correctly")
+					return false, fmt.Errorf("failed to uncompress correctly: %d != %d", n, sz)
 				}
 
 				view = uncomp

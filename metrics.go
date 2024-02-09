@@ -1,8 +1,12 @@
 package lsvd
 
 import (
+	"time"
+
+	"github.com/hashicorp/go-hclog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	dto "github.com/prometheus/client_model/go"
 )
 
 var (
@@ -38,6 +42,11 @@ var (
 		Help: "The total number of segments written",
 	})
 
+	writtenBytes = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_extent_bytes_written",
+		Help: "The total number of bytes written for extents",
+	})
+
 	segmentsBytes = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "lsvd_segments_bytes_written",
 		Help: "The total number of segments bytes written",
@@ -47,6 +56,11 @@ var (
 		Name:    "lsvd_segments_upload_time",
 		Help:    "The total number of segments bytes written",
 		Buckets: prometheus.DefBuckets,
+	})
+
+	segmentTotalTime = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_segments_processing_time",
+		Help: "The total time spend processing segments",
 	})
 
 	openSegments = promauto.NewGauge(prometheus.GaugeOpts{
@@ -64,3 +78,51 @@ var (
 		Help: "Number of times the extent cache contained the entry",
 	})
 )
+
+func counterValue(c prometheus.Counter) int64 {
+	var m dto.Metric
+	c.Write(&m)
+	return int64(m.Counter.GetValue())
+}
+
+func counterAsDuration(c prometheus.Counter) time.Duration {
+	var m dto.Metric
+	c.Write(&m)
+	return time.Duration(m.Counter.GetValue() * float64(time.Second))
+}
+
+func timeTotalValue(c prometheus.Histogram) time.Duration {
+	var m dto.Metric
+	c.Write(&m)
+
+	return time.Duration(m.Histogram.GetSampleSum() * float64(time.Second))
+}
+
+func timeAvgValue(c prometheus.Histogram) time.Duration {
+	var m dto.Metric
+	c.Write(&m)
+
+	samples := m.Histogram.GetSampleCount()
+	if samples == 0 {
+		return 0
+	}
+
+	return time.Duration(m.Histogram.GetSampleSum()*float64(time.Second)) / time.Duration(samples)
+}
+
+func LogMetrics(log hclog.Logger) {
+	log.Info("disk stats",
+		"written-bytes", counterValue(writtenBytes),
+		"segment-bytes", counterValue(segmentsBytes),
+		"segments", counterValue(segmentsWritten),
+		"total-segment-process-time", counterAsDuration(segmentTotalTime),
+	)
+
+	log.Info("client stats",
+		"iops", counterValue(iops),
+		"blocks-written", counterValue(blocksWritten),
+		"blocks-read", counterValue(blocksRead),
+		"block-write-latency", timeAvgValue(blocksWriteLatency),
+		"block-read-latency", timeAvgValue(blocksReadLatency),
+	)
+}

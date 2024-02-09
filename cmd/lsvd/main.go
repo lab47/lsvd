@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/cli"
 )
 
@@ -44,6 +46,16 @@ func main() {
 		os.Exit(1)
 		return
 	}
+
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+
+		for {
+			<-t.C
+			lsvd.LogMetrics(log)
+		}
+	}()
 
 	code, err := c.Run()
 	if err != nil {

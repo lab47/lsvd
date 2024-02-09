@@ -22,7 +22,7 @@ const (
 	BlockSize = 4 * 1024
 
 	// How big the segment gets before we flush it to S3
-	FlushThreshHold = 15 * 1024 * 1024
+	FlushThreshHold = 32 * 1024 * 1024
 )
 
 type Disk struct {
@@ -158,12 +158,12 @@ type ExtentLocation struct {
 }
 
 type PartialExtent struct {
-	Partial Extent
+	Live Extent
 	ExtentLocation
 }
 
 func (r *PartialExtent) String() string {
-	return fmt.Sprintf("%s (%s): %s %d:%d", r.Partial, r.Extent, r.Segment, r.Offset, r.Size)
+	return fmt.Sprintf("%s (%s): %s %d:%d", r.Live, r.Extent, r.Segment, r.Offset, r.Size)
 }
 
 var monoRead = ulid.Monotonic(rand.Reader, 2)
@@ -199,6 +199,8 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	defer func() {
 		blocksReadLatency.Observe(time.Since(start).Seconds())
 	}()
+
+	blocksRead.Add(float64(rng.Blocks))
 
 	iops.Inc()
 
@@ -263,9 +265,9 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 					continue
 				}
 
-				if mode.Debug() && pe.Partial.Cover(h) == CoverNone {
+				if mode.Debug() && pe.Live.Cover(h) == CoverNone {
 					log.Flush()
-					log.Error("resolve returned extent that doesn't cover", "hole", h, "pe", pe.Partial)
+					log.Error("resolve returned extent that doesn't cover", "hole", h, "pe", pe.Live)
 				}
 
 				// Because the holes can be smaller than the read ranges,
@@ -292,7 +294,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		for _, o := range reqs {
 			log.Trace("partial-extent needed",
 				"segment", o.pe.Segment, "offset", o.pe.Offset, "size", o.pe.Size,
-				"usable", o.pe.Partial, "full", o.pe.Extent)
+				"usable", o.pe.Live, "full", o.pe.Extent)
 		}
 	}
 
@@ -432,7 +434,7 @@ func (d *Disk) readPartialExtent(
 		}
 
 		if n != int(sz) {
-			return fmt.Errorf("failed to uncompress correctly")
+			return fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
 
 		rawData = uncomp
@@ -443,7 +445,7 @@ func (d *Disk) readPartialExtent(
 	src := RangeData{
 		Extent: pe.Extent, // be sure not to use pe.Partial as srcData is the full extent
 		BlockData: BlockData{
-			blocks: int(pe.Partial.Blocks),
+			blocks: int(pe.Live.Blocks),
 			data:   rawData,
 		},
 	}
@@ -455,9 +457,9 @@ func (d *Disk) readPartialExtent(
 	//   2. the byte range for rng within rawData
 	// Then we copy the bytes from 2 to 1.
 	for _, x := range rngs {
-		overlap, ok := pe.Partial.Clamp(x)
+		overlap, ok := pe.Live.Clamp(x)
 		if !ok {
-			d.log.Error("error clamping required range to usable range", "request", x, "partial", pe.Partial)
+			d.log.Error("error clamping required range to usable range", "request", x, "partial", pe.Live)
 			return fmt.Errorf("error clamping range")
 		}
 
@@ -467,15 +469,15 @@ func (d *Disk) readPartialExtent(
 
 		subDest, ok := dest.SubRange(overlap)
 		if !ok {
-			d.log.Error("error clamping range", "full", pe.Partial, "sub", overlap)
-			return fmt.Errorf("error clamping range: %s => %s", pe.Partial, overlap)
+			d.log.Error("error clamping range", "full", pe.Live, "sub", overlap)
+			return fmt.Errorf("error clamping range: %s => %s", pe.Live, overlap)
 		}
 
 		subSrc, ok := src.SubRange(overlap)
 		if !ok {
 			d.log.Error("error calculate source subrange",
 				"input", src.Extent, "sub", overlap,
-				"request", x, "usable", pe.Partial,
+				"request", x, "usable", pe.Live,
 				"full", pe.Extent,
 			)
 			return fmt.Errorf("error calculate source subrange")
@@ -502,27 +504,17 @@ func (d *Disk) ZeroBlocks(ctx context.Context, rng Extent) error {
 	return d.curOC.ZeroBlocks(rng)
 }
 
-func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
-	start := time.Now()
-
-	defer func() {
-		blocksWriteLatency.Observe(time.Since(start).Seconds())
-	}()
-
-	iops.Inc()
-
-	err := d.curOC.WriteExtent(data)
-	if err != nil {
-		d.log.Error("error write extents to segment creator", "error", err)
-		return err
-	}
-
-	if d.curOC.BodySize() >= FlushThreshHold {
+func (d *Disk) checkFlush(ctx context.Context) error {
+	if d.curOC.ShouldFlush(FlushThreshHold) {
 		d.log.Info("flushing new segment",
 			"body-size", d.curOC.BodySize(),
 			"extents", d.curOC.Entries(),
 			"blocks", d.curOC.TotalBlocks(),
-			"storage-ratio", d.curOC.AvgStorageRatio(),
+			"input-bytes", d.curOC.InputBytes(),
+			"empty-blocks", d.curOC.EmptyBlocks(),
+			"compression-rate", d.curOC.CompressionRate(),
+			"storage-ratio", d.curOC.StorageRatio(),
+			"comp-rate-histo", d.curOC.CompressionRateHistogram(),
 		)
 		ch, err := d.closeSegmentAsync(ctx)
 		if err != nil {
@@ -539,6 +531,26 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 	}
 
 	return nil
+}
+
+func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
+	start := time.Now()
+
+	defer func() {
+		blocksWriteLatency.Observe(time.Since(start).Seconds())
+	}()
+
+	blocksWritten.Add(float64(data.Extent.Blocks))
+
+	iops.Inc()
+
+	err := d.curOC.WriteExtent(data)
+	if err != nil {
+		d.log.Error("error write extents to segment creator", "error", err)
+		return err
+	}
+
+	return d.checkFlush(ctx)
 }
 
 // WriteExtents writes multiple extents without performing any segment
@@ -561,28 +573,7 @@ func (d *Disk) WriteExtents(ctx context.Context, ranges []RangeData) error {
 		}
 	}
 
-	if d.curOC.BodySize() >= FlushThreshHold {
-		d.log.Info("flushing new segment",
-			"body-size", d.curOC.BodySize(),
-			"extents", d.curOC.Entries(),
-			"blocks", d.curOC.TotalBlocks(),
-			"storage-ratio", d.curOC.AvgStorageRatio(),
-		)
-		ch, err := d.closeSegmentAsync(ctx)
-		if err != nil {
-			return err
-		}
-
-		if mode.Debug() {
-			select {
-			case <-ch:
-				d.log.Debug("segment has been flushed")
-			case <-ctx.Done():
-			}
-		}
-	}
-
-	return nil
+	return d.checkFlush(ctx)
 }
 
 func (d *Disk) SyncWriteCache() error {

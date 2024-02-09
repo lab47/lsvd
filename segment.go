@@ -19,8 +19,12 @@ type SegmentCreator struct {
 	log hclog.Logger
 	cnt int
 
-	totalBlocks  int
-	storageRatio float64
+	emptyBlocks   int
+	totalBlocks   int
+	inputBytes    int64
+	storageBytes  int64
+	storageRatio  float64
+	compRateHisto [10]int
 
 	volName string
 
@@ -39,6 +43,8 @@ type SegmentCreator struct {
 	comp lz4.Compressor
 }
 
+var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
+
 func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, error) {
 	oc := &SegmentCreator{
 		log:     log,
@@ -52,6 +58,15 @@ func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, err
 	}
 
 	return oc, nil
+}
+
+func (o *SegmentCreator) addToHistogram(val float64) {
+	for i, v := range histogramBands {
+		if v >= val {
+			o.compRateHisto[i]++
+			return
+		}
+	}
 }
 
 func (o *SegmentCreator) Sync() error {
@@ -107,6 +122,10 @@ func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
 	return nil
 }
 
+func (o *SegmentCreator) ShouldFlush(sizeThreshold int) bool {
+	return o.BodySize() >= sizeThreshold
+}
+
 func (o *SegmentCreator) BodySize() int {
 	return o.body.Len()
 }
@@ -115,8 +134,32 @@ func (o *SegmentCreator) Entries() int {
 	return o.cnt
 }
 
+func (o *SegmentCreator) EmptyBlocks() int {
+	return o.emptyBlocks
+}
+
+func (o *SegmentCreator) InputBytes() int64 {
+	return o.inputBytes
+}
+
+func (o *SegmentCreator) StorageBytes() int64 {
+	return o.storageBytes
+}
+
+func (o *SegmentCreator) CompressionRate() float64 {
+	return float64(o.inputBytes) / float64(o.storageBytes)
+}
+
+func (o *SegmentCreator) StorageRatio() float64 {
+	return float64(o.storageBytes) / float64(o.inputBytes)
+}
+
 func (o *SegmentCreator) AvgStorageRatio() float64 {
 	return o.storageRatio / float64(o.cnt)
+}
+
+func (o *SegmentCreator) CompressionRateHistogram() []int {
+	return o.compRateHisto[:]
 }
 
 // writeLog writes the header and the data to the log so that we can
@@ -222,7 +265,7 @@ func (o *SegmentCreator) FillExtent(data RangeData) ([]Extent, error) {
 	var ret []Extent
 
 	for _, srcRng := range ranges {
-		subDest, ok := data.SubRange(srcRng.Partial)
+		subDest, ok := data.SubRange(srcRng.Live)
 		if !ok {
 			o.log.Error("error calculating subrange")
 			return nil, fmt.Errorf("error calculating subrange")
@@ -230,7 +273,7 @@ func (o *SegmentCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		o.log.Trace("calculating relevant ranges",
 			"data", rng,
-			"src", srcRng.Partial,
+			"src", srcRng.Live,
 			"dest", subDest.Extent,
 			"offset", srcRng.Offset,
 		)
@@ -244,7 +287,7 @@ func (o *SegmentCreator) FillExtent(data RangeData) ([]Extent, error) {
 
 		srcBytes := body[srcRng.Offset:]
 
-		o.log.Trace("reading partial from write cache", "rng", srcRng.Partial, "dest", subDest.Extent, "flags", srcRng.Flags)
+		o.log.Trace("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
 
 		var srcData []byte
 
@@ -318,6 +361,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 	}
 
 	o.totalBlocks += int(ext.Extent.Blocks)
+	o.inputBytes += int64(len(ext.data))
 
 	var data []byte
 
@@ -329,6 +373,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 
 	if emptyBytes(ext.data) {
 		eh.Flags = Empty
+		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
 		bound := lz4.CompressBlockBound(len(ext.data))
 
@@ -352,6 +397,8 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 				"offset", o.offset,
 				"size", eh.Size,
 			)
+
+			o.addToHistogram(float64(len(ext.data)) / float64(len(data)))
 		} else {
 			eh.Flags = Uncompressed
 			eh.Size = uint64(len(ext.data))
@@ -363,14 +410,16 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 				"size", eh.Size,
 				"raw-size", eh.RawSize,
 			)
+			o.addToHistogram(1)
 		}
+
+		o.storageBytes += int64(len(data))
+		o.storageRatio += (float64(len(data)) / float64(len(ext.data)))
 
 		n, err := o.body.Write(data)
 		if err != nil {
 			return err
 		}
-
-		o.storageRatio += (float64(n) / float64(len(ext.data)))
 
 		eh.Offset = uint32(o.offset)
 		_, err = o.em.Update(o.log, ExtentLocation{
@@ -430,7 +479,8 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 		"blocks", len(o.extents),
 	)
 
-	segmentsBytes.Add(float64(o.header.Len() + int(o.offset)))
+	writtenBytes.Add(float64(o.inputBytes))
+	segmentsBytes.Add(float64(o.storageBytes))
 
 	entries := make([]ExtentLocation, len(o.extents))
 

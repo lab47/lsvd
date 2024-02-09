@@ -147,7 +147,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	for i := m.m.Iterator(); i.Valid(); i.Next() {
 		ro := i.Value()
 
-		d.s.CreateOrUpdate(ro.Segment, ro.Size, uint64(ro.Partial.Blocks))
+		d.s.CreateOrUpdate(ro.Segment, ro.Size, uint64(ro.Live.Blocks))
 	}
 
 	d.lba2pba = m
@@ -185,9 +185,9 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 			return nil, err
 		}
 
-		log.Trace("read from lba map", "extent", pba.Partial, "flag", pba.Flags)
+		log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
 
-		m.m.Set(pba.Partial.LBA, &pba)
+		m.m.Set(pba.Live.LBA, &pba)
 	}
 
 	return m, nil
