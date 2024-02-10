@@ -8,7 +8,7 @@ type opts struct {
 	autoCreate bool
 	seqGen     func() ulid.ULID
 	afterNS    func(SegmentId)
-	lower      *Disk
+	lowers     []*Disk
 	ro         bool
 }
 
@@ -52,6 +52,6 @@ func ReadOnly() Option {
 
 func WithLowerLayer(d *Disk) Option {
 	return func(o *opts) {
-		o.lower = d
+		o.lowers = append(o.lowers, d)
 	}
 }

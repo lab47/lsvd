@@ -50,7 +50,7 @@ type Disk struct {
 
 	afterNS func(SegmentId)
 
-	lower *Disk
+	readDisks []*Disk
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
@@ -95,8 +95,10 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		sz = vi.Size
 	}
 
-	if o.lower != nil && !o.lower.readOnly {
-		return nil, fmt.Errorf("lower disk not open'd read-only")
+	for _, ld := range o.lowers {
+		if !ld.readOnly {
+			return nil, fmt.Errorf("lower disk not open'd read-only")
+		}
 	}
 
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
@@ -111,11 +113,13 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		volName:     o.volName,
 		SeqGen:      o.seqGen,
 		afterNS:     o.afterNS,
-		lower:       o.lower,
 		readOnly:    o.ro,
 		prevCache:   NewPreviousCache(),
 		s:           NewSegments(),
 	}
+
+	d.readDisks = append(d.readDisks, d)
+	d.readDisks = append(d.readDisks, o.lowers...)
 
 	openSegments, err := lru.NewWithEvict[SegmentId, SegmentReader](
 		256, func(key SegmentId, value SegmentReader) {
@@ -316,16 +320,10 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	// and populate data. This could be parallelized as each touches a different
 	// range of data.
 	for _, o := range reqs {
-		if o.pe.Disk == 1 {
-			err := d.lower.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
-			if err != nil {
-				return RangeData{}, err
-			}
-		} else {
-			err := d.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
-			if err != nil {
-				return RangeData{}, err
-			}
+		ld := d.readDisks[o.pe.Disk]
+		err := ld.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
+		if err != nil {
+			return RangeData{}, err
 		}
 	}
 

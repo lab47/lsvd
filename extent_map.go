@@ -27,12 +27,18 @@ func (e *ExtentMap) Len() int {
 	return e.m.Len()
 }
 
-func (e *ExtentMap) Populate(o *ExtentMap, diskId uint16) {
+func (e *ExtentMap) Populate(log hclog.Logger, o *ExtentMap, diskId uint16) error {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
-		pe := *i.Value()
-		pe.Disk = diskId
-		o.m.Set(i.Key(), &pe)
+		loc := i.Value().ExtentLocation
+		loc.Disk = diskId
+
+		_, err := o.Update(log, loc)
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
 func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, *PartialExtent] {

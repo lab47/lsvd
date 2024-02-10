@@ -1256,6 +1256,133 @@ func TestLSVD(t *testing.T) {
 		extentEqual(t, testRandX, data)
 	})
 
+	t.Run("supports reads from lowers in latest wins fashion", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		// First, make the first layer
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testRandX.MapTo(0))
+		r.NoError(err)
+
+		r.NoError(d.Close(ctx))
+
+		tmpdir3, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir3)
+
+		// Second, make the second layer
+		s, err := NewDisk(ctx, log, tmpdir3)
+		r.NoError(err)
+
+		err = s.WriteExtent(ctx, testExtent.MapTo(0))
+		r.NoError(err)
+
+		r.NoError(s.Close(ctx))
+
+		// Reopen it to reinitialize it without any write caching bits.
+		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
+		r.NoError(err)
+
+		s, err = NewDisk(ctx, log, tmpdir3, ReadOnly())
+		r.NoError(err)
+
+		tmpdir2, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir2)
+
+		// Now, the higher layer
+		d2, err := NewDisk(ctx, log, tmpdir2,
+			WithVolumeName("high"),
+			WithLowerLayer(d),
+			WithLowerLayer(s),
+		)
+		r.NoError(err)
+
+		data, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testExtent, data)
+	})
+
+	t.Run("supports reads from lowers that are different volumes of the same store", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		// First, make the first layer
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		bd := NewBlockData(4)
+		_, err = io.ReadFull(rand.Reader, bd.data)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, bd.MapTo(0))
+		r.NoError(err)
+
+		r.NoError(d.Close(ctx))
+
+		tmpdir3, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		// Second, make the second layer
+		s, err := NewDisk(ctx, log, tmpdir3,
+			WithSegmentAccess(&LocalFileAccess{Dir: tmpdir}),
+			WithVolumeName("s"),
+		)
+		r.NoError(err)
+
+		// We'll write a replacement inside the range of d to be sure that
+		// we observe the range splitting.
+		err = s.WriteExtent(ctx, testExtent.MapTo(1))
+		r.NoError(err)
+
+		r.NoError(s.Close(ctx))
+
+		// Reopen it to reinitialize it without any write caching bits.
+		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
+		r.NoError(err)
+
+		s, err = NewDisk(ctx, log, tmpdir3,
+			WithSegmentAccess(&LocalFileAccess{Dir: tmpdir}),
+			WithVolumeName("s"),
+			ReadOnly(),
+		)
+		r.NoError(err)
+
+		tmpdir2, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir2)
+
+		// Now, the higher layer
+		d2, err := NewDisk(ctx, log, tmpdir2,
+			WithVolumeName("high"),
+			WithLowerLayer(d),
+			WithLowerLayer(s),
+		)
+		r.NoError(err)
+
+		data, err := d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testExtent, data)
+
+		// Make sure that the region of d that we created is still correct
+		data2, err := d2.ReadExtent(ctx, Extent{LBA: 3, Blocks: 1})
+		r.NoError(err)
+
+		blockEqual(t, bd.data[BlockSize*3:], data2.data)
+	})
+
 }
 
 type slowLocal struct {

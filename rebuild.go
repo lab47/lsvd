@@ -13,9 +13,13 @@ import (
 )
 
 func (d *Disk) rebuildFromSegments(ctx context.Context) error {
-	if d.lower != nil {
-		// Start with the map of lower but with the disk id set to 1
-		d.lower.lba2pba.Populate(d.lba2pba, 1)
+	for idx, ld := range d.readDisks {
+		// We don't populate from... ourselves.
+		if ld == d {
+			continue
+		}
+
+		ld.lba2pba.Populate(d.log, d.lba2pba, uint16(idx))
 	}
 
 	entries, err := d.sa.ListSegments(ctx, d.volName)
