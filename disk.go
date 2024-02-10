@@ -30,8 +30,9 @@ type Disk struct {
 	log    hclog.Logger
 	path   string
 
-	size    int64
-	volName string
+	size     int64
+	volName  string
+	readOnly bool
 
 	prevCache *PreviousCache
 
@@ -48,6 +49,8 @@ type Disk struct {
 	s *Segments
 
 	afterNS func(SegmentId)
+
+	lower *Disk
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
@@ -92,6 +95,10 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		sz = vi.Size
 	}
 
+	if o.lower != nil && !o.lower.readOnly {
+		return nil, fmt.Errorf("lower disk not open'd read-only")
+	}
+
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
 
 	d := &Disk{
@@ -104,6 +111,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		volName:     o.volName,
 		SeqGen:      o.seqGen,
 		afterNS:     o.afterNS,
+		lower:       o.lower,
+		readOnly:    o.ro,
 		prevCache:   NewPreviousCache(),
 		s:           NewSegments(),
 	}
@@ -119,15 +128,17 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	d.openSegments = openSegments
 
-	err = d.restoreWriteCache(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if d.curOC == nil {
-		d.curOC, err = d.newSegmentCreator()
+	if !d.readOnly {
+		err = d.restoreWriteCache(ctx)
 		if err != nil {
 			return nil, err
+		}
+
+		if d.curOC == nil {
+			d.curOC, err = d.newSegmentCreator()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -155,6 +166,7 @@ func (r *Disk) SetAfterNS(f func(SegmentId)) {
 type ExtentLocation struct {
 	ExtentHeader
 	Segment SegmentId
+	Disk    uint16
 }
 
 type PartialExtent struct {
@@ -294,7 +306,9 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		for _, o := range reqs {
 			log.Trace("partial-extent needed",
 				"segment", o.pe.Segment, "offset", o.pe.Offset, "size", o.pe.Size,
-				"usable", o.pe.Live, "full", o.pe.Extent)
+				"usable", o.pe.Live, "full", o.pe.Extent,
+				"disk-id", o.pe.Disk,
+			)
 		}
 	}
 
@@ -302,9 +316,16 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	// and populate data. This could be parallelized as each touches a different
 	// range of data.
 	for _, o := range reqs {
-		err := d.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
-		if err != nil {
-			return RangeData{}, err
+		if o.pe.Disk == 1 {
+			err := d.lower.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
+			if err != nil {
+				return RangeData{}, err
+			}
+		} else {
+			err := d.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
+			if err != nil {
+				return RangeData{}, err
+			}
 		}
 	}
 
@@ -498,6 +519,10 @@ func (d *Disk) readPartialExtent(
 }
 
 func (d *Disk) ZeroBlocks(ctx context.Context, rng Extent) error {
+	if d.readOnly {
+		return nil
+	}
+
 	iops.Inc()
 	blocksWritten.Add(float64(rng.Blocks))
 
@@ -533,7 +558,13 @@ func (d *Disk) checkFlush(ctx context.Context) error {
 	return nil
 }
 
+var ErrReadOnly = errors.New("disk open'd read-only")
+
 func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
+	if d.readOnly {
+		return ErrReadOnly
+	}
+
 	start := time.Now()
 
 	defer func() {
@@ -557,6 +588,10 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 // flush checking between them, thusly making sure that all of them end
 // up in the same segment.
 func (d *Disk) WriteExtents(ctx context.Context, ranges []RangeData) error {
+	if d.readOnly {
+		return ErrReadOnly
+	}
+
 	start := time.Now()
 
 	defer func() {
@@ -577,6 +612,10 @@ func (d *Disk) WriteExtents(ctx context.Context, ranges []RangeData) error {
 }
 
 func (d *Disk) SyncWriteCache() error {
+	if d.readOnly {
+		return nil
+	}
+
 	iops.Inc()
 
 	if d.curOC != nil {

@@ -1219,6 +1219,43 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 	})
 
+	t.Run("supports reading blocks from a read-only higher layer", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		// First, make the first layer
+		d, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testRandX.MapTo(0))
+		r.NoError(err)
+
+		r.NoError(d.Close(ctx))
+
+		// Reopen it to reinitialize it without any write caching bits.
+		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
+		r.NoError(err)
+
+		tmpdir2, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir2)
+
+		// Now, the higher layer
+		d2, err := NewDisk(ctx, log, tmpdir2,
+			WithVolumeName("high"),
+			WithLowerLayer(d),
+		)
+		r.NoError(err)
+
+		data, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testRandX, data)
+	})
+
 }
 
 type slowLocal struct {

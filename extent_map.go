@@ -27,6 +27,14 @@ func (e *ExtentMap) Len() int {
 	return e.m.Len()
 }
 
+func (e *ExtentMap) Populate(o *ExtentMap, diskId uint16) {
+	for i := e.m.Iterator(); i.Valid(); i.Next() {
+		pe := *i.Value()
+		pe.Disk = diskId
+		o.m.Set(i.Key(), &pe)
+	}
+}
+
 func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, *PartialExtent] {
 	i := e.m.Floor(lba)
 	if i.Valid() {

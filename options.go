@@ -8,6 +8,8 @@ type opts struct {
 	autoCreate bool
 	seqGen     func() ulid.ULID
 	afterNS    func(SegmentId)
+	lower      *Disk
+	ro         bool
 }
 
 type Option func(o *opts)
@@ -39,5 +41,17 @@ func WithSeqGen(f func() ulid.ULID) Option {
 func AfterNewSegment(f func(SegmentId)) Option {
 	return func(o *opts) {
 		o.afterNS = f
+	}
+}
+
+func ReadOnly() Option {
+	return func(o *opts) {
+		o.ro = true
+	}
+}
+
+func WithLowerLayer(d *Disk) Option {
+	return func(o *opts) {
+		o.lower = d
 	}
 }
