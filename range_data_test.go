@@ -15,10 +15,12 @@ func TestRangeData(t *testing.T) {
 		sub, ok := rd.SubRange(Extent{10, 10})
 		r.True(ok)
 
-		r.Len(sub.data, 10*BlockSize)
+		data := sub.WriteData()
 
-		sub.data[0] = 8
-		sub.data[len(sub.data)-1] = 9
+		r.Len(data, 10*BlockSize)
+
+		data[0] = 8
+		data[len(data)-1] = 9
 
 		r.Equal(byte(8), rd.data[10*BlockSize])
 		r.Equal(byte(9), rd.data[(20*BlockSize)-1])
@@ -34,10 +36,12 @@ func TestRangeData(t *testing.T) {
 
 		r.Equal(Extent{5, 5}, sub.Extent)
 
-		r.Len(sub.data, 5*BlockSize)
+		data := sub.WriteData()
 
-		sub.data[0] = 8
-		sub.data[len(sub.data)-1] = 9
+		r.Len(data, 5*BlockSize)
+
+		data[0] = 8
+		data[len(data)-1] = 9
 
 		r.Equal(byte(8), rd.data[0])
 		r.Equal(byte(9), rd.data[(5*BlockSize)-1])

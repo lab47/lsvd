@@ -8,11 +8,9 @@ import (
 	"time"
 
 	"github.com/lab47/hclogx"
-	"github.com/lab47/lz4decode"
 	"github.com/lab47/mode"
 
 	"github.com/hashicorp/go-hclog"
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
@@ -39,9 +37,7 @@ type Disk struct {
 	curSeq ulid.ULID
 
 	lba2pba *ExtentMap
-
-	extentCache  *ExtentCache
-	openSegments *lru.Cache[SegmentId, SegmentReader]
+	er      *ExtentReader
 
 	sa    SegmentAccess
 	curOC *SegmentCreator
@@ -54,11 +50,6 @@ type Disk struct {
 }
 
 func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
-	ec, err := NewExtentCache(log, filepath.Join(path, "readcache"))
-	if err != nil {
-		return nil, err
-	}
-
 	var o opts
 	o.autoCreate = true
 
@@ -74,7 +65,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		o.volName = "default"
 	}
 
-	err = o.sa.InitContainer(ctx)
+	err := o.sa.InitContainer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -103,34 +94,27 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 
 	log.Info("attaching to volume", "name", o.volName, "size", sz)
 
+	er, err := NewExtentReader(log, filepath.Join(path, "readcache"), o.sa)
+	if err != nil {
+		return nil, err
+	}
 	d := &Disk{
-		log:         log,
-		path:        path,
-		size:        sz,
-		lba2pba:     NewExtentMap(),
-		extentCache: ec,
-		sa:          o.sa,
-		volName:     o.volName,
-		SeqGen:      o.seqGen,
-		afterNS:     o.afterNS,
-		readOnly:    o.ro,
-		prevCache:   NewPreviousCache(),
-		s:           NewSegments(),
+		log:       log,
+		path:      path,
+		size:      sz,
+		lba2pba:   NewExtentMap(),
+		sa:        o.sa,
+		volName:   o.volName,
+		SeqGen:    o.seqGen,
+		afterNS:   o.afterNS,
+		readOnly:  o.ro,
+		er:        er,
+		prevCache: NewPreviousCache(),
+		s:         NewSegments(),
 	}
 
 	d.readDisks = append(d.readDisks, d)
 	d.readDisks = append(d.readDisks, o.lowers...)
-
-	openSegments, err := lru.NewWithEvict[SegmentId, SegmentReader](
-		256, func(key SegmentId, value SegmentReader) {
-			openSegments.Dec()
-			value.Close()
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	d.openSegments = openSegments
 
 	if !d.readOnly {
 		err = d.restoreWriteCache(ctx)
@@ -331,7 +315,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {
-	used, err := d.curOC.FillExtent(data)
+	used, err := d.curOC.FillExtent(data.View())
 	if err != nil {
 		return nil, err
 	}
@@ -400,74 +384,12 @@ func (d *Disk) readPartialExtent(
 	dataRange Extent,
 	dest RangeData,
 ) error {
-	addr := pe.ExtentLocation
-
-	rawData := buffers.Get(int(addr.Size))
-	defer buffers.Return(rawData)
-
-	found, err := d.extentCache.ReadExtent(pe, rawData)
+	src, err := d.er.fetchExtent(ctx, d.log, pe)
 	if err != nil {
-		d.log.Error("error reading extent from read cache", "error", err)
+		return err
 	}
 
-	if found {
-		extentCacheHits.Inc()
-	} else {
-		extentCacheMiss.Inc()
-
-		ci, ok := d.openSegments.Get(addr.Segment)
-		if !ok {
-			lf, err := d.sa.OpenSegment(ctx, addr.Segment)
-			if err != nil {
-				return err
-			}
-
-			ci = lf
-
-			d.openSegments.Add(addr.Segment, ci)
-			openSegments.Inc()
-		}
-
-		n, err := ci.ReadAt(rawData, int64(addr.Offset))
-		if err != nil {
-			return nil
-		}
-
-		if n != len(rawData) {
-			d.log.Error("didn't read full data", "read", n, "expected", len(rawData), "size", addr.Size)
-			return fmt.Errorf("short read detected")
-		}
-
-		d.extentCache.WriteExtent(pe, rawData)
-	}
-
-	if pe.Flags == Compressed {
-		sz := pe.RawSize
-
-		uncomp := buffers.Get(int(sz))
-		defer buffers.Return(uncomp)
-
-		n, err := lz4decode.UncompressBlock(rawData, uncomp, nil)
-		if err != nil {
-			return errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
-		}
-
-		if n != int(sz) {
-			return fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
-		}
-
-		rawData = uncomp
-	} else if pe.Flags != Uncompressed {
-		return fmt.Errorf("unknown flags value: %d", pe.Flags)
-	}
-
-	src := RangeData{
-		Extent: pe.Extent, // be sure not to use pe.Partial as srcData is the full extent
-		BlockData: BlockData{
-			blocks: int(pe.Live.Blocks),
-			data:   rawData,
-		},
-	}
+	defer d.er.returnData(src)
 
 	// the bytes at the beginning of data are for LBA dataBegin.LBA.
 	// the bytes at the beginning of rawData are for LBA full.LBA.
@@ -507,9 +429,9 @@ func (d *Disk) readPartialExtent(
 			"dest", dest.Extent,
 			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
 		)
-		n := copy(subDest.data, subSrc.data)
-		if n != len(subDest.data) {
-			d.log.Error("error copying data from partial extent", "expected", len(subDest.data), "was", n)
+		n := subDest.Copy(subSrc)
+		if n != subDest.ByteSize() {
+			d.log.Error("error copying data from partial extent", "expected", subDest.ByteSize(), "was", n)
 		}
 	}
 
@@ -635,9 +557,7 @@ func (d *Disk) Close(ctx context.Context) error {
 		err = errors.Wrapf(err, "error saving lba map")
 	}
 
-	d.openSegments.Purge()
-
-	d.extentCache.Close()
+	d.er.Close()
 
 	return err
 }

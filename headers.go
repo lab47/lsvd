@@ -73,9 +73,10 @@ func (s *SegmentHeader) Read(r io.Reader) error {
 }
 
 const (
-	Uncompressed = 0
-	Compressed   = 1
-	Empty        = 2
+	Uncompressed   = 0
+	Compressed     = 1
+	Empty          = 2
+	ZstdCompressed = 3
 )
 
 type ExtentHeader struct {

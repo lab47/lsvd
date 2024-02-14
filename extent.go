@@ -19,6 +19,10 @@ func ExtentFrom(a, b LBA) (Extent, bool) {
 	return Extent{LBA: a, Blocks: uint32(b - a + 1)}, true
 }
 
+func (e Extent) ByteSize() int {
+	return int(e.Blocks) * BlockSize
+}
+
 func (e Extent) String() string {
 	return fmt.Sprintf("%d:%d", e.LBA, e.Blocks)
 }

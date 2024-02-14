@@ -23,11 +23,11 @@ func (e *extentValidator) populate(log hclog.Logger, d *Disk, oc *SegmentCreator
 	for _, ent := range entries {
 		data.Reset(ent.Extent)
 
-		_, err := oc.FillExtent(data)
+		_, err := oc.FillExtent(data.View())
 		if err != nil {
 			d.log.Error("error reading extent for validation", "error", err)
 		}
-		sum := rangeSum(data.data)
+		sum := rangeSum(data.ReadData())
 		e.sums[ent.Extent] = sum
 
 		ranges, err := d.lba2pba.Resolve(log, ent.Extent)
@@ -49,7 +49,7 @@ func (e *extentValidator) validate(ctx context.Context, log hclog.Logger, d *Dis
 		if err != nil {
 			d.log.Error("error reading extent for validation", "error", err)
 		}
-		sum := rangeSum(data.data)
+		sum := rangeSum(data.ReadData())
 
 		if sum != e.sums[ent.Extent] {
 			d.log.Error("block read validation failed", "extent", ent.Extent,

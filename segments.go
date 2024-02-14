@@ -18,6 +18,30 @@ func NewSegments() *Segments {
 	}
 }
 
+func (s *Segments) SegmentIds() []SegmentId {
+	var ret []SegmentId
+
+	for k := range s.segments {
+		ret = append(ret, k)
+	}
+
+	return ret
+}
+
+func (s *Segments) LiveSegments() []SegmentId {
+	var ret []SegmentId
+
+	for k, s := range s.segments {
+		if s.deleted {
+			continue
+		}
+		ret = append(ret, k)
+	}
+
+	return ret
+
+}
+
 func (s *Segments) Create(segId SegmentId, stats *SegmentStats) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
@@ -123,6 +147,25 @@ func (s *Segments) FindDeleted() []SegmentId {
 	}
 
 	return toDelete
+}
+
+func (d *Segments) AllDeadSegments() ([]SegmentId, error) {
+	d.segmentsMu.Lock()
+	defer d.segmentsMu.Unlock()
+
+	var ret []SegmentId
+
+	for segId, stats := range d.segments {
+		if stats.deleted {
+			continue
+		}
+
+		if stats.Used == 0 {
+			ret = append(ret, segId)
+		}
+	}
+
+	return ret, nil
 }
 
 func (d *Segments) PickSegmentToGC(min float64) (SegmentId, bool, error) {

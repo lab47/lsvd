@@ -27,6 +27,14 @@ func (e *ExtentMap) Len() int {
 	return e.m.Len()
 }
 
+type Iterator struct {
+	treemap.ForwardIterator[LBA, *PartialExtent]
+}
+
+func (e *ExtentMap) Iterator() Iterator {
+	return Iterator{ForwardIterator: e.m.Iterator()}
+}
+
 func (e *ExtentMap) Populate(log hclog.Logger, o *ExtentMap, diskId uint16) error {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		loc := i.Value().ExtentLocation

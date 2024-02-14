@@ -37,13 +37,13 @@ func TestSegmentCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewBlockData(5)
+		data := NewRangeData(Extent{47, 5})
 
 		for i := range data.data {
 			data.data[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(data.MapTo(47))
+		err = oc.WriteExtent(data)
 		r.NoError(err)
 
 		_, err = f.Seek(0, io.SeekStart)
@@ -80,18 +80,19 @@ func TestSegmentCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewBlockData(5)
+		data := NewRangeData(Extent{47, 5})
 
-		for i := range data.data {
-			data.data[i] = byte(i)
+		d := data.WriteData()
+		for i := range d {
+			d[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(data.MapTo(47))
+		err = oc.WriteExtent(data)
 		r.NoError(err)
 
 		readRequest := NewRangeData(Extent{48, 1})
 
-		ret, err := oc.FillExtent(readRequest)
+		ret, err := oc.FillExtent(readRequest.View())
 		r.NoError(err)
 
 		r.Equal(data.data[BlockSize:BlockSize*2], readRequest.data)
@@ -121,26 +122,29 @@ func TestSegmentCreator(t *testing.T) {
 			logW: bufio.NewWriter(f),
 		}
 
-		data := NewBlockData(5)
+		data := NewRangeData(Extent{47, 5})
 
-		for i := range data.data {
-			data.data[i] = byte(i)
+		d := data.WriteData()
+		for i := range d {
+			d[i] = byte(i)
 		}
 
-		err = oc.WriteExtent(data.MapTo(47))
+		err = oc.WriteExtent(data)
 		r.NoError(err)
 
-		d2 := NewBlockData(1)
-		for i := range d2.data {
-			d2.data[i] = byte(i + 1)
+		d2 := NewRangeData(Extent{48, 1})
+
+		d = d2.WriteData()
+		for i := range d {
+			d[i] = byte(i + 1)
 		}
 
-		err = oc.WriteExtent(d2.MapTo(48))
+		err = oc.WriteExtent(d2)
 		r.NoError(err)
 
 		req := NewRangeData(Extent{48, 2})
 
-		ret, err := oc.FillExtent(req)
+		ret, err := oc.FillExtent(req.View())
 		r.NoError(err)
 
 		r.Equal(d2.data[:BlockSize], req.data[:BlockSize])

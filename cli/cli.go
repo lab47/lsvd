@@ -68,6 +68,9 @@ func (c *CLI) setupCommands() error {
 		"volume inspect": func() (cli.Command, error) {
 			return cleo.Infer("volume inspect", "inspect a volume", c.volumeInspect), nil
 		},
+		"volume pack": func() (cli.Command, error) {
+			return cleo.Infer("volume pack", "repack a volume", c.volumePack), nil
+		},
 		"nbd": func() (cli.Command, error) {
 			return cleo.Infer("nbd", "service a volume over nbd", c.nbdServe), nil
 		},
@@ -255,6 +258,64 @@ func (c *CLI) volumeInspect(ctx context.Context, opts struct {
 	}
 
 	fmt.Printf("%s: %d\n", info.Name, info.Size)
+
+	entries, err := sa.ListSegments(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%d segments\n", len(entries))
+
+	for _, ent := range entries {
+		fmt.Printf("  %s\n", ent)
+	}
+
+	return nil
+}
+
+func (c *CLI) volumePack(ctx context.Context, opts struct {
+	Global
+	Name string `short:"n" long:"name" description:"name of volume to create" required:"true"`
+	Path string `short:"p" long:"path" description:"path for cached data" required:"true"`
+}) error {
+	sa, err := c.loadSegmentAccess(ctx, opts.Config)
+	if err != nil {
+		return err
+	}
+
+	log := c.log
+
+	if opts.Debug {
+		log.SetLevel(hclog.Trace)
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, opts.Path,
+		lsvd.WithSegmentAccess(sa),
+		lsvd.WithVolumeName(opts.Name),
+	)
+	if err != nil {
+		log.Error("error creating new disk", "error", err)
+		os.Exit(1)
+	}
+
+	info, err := sa.GetVolumeInfo(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	log.Info("Packing volume", "size", info.Size)
+
+	err = d.Pack(ctx)
+	if err != nil {
+		return err
+	}
+
+	info, err = sa.GetVolumeInfo(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	log.Info("Packing volume complete", "new-size", info.Size)
 
 	entries, err := sa.ListSegments(ctx, opts.Name)
 	if err != nil {

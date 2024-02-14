@@ -150,7 +150,7 @@ loop:
 
 			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
 
-			err = c.d.WriteExtent(ctx, BlockDataView(view).MapTo(eh.LBA))
+			err = c.d.WriteExtent(ctx, MapRangeData(eh.Extent, view))
 			if err != nil {
 				return false, err
 			}
