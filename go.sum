@@ -111,6 +111,8 @@ github.com/lab47/lz4decode v0.0.0-20240106213008-0c6757ab03cd h1:/be93q8yv8cCu7Z
 github.com/lab47/lz4decode v0.0.0-20240106213008-0c6757ab03cd/go.mod h1:zjm8BxT49l4uxljJ4IAmYFhsSL28lm1fuW+jimIkDiw=
 github.com/lab47/mode v0.0.0-20231220013342-9703805c0e9c h1:yL4Kw1yEkLQ24ClhoAUvVubO6c55MibleJ4rHN5eokM=
 github.com/lab47/mode v0.0.0-20231220013342-9703805c0e9c/go.mod h1:ijeklLYc4AbYFwADOpj7sEIZZDaDTVUeWaH0/B2IV3w=
+github.com/lima-vm/go-qcow2reader v0.1.1 h1:UegxTAU4usoSzKLDqhbaNmmV4Ec4qhQO11QYeLLy7Jc=
+github.com/lima-vm/go-qcow2reader v0.1.1/go.mod h1:e3p29BzLT8hNh4jbLezdFAHU4eBijf0bm5GilStCRKE=
 github.com/mattn/go-colorable v0.0.9/go.mod h1:9vuHe8Xs5qXnSaW/c/ABM9alt+Vo+STaOChaDxuIBZU=
 github.com/mattn/go-colorable v0.1.9/go.mod h1:u6P/XSegPjTcexA+o6vUJrdnUu04hMope9wVRipJSqc=
 github.com/mattn/go-colorable v0.1.12 h1:jF+Du6AlPIjs2BiUiQlKOX0rt3SujHxPnksPKZbaA40=

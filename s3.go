@@ -90,7 +90,7 @@ func (s *S3Access) OpenSegment(ctx context.Context, seg SegmentId) (SegmentReade
 		Key:    &key,
 	})
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "attempting to open segment %s", seg)
 	}
 
 	return &S3ObjectReader{

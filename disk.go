@@ -128,6 +128,8 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 				return nil, err
 			}
 		}
+
+		log.Info("starting sequence", "seq", d.curSeq)
 	}
 
 	goodMap, err := d.loadLBAMap(ctx)
@@ -315,6 +317,10 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {
+	if d.curOC == nil {
+		return []Extent{data.Extent}, nil
+	}
+
 	used, err := d.curOC.FillExtent(data.View())
 	if err != nil {
 		return nil, err

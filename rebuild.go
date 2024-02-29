@@ -118,6 +118,11 @@ func (d *Disk) restoreWriteCacheFile(ctx context.Context, path string) error {
 		return err
 	}
 
+	d.curSeq, err = d.nextSeq()
+	if err != nil {
+		return err
+	}
+
 	d.curOC = oc
 
 	return nil
@@ -194,7 +199,7 @@ func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
 			return nil, err
 		}
 
-		log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
+		// log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
 
 		m.m.Set(pba.Live.LBA, &pba)
 	}

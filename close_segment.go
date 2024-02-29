@@ -8,6 +8,10 @@ import (
 )
 
 func (d *Disk) CloseSegment(ctx context.Context) error {
+	if d.curOC == nil {
+		return nil
+	}
+
 	ch, err := d.closeSegmentAsync(ctx)
 	if ch == nil || err != nil {
 		return err

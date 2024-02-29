@@ -79,7 +79,7 @@ func blockEqual(t *testing.T, a, b []byte) {
 func extentEqual(t *testing.T, actual RawBlocks, expected RangeData) {
 	t.Helper()
 
-	require.Equal(t, actual.Blocks(), expected.Blocks())
+	require.Equal(t, actual.Blocks(), expected.Blocks)
 
 	if !bytes.Equal(actual, expected.data) {
 		t.Error("blocks are not the same")
@@ -109,6 +109,8 @@ func TestLSVD(t *testing.T) {
 
 		data, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
+
+		r.Nil(data.data, "data shouldn't be allocated")
 
 		r.True(isEmpty(data.data))
 	})
@@ -573,24 +575,24 @@ func TestLSVD(t *testing.T) {
 		data, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		r.True(isEmpty(data.BlockView(0)))
+		r.True(isEmpty(data.RawBlocks().BlockView(0)))
 
 		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		r.True(isEmpty(data.BlockView(0)))
+		r.True(isEmpty(data.RawBlocks().BlockView(0)))
 
 		r.NoError(d.Close(ctx))
 
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		data.SetBlock(0, testRand)
+		copy(data.RawBlocks().BlockView(0), testRand)
 
 		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		r.True(isEmpty(data.BlockView(0)))
+		r.True(isEmpty(data.RawBlocks().BlockView(0)))
 	})
 
 	t.Run("can access blocks from the log", func(t *testing.T) {
@@ -631,7 +633,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
-		blockEqual(t, d2.BlockView(0), testExtent[:BlockSize])
+		blockEqual(t, d2.RawBlocks().BlockView(0), testExtent[:BlockSize])
 	})
 
 	t.Run("rebuilds the LBA mappings", func(t *testing.T) {
@@ -663,7 +665,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
 
-		blockEqual(t, d2.BlockView(0), testData)
+		blockEqual(t, d2.RawBlocks().BlockView(0), testData)
 	})
 
 	t.Run("serializes the lba to pba mapping", func(t *testing.T) {
@@ -772,12 +774,12 @@ func TestLSVD(t *testing.T) {
 			d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
-			blockEqual(t, d2.BlockView(0), testData)
+			blockEqual(t, d2.RawBlocks().BlockView(0), testData)
 
 			d3, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
-			blockEqual(t, d3.BlockView(0), testData)
+			blockEqual(t, d3.RawBlocks().BlockView(0), testData)
 		})
 
 		t.Run("reads can return multiple blocks", func(t *testing.T) {
@@ -791,8 +793,8 @@ func TestLSVD(t *testing.T) {
 			r.NoError(err)
 
 			data := NewRangeData(Extent{0, 2})
-			copy(data.BlockView(0), testData)
-			copy(data.BlockView(1), testData)
+			copy(data.RawBlocks().BlockView(0), testData)
+			copy(data.RawBlocks().BlockView(1), testData)
 
 			err = d.WriteExtent(ctx, data)
 			r.NoError(err)
@@ -800,14 +802,14 @@ func TestLSVD(t *testing.T) {
 			d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 2})
 			r.NoError(err)
 
-			blockEqual(t, d2.BlockView(0), testData)
-			blockEqual(t, d2.BlockView(1), testData)
+			blockEqual(t, d2.RawBlocks().BlockView(0), testData)
+			blockEqual(t, d2.RawBlocks().BlockView(1), testData)
 
 			d3, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
 
-			blockEqual(t, d3.BlockView(0), testData)
-			blockEqual(t, d2.BlockView(1), testData)
+			blockEqual(t, d3.RawBlocks().BlockView(0), testData)
+			blockEqual(t, d2.RawBlocks().BlockView(1), testData)
 		})
 
 	})
@@ -1108,9 +1110,10 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
+		r.Nil(d2.data, "data shouldn't be allocated")
 		r.True(d2.EmptyP())
 
-		data := d2.BlockView(1)
+		data := d2.RawBlocks().BlockView(1)
 
 		r.True(isEmpty(data))
 	})

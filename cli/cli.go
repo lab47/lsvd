@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,6 +24,7 @@ import (
 	"github.com/lab47/cleo"
 	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/pkg/nbd"
+	"github.com/lima-vm/go-qcow2reader"
 	"github.com/mitchellh/cli"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -73,6 +78,12 @@ func (c *CLI) setupCommands() error {
 		},
 		"nbd": func() (cli.Command, error) {
 			return cleo.Infer("nbd", "service a volume over nbd", c.nbdServe), nil
+		},
+		"dd": func() (cli.Command, error) {
+			return cleo.Infer("dd", "provide raw access to a lsvd disk", c.dd), nil
+		},
+		"sha256": func() (cli.Command, error) {
+			return cleo.Infer("sha256", "hash the contents of the volume", c.sha256), nil
 		},
 	}
 
@@ -424,6 +435,206 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 			log.Error("error handling nbd client", "error", err)
 		}
 	}
+
+	return nil
+}
+
+func (c *CLI) dd(ctx context.Context, opts struct {
+	Global
+	Name   string `short:"n" long:"name" description:"name of volume access" required:"true"`
+	Path   string `short:"p" long:"path" description:"path for cached data" required:"true"`
+	Input  string `short:"i" long:"input" description:"url to populate the disk from"`
+	BS     int    `long:"bs" description:"number of blocks to make the extents (default 20)"`
+	Expand bool   `long:"expand" description:"expand compressed files (like qcow2)"`
+}) error {
+	sa, err := c.loadSegmentAccess(ctx, opts.Config)
+	if err != nil {
+		return err
+	}
+
+	log := c.log
+	path := opts.Path
+	name := opts.Name
+
+	if opts.Debug {
+		log.SetLevel(hclog.Trace)
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, path,
+		lsvd.WithSegmentAccess(sa),
+		lsvd.WithVolumeName(name),
+	)
+	if err != nil {
+		log.Error("error creating new disk", "error", err)
+		os.Exit(1)
+	}
+
+	defer d.Close(ctx)
+
+	var reader io.Reader
+
+	if f, err := os.Open(opts.Input); err == nil {
+		defer f.Close()
+
+		if opts.Expand {
+			img, err := qcow2reader.Open(f)
+			if err != nil {
+				log.Error("error opening qcow2 file", "error", err)
+				os.Exit(1)
+			}
+
+			log.Info("detected file as qcow2 format")
+
+			reader = io.NewSectionReader(img, 0, img.Size())
+		} else {
+			log.Info("detected file as raw format")
+			reader = f
+		}
+	} else {
+		resp, err := http.Get(opts.Input)
+		if err != nil {
+			d.Close(ctx)
+			log.Error("error fetching url", "error", err)
+			os.Exit(1)
+		}
+
+		defer resp.Body.Close()
+
+		reader = resp.Body
+	}
+
+	bs := opts.BS
+	if bs == 0 {
+		bs = 20
+	}
+
+	h := sha256.New()
+
+	buf := make([]byte, lsvd.BlockSize*bs)
+
+	br := bufio.NewReader(reader)
+
+	extent := lsvd.Extent{Blocks: uint32(bs)}
+
+	input := io.TeeReader(br, h)
+
+	var total int
+	for {
+		n, err := io.ReadFull(input, buf)
+		if n == 0 && err != nil {
+			break
+		}
+
+		total += n
+
+		data := buf
+
+		err = d.WriteExtent(ctx, lsvd.MapRangeData(extent, data))
+		if err != nil {
+			d.Close(ctx)
+			log.Error("error writing data", "error", err, "extent", extent)
+			os.Exit(1)
+		}
+
+		extent.LBA += lsvd.LBA(bs)
+	}
+
+	log.Info("data imported", "size", total, "sha256", hex.EncodeToString(h.Sum(nil)))
+
+	return nil
+}
+
+func (c *CLI) sha256(ctx context.Context, opts struct {
+	Global
+	Name  string   `short:"n" long:"name" description:"name of volume access" required:"true"`
+	Path  string   `short:"p" long:"path" description:"path for cached data" required:"true"`
+	Size  int      `short:"s" description:"read up to this many bytes"`
+	Count int      `long:"count" description:"how many chunks of size -s to read (default 1)"`
+	Seek  lsvd.LBA `long:"seek" description:"start at the given LBA"`
+	BS    int      `long:"bs" description:"how many blocks to read at a time (default 20)"`
+}) error {
+	sa, err := c.loadSegmentAccess(ctx, opts.Config)
+	if err != nil {
+		return err
+	}
+
+	log := c.log
+	path := opts.Path
+	name := opts.Name
+
+	if opts.Debug {
+		log.SetLevel(hclog.Trace)
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, path,
+		lsvd.WithSegmentAccess(sa),
+		lsvd.WithVolumeName(name),
+		lsvd.ReadOnly(),
+	)
+	if err != nil {
+		log.Error("error creating new disk", "error", err)
+		os.Exit(1)
+	}
+
+	defer d.Close(ctx)
+
+	bs := opts.BS
+	if bs == 0 {
+		bs = 20
+	}
+
+	h := sha256.New()
+
+	extent := lsvd.Extent{
+		LBA:    opts.Seek,
+		Blocks: uint32(bs),
+	}
+
+	empty := make([]byte, lsvd.BlockSize*bs)
+
+	var total, left int
+
+	left = opts.Size
+
+	if opts.Count > 1 {
+		left *= opts.Count
+	}
+
+	log.Warn("reading total", "total", left)
+
+	start := time.Now()
+	for left > 0 {
+		data, err := d.ReadExtent(ctx, extent)
+		if err != nil {
+			log.Error("error reading data", "error", err)
+			os.Exit(1)
+		}
+
+		extent.LBA += lsvd.LBA(bs)
+
+		var b []byte
+
+		if data.EmptyP() {
+			b = empty
+		} else {
+			b = data.ReadData()
+		}
+
+		if left < len(b) {
+			b = b[:left]
+		}
+
+		total += len(b)
+		left -= len(b)
+
+		h.Write(b)
+	}
+
+	diff := time.Since(start)
+
+	mbPerSec := (float64(total) / (1024 * 1024)) / diff.Seconds()
+
+	log.Info("data hashed", "size", total, "sha256", hex.EncodeToString(h.Sum(nil)), "elapes", diff, "mb-per-sec", mbPerSec)
 
 	return nil
 }

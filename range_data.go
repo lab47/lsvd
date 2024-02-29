@@ -1,6 +1,9 @@
 package lsvd
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"slices"
 	"sync"
 )
@@ -23,14 +26,8 @@ const (
 	smallRange       = BlockSize * smallRangeBlocks
 )
 
-var smallDB = sync.Pool{
-	New: func() any {
-		return make([]byte, smallRange)
-	},
-}
-
-func (e RawBlocks) Blocks() int {
-	return len(e) / BlockSize
+func (e RawBlocks) Blocks() uint32 {
+	return uint32(len(e) / BlockSize)
 }
 
 func (e RawBlocks) MapTo(lba LBA) RangeData {
@@ -51,30 +48,31 @@ func BlockDataView(blk []byte) RawBlocks {
 	return RawBlocks(slices.Clone(blk))
 }
 
-func (e *RangeData) Blocks() int {
-	return len(e.data) / BlockSize
-}
-
 func (e *RangeData) CopyTo(data []byte) error {
-	copy(data, e.data)
+	if e.data == nil {
+		clear(data[:e.ByteSize()])
+	} else {
+		copy(data, e.data)
+	}
 	return nil
 }
 
-var emptyBlocks = [BlockSize * 10]byte{}
-
-func (e *RangeData) BlockView(cnt int) []byte {
+func (e *RangeData) RawBlocks() RawBlocks {
 	if e.data == nil {
 		e.allocate(e.Extent)
 	}
-	return e.data[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
+
+	return e.data
 }
 
-func (e *RangeData) SetBlock(blk int, data []byte) {
-	if len(data) != BlockSize {
-		panic("invalid data length, not block size")
-	}
+func (e RawBlocks) BlockView(cnt int) []byte {
+	return e[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
+}
 
-	copy(e.data[BlockSize*blk:], data)
+var smallDB = sync.Pool{
+	New: func() any {
+		return make([]byte, smallRange)
+	},
 }
 
 func (r *blockData) Discard() {
@@ -100,16 +98,6 @@ func (b *blockData) allocate(ext Extent) []byte {
 	return data
 }
 
-func NewAllocatedRangeData(ext Extent) RangeData {
-	var bd blockData
-	bd.allocate(ext)
-
-	return RangeData{
-		blockData: &bd,
-		Extent:    ext,
-	}
-}
-
 func NewRangeData(ext Extent) RangeData {
 	return RangeData{
 		blockData: &blockData{
@@ -119,7 +107,24 @@ func NewRangeData(ext Extent) RangeData {
 	}
 }
 
+func AlignToBlock(b []byte) []byte {
+	if len(b)%BlockSize == 0 {
+		return b
+	}
+
+	sized := len(b) + (BlockSize - (len(b) % BlockSize))
+
+	rest := make([]byte, sized)
+	copy(rest, b)
+
+	return rest
+}
+
 func MapRangeData(ext Extent, srcData []byte) RangeData {
+	if len(srcData)%BlockSize != 0 {
+		panic(fmt.Sprintf("invalid input byte array, not block sized, %d", len(srcData)))
+	}
+
 	return RangeData{
 		Extent: ext,
 		blockData: &blockData{
@@ -137,6 +142,9 @@ func (r *RangeData) WriteData() []byte {
 }
 
 func (r *RangeData) ReadData() []byte {
+	if r.data == nil {
+		panic("attempting to inflate empty range data")
+	}
 	return r.data
 }
 
@@ -146,24 +154,6 @@ func (r *RangeData) EmptyP() bool {
 	}
 
 	return emptyBytes(r.data)
-}
-
-func (r *RangeData) Reset(ext Extent) {
-	if r.blockData == nil {
-		r.blockData = &blockData{}
-	}
-
-	needed := ext.Blocks * BlockSize
-
-	if cap(r.data) < int(needed) {
-		r.data = make([]byte, needed)
-	} else {
-		r.data = r.data[:needed]
-	}
-
-	clear(r.data)
-
-	r.Extent = ext
 }
 
 type RangeDataView struct {
@@ -188,14 +178,6 @@ func (r RangeData) SubRange(ext Extent) (RangeDataView, bool) {
 		start:  int(byteOffset),
 		end:    int(byteEnd),
 	}, true
-
-	/*
-		q := RangeData{Extent: ext}
-		q.blocks = int(ext.Blocks)
-		q.data = r.data[byteOffset:byteEnd]
-
-		return q, true
-	*/
 }
 
 func (r RangeData) View() RangeDataView {
@@ -222,14 +204,6 @@ func (r RangeDataView) SubRange(ext Extent) (RangeDataView, bool) {
 		start:  int(byteOffset),
 		end:    int(byteEnd),
 	}, true
-
-	/*
-		q := RangeData{Extent: ext}
-		q.blocks = int(ext.Blocks)
-		q.data = r.data[byteOffset:byteEnd]
-
-		return q, true
-	*/
 }
 
 func (v RangeDataView) WriteData() []byte {
@@ -255,33 +229,18 @@ func (d RangeDataView) Copy(s RangeDataView) int {
 	}
 
 	return copy(d.WriteData(), s.ReadData())
-
-	/*
-		q := RangeData{Extent: ext}
-		q.blocks = int(ext.Blocks)
-		q.data = r.data[byteOffset:byteEnd]
-
-		return q, true
-	*/
 }
 
 func (r RangeData) Append(o RangeData) RangeData {
-	if r.Extent.Blocks == 0 {
+	if r.Blocks == 0 {
 		return o
 	}
 
 	r.data = append(r.data, o.data...)
-	r.Extent.Blocks += o.Extent.Blocks
+	r.Blocks += o.Blocks
 	return r
 }
 
-func (d *RangeData) Copy(s RangeData) int {
-	// if s is empty, skip the copy.
-	if s.data == nil {
-		return s.ByteSize()
-	}
-
-	db := d.WriteData()
-
-	return copy(db, s.ReadData())
+func (r RangeData) Reader() io.Reader {
+	return bytes.NewReader(r.data)
 }

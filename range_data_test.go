@@ -46,4 +46,35 @@ func TestRangeData(t *testing.T) {
 		r.Equal(byte(8), rd.data[0])
 		r.Equal(byte(9), rd.data[(5*BlockSize)-1])
 	})
+
+	t.Run("can copy from an empty range", func(t *testing.T) {
+		r := require.New(t)
+
+		x := NewRangeData(Extent{0, 10})
+
+		out := make([]byte, BlockSize*10)
+
+		for i := range out {
+			out[i] = 8
+		}
+
+		r.Nil(x.data)
+		err := x.CopyTo(out)
+		r.NoError(err)
+
+		r.True(isEmpty(out))
+	})
+}
+
+func BenchmarkCopyEmpty(b *testing.B) {
+	x := NewRangeData(Extent{0, 10})
+
+	out := make([]byte, BlockSize*10)
+	for i := range out {
+		out[i] = 8
+	}
+
+	for i := 0; i < b.N; i++ {
+		x.CopyTo(out)
+	}
 }

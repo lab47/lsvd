@@ -22,7 +22,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 			return err
 		}
 
-		if live.Extent.Blocks == 0 {
+		if live.Blocks == 0 {
 			live = data
 			continue
 		}
@@ -31,7 +31,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 		if live.Last()+1 == i.Key() {
 			live = live.Append(data)
 
-			if live.Extent.Blocks >= 100 {
+			if live.Blocks >= 100 {
 				d.log.Trace("writing packed extent (big)", "extent", live.Extent)
 				err := sb.WriteExtent(d.log, live)
 				if err != nil {
@@ -61,7 +61,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 		}
 	}
 
-	if live.Extent.Blocks > 0 {
+	if live.Blocks > 0 {
 		d.log.Trace("writing packed extent (final)", "extent", live.Extent)
 		err := sb.WriteExtent(d.log, live)
 		if err != nil {
