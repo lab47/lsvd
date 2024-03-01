@@ -73,6 +73,8 @@ func (s *Segments) UpdateUsage(log hclog.Logger, self SegmentId, affected []Part
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
 
+	warnedSegments := map[SegmentId]struct{}{}
+
 	for _, r := range affected {
 		if r.Segment != self {
 			rng := r.Live
@@ -88,7 +90,10 @@ func (s *Segments) UpdateUsage(log hclog.Logger, self SegmentId, affected []Part
 				seg.cleared = append(seg.cleared, rng)
 				seg.Used -= uint64(rng.Blocks)
 			} else {
-				log.Warn("missing segment during usage update", "id", r.Segment.String())
+				if _, seen := warnedSegments[r.Segment]; !seen {
+					log.Warn("missing segment during usage update", "id", r.Segment.String())
+					warnedSegments[r.Segment] = struct{}{}
+				}
 			}
 		}
 	}

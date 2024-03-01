@@ -118,7 +118,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
 	for _, i := range d.s.FindDeleted() {
-		d.log.Debug("removing segment from volume", "volume", d.volName, "segment", i)
+		d.log.Info("removing segment from volume", "volume", d.volName, "segment", i)
 		err := d.sa.RemoveSegmentFromVolume(ctx, d.volName, i)
 		if err != nil {
 			return err

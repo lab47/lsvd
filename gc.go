@@ -168,6 +168,7 @@ func (c *CopyIterator) Close() error {
 	c.d.s.SetDeleted(c.seg)
 
 	c.d.log.Info("gc cycle complete",
+		"segment", c.seg.String(),
 		"extents", c.copiedExtents,
 		"blocks", c.copiedBlocks,
 		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
