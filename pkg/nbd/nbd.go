@@ -364,15 +364,29 @@ nego:
 
 	// Transmission
 	b := []byte{}
+
+	e := binary.BigEndian
+
+	request := make([]byte, binary.Size(TransmissionRequestHeader{}))
+	reply := make([]byte, binary.Size(TransmissionReplyHeader{}))
+	e.PutUint32(reply, TRANSMISSION_MAGIC_REPLY)
+
+	sendReply := func(e uint32, h uint64) error {
+		binary.BigEndian.PutUint32(reply[4:], e)
+		binary.BigEndian.PutUint64(reply[8:], h)
+		_, err := conn.Write(reply)
+		return err
+	}
+
 	for {
 		backend.Idle()
 
 		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
-		var requestHeader TransmissionRequestHeader
+		//var requestHeader TransmissionRequestHeader
 
 		for {
-			if err := binary.Read(conn, binary.BigEndian, &requestHeader); err != nil {
+			if _, err := io.ReadFull(conn, request); err != nil {
 				if errors.Is(err, os.ErrDeadlineExceeded) {
 					backend.Idle()
 					conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
@@ -387,13 +401,18 @@ nego:
 
 		conn.SetReadDeadline(time.Time{})
 
-		if requestHeader.RequestMagic != TRANSMISSION_MAGIC_REQUEST {
+		magic := e.Uint32(request)
+		// flags := e.Uint16(request[4:])
+		typ := e.Uint16(request[6:])
+		handle := e.Uint64(request[8:])
+		offset := e.Uint64(request[16:])
+		length := e.Uint32(request[24:])
+
+		if magic != TRANSMISSION_MAGIC_REQUEST {
 			return ErrInvalidMagic
 		}
 
-		length := requestHeader.Length
-
-		if requestHeader.Type != TRANSMISSION_TYPE_REQUEST_TRIM {
+		if typ != TRANSMISSION_TYPE_REQUEST_TRIM {
 			if length > defaultMaximumRequestSize {
 				return ErrInvalidBlocksize
 			}
@@ -403,17 +422,13 @@ nego:
 			}
 		}
 
-		switch requestHeader.Type {
+		switch typ {
 		case TRANSMISSION_TYPE_REQUEST_READ:
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      0,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(0, handle); err != nil {
 				return err
 			}
 
-			n, err := backend.ReadAt(b[:length], int64(requestHeader.Offset))
+			n, err := backend.ReadAt(b[:length], int64(offset))
 			if err != nil {
 				return err
 			}
@@ -423,94 +438,70 @@ nego:
 			}
 		case TRANSMISSION_TYPE_REQUEST_WRITE:
 			if options.ReadOnly {
-				_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the write command's data
+				_, err := io.CopyN(io.Discard, conn, int64(length)) // Discard the write command's data
 				if err != nil {
 					return err
 				}
 
-				if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-					ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-					Error:      TRANSMISSION_ERROR_EPERM,
-					Handle:     requestHeader.Handle,
-				}); err != nil {
+				if err := sendReply(TRANSMISSION_ERROR_EPERM, handle); err != nil {
 					return err
 				}
 
 				break
 			}
 
-			n, err := io.ReadAtLeast(conn, b[:length], int(requestHeader.Length))
+			n, err := io.ReadAtLeast(conn, b[:length], int(length))
 			if err != nil {
 				return err
 			}
 
-			if _, err := backend.WriteAt(b[:n], int64(requestHeader.Offset)); err != nil {
+			if _, err := backend.WriteAt(b[:n], int64(offset)); err != nil {
 				return err
 			}
 
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      0,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(0, handle); err != nil {
 				return err
 			}
 		case TRANSMISSION_TYPE_REQUEST_WRITEZ:
 			if options.ReadOnly {
-				_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the write command's data
+				_, err := io.CopyN(io.Discard, conn, int64(length)) // Discard the write command's data
 				if err != nil {
 					return err
 				}
 
-				if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-					ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-					Error:      TRANSMISSION_ERROR_EPERM,
-					Handle:     requestHeader.Handle,
-				}); err != nil {
+				if err := sendReply(TRANSMISSION_ERROR_EPERM, handle); err != nil {
 					return err
 				}
 
 				break
 			}
 
-			if err := backend.ZeroAt(int64(requestHeader.Offset), int64(length)); err != nil {
+			if err := backend.ZeroAt(int64(offset), int64(length)); err != nil {
 				return err
 			}
 
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      0,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(0, handle); err != nil {
 				return err
 			}
 		case TRANSMISSION_TYPE_REQUEST_TRIM:
 			if options.ReadOnly {
-				_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the write command's data
+				_, err := io.CopyN(io.Discard, conn, int64(length)) // Discard the write command's data
 				if err != nil {
 					return err
 				}
 
-				if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-					ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-					Error:      TRANSMISSION_ERROR_EPERM,
-					Handle:     requestHeader.Handle,
-				}); err != nil {
+				if err := sendReply(TRANSMISSION_ERROR_EPERM, handle); err != nil {
 					return err
 				}
 
 				break
 			}
 
-			if err := backend.Trim(int64(requestHeader.Offset), int64(length)); err != nil {
+			if err := backend.Trim(int64(offset), int64(length)); err != nil {
 				return err
 			}
 
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      0,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(0, handle); err != nil {
 				return err
 			}
 		case TRANSMISSION_TYPE_REQUEST_FLUSH:
@@ -520,11 +511,7 @@ nego:
 				}
 			}
 
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      0,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(0, handle); err != nil {
 				return err
 			}
 		case TRANSMISSION_TYPE_REQUEST_DISC:
@@ -536,16 +523,12 @@ nego:
 
 			return nil
 		default:
-			_, err := io.CopyN(io.Discard, conn, int64(requestHeader.Length)) // Discard the unknown command's data
+			_, err := io.CopyN(io.Discard, conn, int64(length)) // Discard the unknown command's data
 			if err != nil {
 				return err
 			}
 
-			if err := binary.Write(conn, binary.BigEndian, TransmissionReplyHeader{
-				ReplyMagic: TRANSMISSION_MAGIC_REPLY,
-				Error:      TRANSMISSION_ERROR_EINVAL,
-				Handle:     requestHeader.Handle,
-			}); err != nil {
+			if err := sendReply(TRANSMISSION_ERROR_EINVAL, handle); err != nil {
 				return err
 			}
 		}
