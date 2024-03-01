@@ -2,6 +2,11 @@ package nbd
 
 import "io"
 
+type BackendOpen interface {
+	Open() Backend
+	Close(b Backend)
+}
+
 type Backend interface {
 	io.ReaderAt
 	io.WriterAt

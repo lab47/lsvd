@@ -17,13 +17,34 @@ type nbdWrapper struct {
 
 	mu sync.Mutex
 	ci *CopyIterator
+
+	buf *Buffers
 }
+
+type NBDBackendOpen struct {
+	Ctx  context.Context
+	Log  hclog.Logger
+	Disk *Disk
+}
+
+func (n *NBDBackendOpen) Open() nbd.Backend {
+	return NBDWrapper(n.Ctx, n.Log, n.Disk)
+}
+
+func (n *NBDBackendOpen) Close(b nbd.Backend) {}
 
 var _ nbd.Backend = &nbdWrapper{}
 
 func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
 	log = log.Named("nbd")
-	w := &nbdWrapper{log: log, ctx: ctx, d: d}
+	w := &nbdWrapper{
+		log: log,
+		ctx: ctx,
+		d:   d,
+		buf: NewBuffers(),
+	}
+
+	w.ctx = w.buf.Inject(w.ctx)
 
 	d.SetAfterNS(w.AfterNS)
 
@@ -43,6 +64,8 @@ func (n *nbdWrapper) Idle() {
 	defer n.mu.Unlock()
 
 	if n.ci != nil {
+		defer n.buf.Reset()
+
 		n.log.Trace("processing GC copy iterator")
 		ctx := context.Background()
 		done, err := n.ci.Process(ctx, 100*time.Millisecond)
@@ -67,6 +90,8 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 		"extent", Extent{blk, blocks},
 	)
 
+	defer n.buf.Reset()
+
 	data, err := n.d.ReadExtent(n.ctx, Extent{LBA: blk, Blocks: blocks})
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
@@ -88,6 +113,8 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	n.log.Trace("nbd write-at", "size", len(b), "offset", off)
+
+	defer n.buf.Reset()
 
 	blk := LBA(off / BlockSize)
 
@@ -111,6 +138,8 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 
 func (n *nbdWrapper) AfterNS(_ SegmentId) {
 	ctx := context.Background()
+
+	defer n.buf.Reset()
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -139,6 +168,8 @@ func (n *nbdWrapper) AfterNS(_ SegmentId) {
 func (n *nbdWrapper) ZeroAt(off, size int64) error {
 	blk := LBA(off / BlockSize)
 
+	defer n.buf.Reset()
+
 	numBlocks := uint32(size / BlockSize)
 
 	n.log.Trace("nbd zero-at",
@@ -157,6 +188,8 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 
 func (n *nbdWrapper) Trim(off, size int64) error {
 	blk := LBA(off / BlockSize)
+
+	defer n.buf.Reset()
 
 	numBlocks := uint32(size / BlockSize)
 
@@ -200,6 +233,8 @@ func (n *nbdWrapper) Size() (int64, error) {
 }
 
 func (n *nbdWrapper) Sync() error {
+	defer n.buf.Reset()
+
 	n.log.Trace("nbd sync")
 	return n.d.SyncWriteCache()
 }

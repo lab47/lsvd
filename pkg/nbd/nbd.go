@@ -25,7 +25,8 @@ type Export struct {
 	Name        string
 	Description string
 
-	Backend Backend
+	BackendOpen BackendOpen
+	Backend     Backend
 }
 
 type Options struct {
@@ -84,6 +85,7 @@ func Handle(log hclog.Logger, conn net.Conn, exports []*Export, options *Options
 	log.Trace("sent negotation header, reading options")
 
 	var export *Export
+	var backend Backend
 
 nego:
 	for {
@@ -142,7 +144,14 @@ nego:
 				break
 			}
 
-			size, err := export.Backend.Size()
+			if export.BackendOpen != nil {
+				backend = export.BackendOpen.Open()
+				defer export.BackendOpen.Close(backend)
+			} else {
+				backend = export.Backend
+			}
+
+			size, err := backend.Size()
 			if err != nil {
 				return err
 			}
@@ -356,7 +365,7 @@ nego:
 	// Transmission
 	b := []byte{}
 	for {
-		export.Backend.Idle()
+		backend.Idle()
 
 		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
@@ -365,7 +374,7 @@ nego:
 		for {
 			if err := binary.Read(conn, binary.BigEndian, &requestHeader); err != nil {
 				if errors.Is(err, os.ErrDeadlineExceeded) {
-					export.Backend.Idle()
+					backend.Idle()
 					conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 					continue
 				}
@@ -404,7 +413,7 @@ nego:
 				return err
 			}
 
-			n, err := export.Backend.ReadAt(b[:length], int64(requestHeader.Offset))
+			n, err := backend.ReadAt(b[:length], int64(requestHeader.Offset))
 			if err != nil {
 				return err
 			}
@@ -435,7 +444,7 @@ nego:
 				return err
 			}
 
-			if _, err := export.Backend.WriteAt(b[:n], int64(requestHeader.Offset)); err != nil {
+			if _, err := backend.WriteAt(b[:n], int64(requestHeader.Offset)); err != nil {
 				return err
 			}
 
@@ -464,7 +473,7 @@ nego:
 				break
 			}
 
-			if err := export.Backend.ZeroAt(int64(requestHeader.Offset), int64(length)); err != nil {
+			if err := backend.ZeroAt(int64(requestHeader.Offset), int64(length)); err != nil {
 				return err
 			}
 
@@ -493,7 +502,7 @@ nego:
 				break
 			}
 
-			if err := export.Backend.Trim(int64(requestHeader.Offset), int64(length)); err != nil {
+			if err := backend.Trim(int64(requestHeader.Offset), int64(length)); err != nil {
 				return err
 			}
 
@@ -506,7 +515,7 @@ nego:
 			}
 		case TRANSMISSION_TYPE_REQUEST_FLUSH:
 			if !options.ReadOnly {
-				if err := export.Backend.Sync(); err != nil {
+				if err := backend.Sync(); err != nil {
 					return err
 				}
 			}
@@ -520,7 +529,7 @@ nego:
 			}
 		case TRANSMISSION_TYPE_REQUEST_DISC:
 			if !options.ReadOnly {
-				if err := export.Backend.Sync(); err != nil {
+				if err := backend.Sync(); err != nil {
 					return err
 				}
 			}

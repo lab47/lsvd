@@ -213,9 +213,15 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 	iops.Inc()
 
-	data := NewRangeData(rng)
+	b := B(ctx)
 
-	log := hclogx.NewOpLogger(d.log)
+	data := b.NewRangeData(rng)
+
+	log := d.log
+
+	if mode.Debug() {
+		log = hclogx.NewOpLogger(d.log)
+	}
 
 	log.Trace("attempting to fill request from write cache", "extent", rng)
 
@@ -275,7 +281,7 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 				}
 
 				if mode.Debug() && pe.Live.Cover(h) == CoverNone {
-					log.Flush()
+					hclogx.Flush(log)
 					log.Error("resolve returned extent that doesn't cover", "hole", h, "pe", pe.Live)
 				}
 
