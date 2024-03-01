@@ -199,8 +199,6 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 		return nil, err
 	}
 
-	sc.UseZstd()
-
 	return sc, nil
 }
 
