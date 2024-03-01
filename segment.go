@@ -18,6 +18,20 @@ import (
 
 type SegmentCreator struct {
 	log hclog.Logger
+
+	builder SegmentBuilder
+
+	volName string
+
+	buf []byte
+
+	logF *os.File
+	logW *bufio.Writer
+
+	em *ExtentMap
+}
+
+type SegmentBuilder struct {
 	cnt int
 
 	emptyBlocks   int
@@ -27,25 +41,6 @@ type SegmentCreator struct {
 	storageRatio  float64
 	compRateHisto [10]int
 
-	volName string
-
-	offset  uint64
-	extents []ExtentHeader
-
-	buf    []byte
-	header bytes.Buffer
-	body   bytes.Buffer
-
-	logF *os.File
-	logW *bufio.Writer
-
-	em *ExtentMap
-
-	comp lz4.Compressor
-}
-
-type SegmentBuilder struct {
-	cnt    int
 	buf    []byte
 	header bytes.Buffer
 	body   bytes.Buffer
@@ -74,7 +69,11 @@ func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, err
 	return oc, nil
 }
 
-func (o *SegmentCreator) addToHistogram(val float64) {
+func (o *SegmentCreator) UseZstd() {
+	o.builder.useZstd = true
+}
+
+func (o *SegmentBuilder) addToHistogram(val float64) {
 	for i, v := range histogramBands {
 		if v >= val {
 			o.compRateHisto[i]++
@@ -113,7 +112,7 @@ func (o *SegmentCreator) OpenWrite(path string) error {
 }
 
 func (o *SegmentCreator) TotalBlocks() int {
-	return o.totalBlocks
+	return o.builder.totalBlocks
 }
 
 func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
@@ -126,6 +125,11 @@ func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
 	if err != nil {
 		return err
 	}
+
+	return o.builder.ZeroBlocks(rng)
+}
+
+func (o *SegmentBuilder) ZeroBlocks(rng Extent) error {
 	o.cnt++
 
 	o.extents = append(o.extents, ExtentHeader{
@@ -149,39 +153,39 @@ func (o *SegmentCreator) ShouldFlush(sizeThreshold int) bool {
 }
 
 func (o *SegmentCreator) BodySize() int {
-	return o.body.Len()
+	return o.builder.body.Len()
 }
 
 func (o *SegmentCreator) Entries() int {
-	return o.cnt
+	return o.builder.cnt
 }
 
 func (o *SegmentCreator) EmptyBlocks() int {
-	return o.emptyBlocks
+	return o.builder.emptyBlocks
 }
 
 func (o *SegmentCreator) InputBytes() int64 {
-	return o.inputBytes
+	return o.builder.inputBytes
 }
 
 func (o *SegmentCreator) StorageBytes() int64 {
-	return o.storageBytes
+	return o.builder.storageBytes
 }
 
 func (o *SegmentCreator) CompressionRate() float64 {
-	return float64(o.inputBytes) / float64(o.storageBytes)
+	return float64(o.builder.inputBytes) / float64(o.builder.storageBytes)
 }
 
 func (o *SegmentCreator) StorageRatio() float64 {
-	return float64(o.storageBytes) / float64(o.inputBytes)
+	return float64(o.builder.storageBytes) / float64(o.builder.inputBytes)
 }
 
 func (o *SegmentCreator) AvgStorageRatio() float64 {
-	return o.storageRatio / float64(o.cnt)
+	return o.builder.storageRatio / float64(o.builder.cnt)
 }
 
 func (o *SegmentCreator) CompressionRateHistogram() []int {
-	return o.compRateHisto[:]
+	return o.builder.compRateHisto[:]
 }
 
 // writeLog writes the header and the data to the log so that we can
@@ -233,12 +237,12 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 
 		o.log.Trace("read extent header", "extent", eh.Extent, "flags", eh.Flags, "raw-size", eh.RawSize)
 
-		o.totalBlocks += int(eh.Blocks)
+		o.builder.totalBlocks += int(eh.Blocks)
 
-		o.cnt++
+		o.builder.cnt++
 
 		if eh.Size > 0 {
-			n, err := io.CopyN(&o.body, br, int64(eh.Size))
+			n, err := io.CopyN(&o.builder.body, br, int64(eh.Size))
 			if err != nil {
 				return errors.Wrapf(err, "error copying body, expecting %d, got %d", eh.Size, n)
 			}
@@ -247,16 +251,16 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 			}
 
 			if eh.RawSize > 0 {
-				o.storageRatio += float64(eh.Size) / float64(eh.RawSize)
+				o.builder.storageRatio += float64(eh.Size) / float64(eh.RawSize)
 			} else {
-				o.storageRatio += 1
+				o.builder.storageRatio += 1
 			}
 
 			// Update offset to match where it is in body
-			eh.Offset = uint32(o.offset)
+			eh.Offset = uint32(o.builder.offset)
 		}
 
-		o.extents = append(o.extents, eh)
+		o.builder.extents = append(o.builder.extents, eh)
 
 		_, err := o.em.Update(o.log, ExtentLocation{
 			ExtentHeader: eh,
@@ -265,7 +269,7 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 			return err
 		}
 
-		o.offset += eh.Size
+		o.builder.offset += eh.Size
 	}
 
 	return nil
@@ -282,7 +286,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 		return nil, err
 	}
 
-	body := o.body.Bytes()
+	body := o.builder.body.Bytes()
 
 	var ret []Extent
 
@@ -342,6 +346,39 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			}
 
 			srcData = o.buf[:origSize]
+		case ZstdCompressed:
+			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
+			if origSize == 0 {
+				panic("missing rawsize")
+			}
+
+			srcBytes = srcBytes[:srcRng.Size]
+
+			o.log.Trace("compressed range", "offset", srcRng.Offset)
+
+			if len(o.buf) < int(origSize) {
+				o.buf = make([]byte, origSize)
+			}
+
+			o.log.Trace("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
+
+			d, err := zstd.NewReader(nil)
+			if err != nil {
+				return nil, err
+			}
+
+			res, err := d.DecodeAll(srcBytes, o.buf[:0])
+			if err != nil {
+				return nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(srcBytes), origSize)
+			}
+
+			n := len(res)
+
+			if n != int(origSize) {
+				return nil, fmt.Errorf("didn't fill destination (%d != %d)", n, origSize)
+			}
+
+			srcData = o.buf[:origSize]
 		case Empty:
 			// handled above, shouldn't be here.
 			return nil, fmt.Errorf("invalid flag 2, should have size == 0, did not")
@@ -368,91 +405,16 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 }
 
 func (o *SegmentCreator) WriteExtent(ext RangeData) error {
-	extBytes := ext.ByteSize()
-
-	if o.buf == nil {
-		o.buf = make([]byte, extBytes*2)
+	data, eh, err := o.builder.WriteExtent(o.log, ext)
+	if err != nil {
+		return err
 	}
 
 	if o.em == nil {
 		o.em = NewExtentMap()
 	}
 
-	o.totalBlocks += int(ext.Extent.Blocks)
-	o.inputBytes += int64(ext.ByteSize())
-
-	var data []byte
-
-	eh := ExtentHeader{
-		Extent: ext.Extent,
-	}
-
-	o.cnt++
-
-	if ext.EmptyP() {
-		eh.Flags = Empty
-		o.emptyBlocks += int(ext.Extent.Blocks)
-	} else {
-		bound := lz4.CompressBlockBound(extBytes)
-
-		if len(o.buf) < bound {
-			o.buf = make([]byte, bound)
-		}
-
-		compressedSize, err := o.comp.CompressBlock(ext.ReadData(), o.buf)
-		if err != nil {
-			return err
-		}
-
-		if compressedSize > 0 && compressedSize < extBytes {
-			eh.Flags = Compressed
-			eh.RawSize = uint32(extBytes)
-			eh.Size = uint64(compressedSize)
-
-			data = o.buf[:compressedSize]
-
-			o.log.Trace("writing compressed range",
-				"offset", o.offset,
-				"size", eh.Size,
-			)
-
-			o.addToHistogram(float64(extBytes) / float64(len(data)))
-		} else {
-			eh.Flags = Uncompressed
-			eh.Size = uint64(extBytes)
-
-			data = ext.WriteData()
-
-			o.log.Trace("writing uncompressed range",
-				"offset", o.offset,
-				"size", eh.Size,
-				"raw-size", eh.RawSize,
-			)
-			o.addToHistogram(1)
-		}
-
-		o.storageBytes += int64(len(data))
-		o.storageRatio += (float64(len(data)) / float64(extBytes))
-
-		n, err := o.body.Write(data)
-		if err != nil {
-			return err
-		}
-
-		eh.Offset = uint32(o.offset)
-		_, err = o.em.Update(o.log, ExtentLocation{
-			ExtentHeader: eh,
-		})
-		if err != nil {
-			return err
-		}
-
-		o.offset += uint64(n)
-	}
-
-	o.extents = append(o.extents, eh)
-
-	_, err := o.em.Update(o.log, ExtentLocation{
+	_, err = o.em.Update(o.log, ExtentLocation{
 		ExtentHeader: eh,
 	})
 
@@ -474,76 +436,9 @@ type SegmentStats struct {
 func (o *SegmentCreator) Flush(ctx context.Context,
 	sa SegmentAccess, seg SegmentId,
 ) ([]ExtentLocation, *SegmentStats, error) {
-	start := time.Now()
-	defer func() {
-		segmentTime.Observe(time.Since(start).Seconds())
-	}()
-
-	stats := &SegmentStats{}
-
-	for _, blk := range o.extents {
-		stats.Blocks += uint64(blk.Blocks)
-		err := blk.Write(&o.header)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	dataBegin := uint32(o.header.Len() + 8)
-
-	o.log.Debug("segment constructed",
-		"header-size", o.header.Len(),
-		"body-size", o.offset,
-		"blocks", len(o.extents),
-	)
-
-	writtenBytes.Add(float64(o.inputBytes))
-	segmentsBytes.Add(float64(o.storageBytes))
-
-	entries := make([]ExtentLocation, len(o.extents))
-
-	for i, eh := range o.extents {
-		if eh.Flags == Compressed && eh.RawSize == 0 {
-			panic("bad header")
-		}
-
-		eh.Offset += dataBegin
-		entries[i] = ExtentLocation{
-			ExtentHeader: eh,
-			Segment:      seg,
-		}
-	}
-
-	f, err := sa.WriteSegment(ctx, seg)
+	locs, stats, err := o.builder.Flush(ctx, o.log, sa, seg, o.volName)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	defer f.Close()
-
-	err = SegmentHeader{
-		ExtentCount: uint32(o.cnt),
-		DataOffset:  dataBegin,
-	}.Write(f)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	_, err = io.Copy(f, bytes.NewReader(o.header.Bytes()))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	_, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	f.Close()
-
-	err = sa.AppendToSegments(ctx, o.volName, seg)
-	if err != nil {
-		return nil, nil, err
+		return locs, stats, err
 	}
 
 	if o.logF != nil {
@@ -556,17 +451,17 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 		}
 	}
 
-	return entries, stats, nil
+	return locs, stats, nil
 }
 
-func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
+func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, ExtentHeader, error) {
 	extBytes := ext.ByteSize()
 	if o.buf == nil {
 		o.buf = make([]byte, extBytes*2)
 	}
 
-	//o.totalBlocks += int(ext.Extent.Blocks)
-	//o.inputBytes += int64(len(ext.data))
+	o.totalBlocks += int(ext.Extent.Blocks)
+	o.inputBytes += int64(len(ext.data))
 
 	var data []byte
 
@@ -578,7 +473,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 
 	if ext.EmptyP() {
 		eh.Flags = Empty
-		//o.emptyBlocks += int(ext.Extent.Blocks)
+		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
 		bound := lz4.CompressBlockBound(extBytes)
 
@@ -594,7 +489,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 		if o.useZstd {
 			e, err := zstd.NewWriter(nil)
 			if err != nil {
-				return err
+				return nil, eh, err
 			}
 			res := e.EncodeAll(ext.ReadData(), o.buf[:0])
 
@@ -603,7 +498,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 		} else {
 			compressedSize, err = o.comp.CompressBlock(ext.ReadData(), o.buf)
 			if err != nil {
-				return err
+				return nil, eh, err
 			}
 			flag = Compressed
 		}
@@ -621,7 +516,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 				"input-size", eh.RawSize,
 			)
 
-			//o.addToHistogram(float64(len(ext.data)) / float64(len(data)))
+			o.addToHistogram(float64(len(ext.data)) / float64(len(data)))
 		} else {
 			eh.Flags = Uncompressed
 			eh.Size = uint64(extBytes)
@@ -633,15 +528,15 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 				"size", eh.Size,
 				"raw-size", eh.RawSize,
 			)
-			//o.addToHistogram(1)
+			o.addToHistogram(1)
 		}
 
-		//o.storageBytes += int64(len(data))
-		//o.storageRatio += (float64(len(data)) / float64(len(ext.data)))
+		o.storageBytes += int64(len(data))
+		o.storageRatio += (float64(len(data)) / float64(len(ext.data)))
 
 		n, err := o.body.Write(data)
 		if err != nil {
-			return err
+			return nil, eh, err
 		}
 
 		eh.Offset = uint32(o.offset)
@@ -651,7 +546,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) error {
 
 	o.extents = append(o.extents, eh)
 
-	return nil
+	return data, eh, nil
 }
 
 func (o *SegmentBuilder) Flush(ctx context.Context, log hclog.Logger,
@@ -680,8 +575,8 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log hclog.Logger,
 		"blocks", len(o.extents),
 	)
 
-	//writtenBytes.Add(float64(o.inputBytes))
-	//segmentsBytes.Add(float64(o.storageBytes))
+	writtenBytes.Add(float64(o.inputBytes))
+	segmentsBytes.Add(float64(o.storageBytes))
 
 	entries := make([]ExtentLocation, len(o.extents))
 

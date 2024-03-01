@@ -31,6 +31,7 @@ type Disk struct {
 	size     int64
 	volName  string
 	readOnly bool
+	useZstd  bool
 
 	prevCache *PreviousCache
 
@@ -108,6 +109,7 @@ func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Opti
 		SeqGen:    o.seqGen,
 		afterNS:   o.afterNS,
 		readOnly:  o.ro,
+		useZstd:   o.useZstd,
 		er:        er,
 		prevCache: NewPreviousCache(),
 		s:         NewSegments(),
@@ -192,7 +194,14 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 	d.curSeq = seq
 
 	path := filepath.Join(d.path, "writecache."+seq.String())
-	return NewSegmentCreator(d.log, d.volName, path)
+	sc, err := NewSegmentCreator(d.log, d.volName, path)
+	if err != nil {
+		return nil, err
+	}
+
+	sc.UseZstd()
+
+	return sc, nil
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {

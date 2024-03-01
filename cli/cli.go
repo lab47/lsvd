@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -441,11 +442,13 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 
 func (c *CLI) dd(ctx context.Context, opts struct {
 	Global
-	Name   string `short:"n" long:"name" description:"name of volume access" required:"true"`
-	Path   string `short:"p" long:"path" description:"path for cached data" required:"true"`
-	Input  string `short:"i" long:"input" description:"url to populate the disk from"`
-	BS     int    `long:"bs" description:"number of blocks to make the extents (default 20)"`
-	Expand bool   `long:"expand" description:"expand compressed files (like qcow2)"`
+	Name     string `short:"n" long:"name" description:"name of volume access" required:"true"`
+	Path     string `short:"p" long:"path" description:"path for cached data" required:"true"`
+	Input    string `short:"i" long:"input" description:"url to populate the disk from"`
+	BS       int    `long:"bs" description:"number of blocks to make the extents (default 20)"`
+	Expand   bool   `long:"expand" description:"expand compressed files (like qcow2)"`
+	Verify   string `long:"verify" description:"sha256 of the data to check it against"`
+	Readback bool   `long:"readback" description:"after importing, read back the data to validate it"`
 }) error {
 	sa, err := c.loadSegmentAccess(ctx, opts.Config)
 	if err != nil {
@@ -460,9 +463,21 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 		log.SetLevel(hclog.Trace)
 	}
 
+	var verify []byte
+	if opts.Verify != "" {
+		verify, err = hex.DecodeString(opts.Verify)
+		if err != nil {
+			log.Error("error parsing verify sha256")
+			os.Exit(1)
+		}
+
+		log.Info("expected sum of data", "sum", hex.EncodeToString(verify))
+	}
+
 	d, err := lsvd.NewDisk(ctx, log, path,
 		lsvd.WithSegmentAccess(sa),
 		lsvd.WithVolumeName(name),
+		lsvd.WithZstd(),
 	)
 	if err != nil {
 		log.Error("error creating new disk", "error", err)
@@ -539,7 +554,80 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 		extent.LBA += lsvd.LBA(bs)
 	}
 
-	log.Info("data imported", "size", total, "sha256", hex.EncodeToString(h.Sum(nil)))
+	sum := h.Sum(nil)
+
+	if len(verify) > 0 {
+		if bytes.Equal(verify, sum) {
+			log.Info("data imported and verified", "size", total, "sha256", hex.EncodeToString(sum))
+
+		} else {
+			log.Error("data imported and failed verification", "size", total,
+				"sha256", hex.EncodeToString(sum),
+				"expected", hex.EncodeToString(sum),
+			)
+
+			return nil
+		}
+	} else {
+		log.Info("data imported", "size", total, "sha256", hex.EncodeToString(sum))
+	}
+
+	if opts.Readback {
+		log.Info("reading data back to validate", "size", total)
+
+		h := sha256.New()
+
+		extent := lsvd.Extent{
+			Blocks: uint32(bs),
+		}
+
+		// shift the block size so we force unalligned extent reads and validate more
+		// of the read machinery.
+		empty := make([]byte, lsvd.BlockSize*bs)
+
+		left := total
+
+		start := time.Now()
+		for left > 0 {
+			data, err := d.ReadExtent(ctx, extent)
+			if err != nil {
+				log.Error("error reading data", "error", err)
+				os.Exit(1)
+			}
+
+			extent.LBA += lsvd.LBA(bs)
+
+			var b []byte
+
+			if data.EmptyP() {
+				b = empty
+			} else {
+				b = data.ReadData()
+			}
+
+			if left < len(b) {
+				b = b[:left]
+			}
+
+			total += len(b)
+			left -= len(b)
+
+			h.Write(b)
+		}
+
+		diff := time.Since(start)
+
+		mbPerSec := (float64(total) / (1024 * 1024)) / diff.Seconds()
+
+		rbSum := h.Sum(nil)
+
+		if !bytes.Equal(sum, rbSum) {
+			log.Error("readback data validated validation", "size", total, "sum",
+				hex.EncodeToString(sum), "expected", hex.EncodeToString(rbSum))
+		} else {
+			log.Info("data verified", "size", total, "sha256", hex.EncodeToString(h.Sum(nil)), "elapes", diff, "mb-per-sec", mbPerSec)
+		}
+	}
 
 	return nil
 }

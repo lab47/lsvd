@@ -57,7 +57,7 @@ func TestSegmentCreator(t *testing.T) {
 		err = oc2.readLog(f)
 		r.NoError(err)
 
-		r.Equal(oc.body.Bytes(), oc2.body.Bytes())
+		r.Equal(oc.builder.body.Bytes(), oc2.builder.body.Bytes())
 	})
 
 	t.Run("can serve reads from the write cache", func(t *testing.T) {

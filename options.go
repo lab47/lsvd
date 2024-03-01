@@ -10,6 +10,7 @@ type opts struct {
 	afterNS    func(SegmentId)
 	lowers     []*Disk
 	ro         bool
+	useZstd    bool
 }
 
 type Option func(o *opts)
@@ -53,5 +54,11 @@ func ReadOnly() Option {
 func WithLowerLayer(d *Disk) Option {
 	return func(o *opts) {
 		o.lowers = append(o.lowers, d)
+	}
+}
+
+func WithZstd() Option {
+	return func(o *opts) {
+		o.useZstd = true
 	}
 }
