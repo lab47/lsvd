@@ -132,6 +132,8 @@ func LogMetrics(log hclog.Logger) {
 		"segment-bytes", counterValue(segmentsBytes),
 		"segments", counterValue(segmentsWritten),
 		"total-segment-process-time", counterAsDuration(segmentTotalTime),
+		"extent-cache-hits", counterValue(extentCacheHits),
+		"extent-cache-misses", counterValue(extentCacheMiss),
 	)
 
 	log.Info("client stats",
