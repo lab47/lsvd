@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/klauspost/compress/zstd"
-	"github.com/lab47/lz4decode"
+	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
 
@@ -107,7 +107,7 @@ func (d *ExtentReader) fetchExtent(
 
 		uncomp := buffers.Get(int(sz))
 
-		n, err := lz4decode.UncompressBlock(rawData, uncomp, nil)
+		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
 			return RangeData{}, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
 		}

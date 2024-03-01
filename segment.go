@@ -11,7 +11,6 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/klauspost/compress/zstd"
-	"github.com/lab47/lz4decode"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
@@ -336,7 +335,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			o.log.Trace("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
 
-			n, err := lz4decode.UncompressBlock(srcBytes, o.buf, nil)
+			n, err := lz4.UncompressBlock(srcBytes, o.buf)
 			if err != nil {
 				return nil, fmt.Errorf("error uncompressing (src=%d, dest=%d): %w", len(srcBytes), len(o.buf), err)
 			}

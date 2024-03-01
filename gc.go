@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/lab47/lz4decode"
+	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
 
@@ -136,7 +136,7 @@ loop:
 				defer buffers.Return(uncomp)
 
 				//n := lz4decode.UncompressOrig(view, uncomp, nil)
-				n, err := lz4decode.UncompressBlock(view, uncomp, nil)
+				n, err := lz4.UncompressBlock(view, uncomp)
 				if err != nil {
 					return false, err
 				}
