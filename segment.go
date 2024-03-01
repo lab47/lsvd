@@ -487,7 +487,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 			flag           byte
 		)
 
-		if o.useZstd {
+		if false {
 			e, err := zstd.NewWriter(nil)
 			if err != nil {
 				return nil, eh, err
