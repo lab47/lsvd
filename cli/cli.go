@@ -563,7 +563,7 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 		} else {
 			log.Error("data imported and failed verification", "size", total,
 				"sha256", hex.EncodeToString(sum),
-				"expected", hex.EncodeToString(sum),
+				"expected", hex.EncodeToString(verify),
 			)
 
 			return nil

@@ -341,7 +341,9 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 				return nil, fmt.Errorf("error uncompressing (src=%d, dest=%d): %w", len(srcBytes), len(o.buf), err)
 			}
 
-			if n != int(origSize) {
+			if n > int(origSize) {
+				o.log.Warn("unusual long write detected", "expected", origSize, "actual", n, "buf-len", len(o.buf))
+			} else if n < int(origSize) {
 				return nil, fmt.Errorf("didn't fill destination (%d != %d)", n, origSize)
 			}
 
