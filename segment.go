@@ -278,6 +278,8 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 // a list of Extents that was unable to fill. That later list is then
 // feed to the system that reads data from segments.
 func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
+	startFill := time.Now()
+
 	rng := data.Extent
 
 	ranges, err := o.em.Resolve(o.log, rng)
@@ -289,6 +291,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 	var ret []Extent
 
+	var compTime time.Duration
 	for _, srcRng := range ranges {
 		subDest, ok := data.SubRange(srcRng.Live)
 		if !ok {
@@ -320,6 +323,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 		case Uncompressed:
 			srcData = srcBytes[:srcRng.Size]
 		case Compressed:
+			s := time.Now()
 			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
 			if origSize == 0 {
 				panic("missing rawsize")
@@ -347,7 +351,9 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			}
 
 			srcData = o.buf[:origSize]
+			compTime += time.Since(s)
 		case ZstdCompressed:
+			s := time.Now()
 			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
 			if origSize == 0 {
 				panic("missing rawsize")
@@ -380,6 +386,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			}
 
 			srcData = o.buf[:origSize]
+			compTime += time.Since(s)
 		case Empty:
 			// handled above, shouldn't be here.
 			return nil, fmt.Errorf("invalid flag 2, should have size == 0, did not")
@@ -401,6 +408,11 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 		o.log.Trace("copied range", "bytes", n, "blocks", n/BlockSize)
 	}
+
+	e := time.Since(startFill)
+
+	readProcessing.Add(e.Seconds())
+	compressionOverhead.Add(compTime.Seconds())
 
 	return ret, nil
 }

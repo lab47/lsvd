@@ -34,7 +34,6 @@ func (b *Buffers) Inject(ctx context.Context) context.Context {
 
 func (b *Buffers) Reset() {
 	b.rest = b.slice
-	clear(b.rest)
 }
 
 func (b *Buffers) alloc(sz int) []byte {

@@ -85,24 +85,18 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
 
+	ext := Extent{LBA: blk, Blocks: blocks}
+
 	n.log.Trace("nbd read-at",
 		"size", len(b), "offset", off,
-		"extent", Extent{blk, blocks},
+		"extent", ext,
 	)
 
 	defer n.buf.Reset()
 
-	data, err := n.d.ReadExtent(n.ctx, Extent{LBA: blk, Blocks: blocks})
-	if err != nil {
-		n.log.Error("nbd read-at error", "error", err, "block", blk)
-		return 0, err
-	}
+	data := MapRangeData(ext, b)
 
-	if mode.Debug() {
-		logBlocks(n.log, "read block sums", blk, b)
-	}
-
-	err = data.CopyTo(b)
+	err := n.d.ReadExtentInto(n.ctx, data)
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err

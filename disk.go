@@ -203,19 +203,26 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
+	b := B(ctx)
+
+	data := b.NewRangeData(rng)
+
+	err := d.ReadExtentInto(ctx, data)
+	return data, err
+}
+
+func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
 	start := time.Now()
 
 	defer func() {
 		blocksReadLatency.Observe(time.Since(start).Seconds())
 	}()
 
+	rng := data.Extent
+
 	blocksRead.Add(float64(rng.Blocks))
 
 	iops.Inc()
-
-	b := B(ctx)
-
-	data := b.NewRangeData(rng)
 
 	log := d.log
 
@@ -227,13 +234,13 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
-		return RangeData{}, err
+		return err
 	}
 
 	// Completely filled range from the write cache
 	if len(remaining) == 0 {
 		d.log.Trace("extent filled entirely from write cache")
-		return data, nil
+		return nil
 	}
 
 	log.Trace("remaining extents needed", "total", len(remaining))
@@ -264,16 +271,22 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		pes, err := d.lba2pba.Resolve(log, h)
 		if err != nil {
 			log.Error("error computing opbas", "error", err, "rng", h)
-			return RangeData{}, err
+			return err
 		}
 
 		if len(pes) == 0 {
 			log.Trace("no partial extents found")
+			if v, ok := data.SubRange(h); ok {
+				clear(v.WriteData())
+			}
 			// nothing for range, and since the data is pre-zero'd, we
 			// don't need to clear anything here.
 		} else {
 			for _, pe := range pes {
 				if pe.Size == 0 {
+					if v, ok := data.SubRange(pe.Live); ok {
+						clear(v.WriteData())
+					}
 					// it's empty! cool cool, we don't need to fill the hole
 					// since the slice we're filling inside data has already been
 					// cleared when it's created.
@@ -322,11 +335,11 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 		ld := d.readDisks[o.pe.Disk]
 		err := ld.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
 		if err != nil {
-			return RangeData{}, err
+			return err
 		}
 	}
 
-	return data, nil
+	return nil
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {

@@ -3,6 +3,7 @@ package lsvd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -57,6 +58,8 @@ func (d *ExtentReader) fetchExtent(
 	log hclog.Logger,
 	pe *PartialExtent,
 ) (RangeData, error) {
+	startFetch := time.Now()
+
 	addr := pe.ExtentLocation
 
 	rawData := buffers.Get(int(addr.Size))
@@ -103,6 +106,7 @@ func (d *ExtentReader) fetchExtent(
 	case Uncompressed:
 		rangeData = rawData
 	case Compressed:
+		startDecomp := time.Now()
 		sz := pe.RawSize
 
 		uncomp := buffers.Get(int(sz))
@@ -120,7 +124,9 @@ func (d *ExtentReader) fetchExtent(
 		buffers.Return(rawData)
 
 		rangeData = uncomp
+		compressionOverhead.Add(time.Since(startDecomp).Seconds())
 	case ZstdCompressed:
+		startDecomp := time.Now()
 		sz := pe.RawSize
 
 		uncomp := buffers.Get(int(sz))
@@ -145,11 +151,13 @@ func (d *ExtentReader) fetchExtent(
 		buffers.Return(rawData)
 
 		rangeData = uncomp
+		compressionOverhead.Add(time.Since(startDecomp).Seconds())
 	default:
 		return RangeData{}, fmt.Errorf("unknown flags value: %d", pe.Flags)
 	}
 
 	src := MapRangeData(pe.Extent, rangeData)
 
+	readProcessing.Add(time.Since(startFetch).Seconds())
 	return src, nil
 }

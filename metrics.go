@@ -77,6 +77,16 @@ var (
 		Name: "lsvd_extent_cache_hits",
 		Help: "Number of times the extent cache contained the entry",
 	})
+
+	readProcessing = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_read_processing",
+		Help: "How many additional seconds is used by processing read requests",
+	})
+
+	compressionOverhead = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_compression_read_overhead",
+		Help: "How many additional seconds is added by decompressing on reads",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {
@@ -89,6 +99,12 @@ func counterAsDuration(c prometheus.Counter) time.Duration {
 	var m dto.Metric
 	c.Write(&m)
 	return time.Duration(m.Counter.GetValue() * float64(time.Second))
+}
+
+func counterAsSeconds(c prometheus.Counter) float64 {
+	var m dto.Metric
+	c.Write(&m)
+	return m.Counter.GetValue()
 }
 
 func timeTotalValue(c prometheus.Histogram) time.Duration {
@@ -124,5 +140,7 @@ func LogMetrics(log hclog.Logger) {
 		"blocks-read", counterValue(blocksRead),
 		"block-write-latency", timeAvgValue(blocksWriteLatency),
 		"block-read-latency", timeAvgValue(blocksReadLatency),
+		"compression-overhead", counterAsSeconds(compressionOverhead),
+		"read-processing", counterAsSeconds(readProcessing),
 	)
 }
