@@ -58,7 +58,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 
 	d.log.Debug("extent header info", "count", hdr.ExtentCount, "data-begin", hdr.DataOffset)
 
-	segTrack := &Segment{}
+	stats := &SegmentStats{}
 
 	for i := uint32(0); i < hdr.ExtentCount; i++ {
 		var eh ExtentHeader
@@ -68,11 +68,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 			return err
 		}
 
-		segTrack.Size += uint64(eh.Blocks)
-		segTrack.Used += uint64(eh.Blocks)
-
-		segTrack.TotalBytes += eh.Size
-		segTrack.UsedBytes += eh.Size
+		stats.Blocks += uint64(eh.Blocks)
 
 		eh.Offset += hdr.DataOffset
 
@@ -86,6 +82,8 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 
 		d.s.UpdateUsage(d.log, seg, affected)
 	}
+
+	d.s.Create(seg, stats)
 
 	return nil
 }
