@@ -60,6 +60,7 @@ func logBlocks(log hclog.Logger, msg string, idx LBA, data []byte) {
 }
 
 func (n *nbdWrapper) Idle() {
+	return
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
