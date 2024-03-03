@@ -3,7 +3,6 @@ package lsvd
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
@@ -74,14 +73,12 @@ func (d *ExtentReader) fetchData(ctx context.Context, seg SegmentId, data []byte
 		openSegments.Inc()
 	}
 
-	n, err := ci.ReadAt(data, off)
+	_, err := ci.ReadAt(data, off)
 	if err != nil {
 		return nil
 	}
 
-	if n != len(data) {
-		return io.ErrShortBuffer
-	}
+	// We don't check the size because the last chunk might not be a full chunk.
 
 	return nil
 }
