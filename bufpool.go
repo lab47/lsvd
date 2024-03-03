@@ -16,7 +16,6 @@ func (p *bufPool) Get(sz int) []byte {
 			buf = make([]byte, smallBuffer)
 		} else {
 			buf = v.([]byte)
-			clear(buf)
 		}
 
 		return buf[:sz]
