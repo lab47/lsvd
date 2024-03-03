@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/mode"
 )
 
 type Segments struct {
@@ -84,8 +85,10 @@ func (s *Segments) UpdateUsage(log hclog.Logger, self SegmentId, affected []Part
 					continue
 				}
 
-				if o, ok := seg.detectedCleared(rng); ok {
-					log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
+				if mode.Debug() {
+					if o, ok := seg.detectedCleared(rng); ok {
+						log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
+					}
 				}
 				seg.cleared = append(seg.cleared, rng)
 				seg.Used -= uint64(rng.Blocks)
