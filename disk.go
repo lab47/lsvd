@@ -460,7 +460,9 @@ func (d *Disk) readOneExtent(
 		return adjusted, nil
 	}
 
-	rawData := buffers.Get(int(pe.ExtentLocation.Size))
+	inflateCache.Inc()
+
+	rawData := buffers.Get(int(pe.Size))
 
 	err = FillFromeCache(rawData, cps)
 	if err != nil {
@@ -629,7 +631,7 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 		blocksWriteLatency.Observe(time.Since(start).Seconds())
 	}()
 
-	blocksWritten.Add(float64(data.Extent.Blocks))
+	blocksWritten.Add(float64(data.Blocks))
 
 	iops.Inc()
 

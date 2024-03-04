@@ -97,6 +97,11 @@ var (
 		Name: "lsvd_responses_write",
 		Help: "How many responses are replied to with write",
 	})
+
+	inflateCache = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_cache_inflate",
+		Help: "How often values from the cache are inflated to memory",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {
@@ -146,6 +151,7 @@ func LogMetrics(log hclog.Logger) {
 		"extent-cache-misses", counterValue(extentCacheMiss),
 		"sendfile-responses", counterValue(sendfileResponses),
 		"write-responses", counterValue(writeResponses),
+		"cache-inflates", counterValue(inflateCache),
 	)
 
 	log.Info("client stats",
