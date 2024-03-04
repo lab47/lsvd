@@ -6,7 +6,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/pkg/nbd"
 	"github.com/lab47/mode"
@@ -137,31 +136,58 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 		return false, err
 	}
 
-	if cps.fd == nil {
-		return false, nil
-	}
-
 	sc, err := output.SyscallConn()
 	if err != nil {
-		return false, err
-	}
-
-	sc2, err := cps.fd.SyscallConn()
-	if err != nil {
+		n.log.Error("error getting syscall on socket", "error", err)
 		return false, err
 	}
 
 	var written int
-	sc2.Read(func(rfd uintptr) (done bool) {
-		sc.Write(func(wfd uintptr) (done bool) {
+
+	sc.Write(func(wfd uintptr) (done bool) {
+		n.log.Trace("beginning write back procedure")
+		left := len(b)
+
+		if cps.fd == nil {
+			writeResponses.Inc()
+
+			off := 0
+			for left > 0 {
+				written, err = unix.Write(int(wfd), b[off:])
+				left -= written
+				off += written
+
+				n.log.Trace("wrote data back data to nbd directly", "request", cps.size, "written", written)
+			}
+			return true
+		}
+
+		sc2, err := cps.fd.SyscallConn()
+		if err != nil {
+			n.log.Error("error getting syscall on cache", "error", err)
+			return true
+		}
+
+		sc2.Read(func(rfd uintptr) (done bool) {
+			sendfileResponses.Inc()
+
 			off := cps.off
-			written, err = unix.Sendfile(int(wfd), int(rfd), &off, int(cps.size))
+
+			for left > 0 {
+				written, err = unix.Sendfile(int(wfd), int(rfd), &off, left)
+				if err != nil {
+					return true
+				}
+
+				n.log.Trace("sendfile complete", "request", cps.size, "written", written, "left", left)
+				left -= written
+				off += int64(written)
+			}
+
 			return true
 		})
 		return true
 	})
-
-	spew.Dump(written)
 
 	return true, nil
 }

@@ -87,6 +87,16 @@ var (
 		Name: "lsvd_compression_read_overhead",
 		Help: "How many additional seconds is added by decompressing on reads",
 	})
+
+	sendfileResponses = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_responses_sendfile",
+		Help: "How many responses are replied to with sendfile",
+	})
+
+	writeResponses = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_responses_write",
+		Help: "How many responses are replied to with write",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {
@@ -134,6 +144,8 @@ func LogMetrics(log hclog.Logger) {
 		"total-segment-process-time", counterAsDuration(segmentTotalTime),
 		"extent-cache-hits", counterValue(extentCacheHits),
 		"extent-cache-misses", counterValue(extentCacheMiss),
+		"sendfile-responses", counterValue(sendfileResponses),
+		"write-responses", counterValue(writeResponses),
 	)
 
 	log.Info("client stats",
