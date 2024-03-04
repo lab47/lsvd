@@ -516,7 +516,8 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 			flag = Compressed
 		}
 
-		if compressedSize > 0 && compressedSize < extBytes {
+		// Only keep compression greater than 2x
+		if compressedSize > 0 && compressedSize < (extBytes/2) {
 			eh.Flags = flag
 			eh.RawSize = uint32(extBytes)
 			eh.Size = uint64(compressedSize)

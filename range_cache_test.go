@@ -116,6 +116,58 @@ func TestRangeCache(t *testing.T) {
 		r.Equal(byte(2), buf[3])
 	})
 
+	t.Run("can request positions in the cache for an extent", func(t *testing.T) {
+		r := require.New(t)
+		path := filepath.Join(t.TempDir(), "blah")
+
+		var fetchCalls int
+
+		ctx := context.TODO()
+
+		rc, err := NewRangeCache(
+			RangeCacheOptions{
+				Path:      path,
+				MaxSize:   100,
+				ChunkSize: 10,
+				Fetch: func(ctx context.Context, _ SegmentId, data []byte, off int64) error {
+					fetchCalls++
+					r.Len(data, 10)
+
+					switch fetchCalls {
+					case 1:
+						r.Equal(int64(0), off)
+					case 2:
+						r.Equal(int64(10), off)
+					case 3:
+						r.Fail("too many fetch calls")
+					}
+
+					for i := range data {
+						data[i] = byte(i)
+					}
+
+					return nil
+				},
+			},
+		)
+		r.NoError(err)
+
+		defer rc.Close()
+
+		p, err := rc.CachePositions(ctx, nullSeg, 4, 9)
+		r.NoError(err)
+
+		r.Equal(2, fetchCalls)
+
+		r.Len(p, 2)
+
+		r.Equal(int64(9), p[0].off)
+		r.Equal(int64(1), p[0].size)
+
+		r.Equal(int64(10), p[1].off)
+		r.Equal(int64(3), p[1].size)
+	})
+
 	t.Run("discards old chunks when needed", func(t *testing.T) {
 		r := require.New(t)
 		path := filepath.Join(t.TempDir(), "blah")

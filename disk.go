@@ -207,11 +207,18 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 
 	data := b.NewRangeData(rng)
 
-	err := d.ReadExtentInto(ctx, data)
+	cp, err := d.ReadExtentInto(ctx, data)
+	if cp.fd != nil {
+		err = FillFromeCache(data.WriteData(), []CachePosition{cp})
+		if err != nil {
+			return RangeData{}, err
+		}
+	}
+
 	return data, err
 }
 
-func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
+func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePosition, error) {
 	start := time.Now()
 
 	defer func() {
@@ -234,13 +241,13 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
 
 	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
-		return err
+		return CachePosition{}, err
 	}
 
 	// Completely filled range from the write cache
 	if len(remaining) == 0 {
 		d.log.Trace("extent filled entirely from write cache")
-		return nil
+		return CachePosition{}, nil
 	}
 
 	log.Trace("remaining extents needed", "total", len(remaining))
@@ -271,7 +278,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
 		pes, err := d.lba2pba.Resolve(log, h)
 		if err != nil {
 			log.Error("error computing opbas", "error", err, "rng", h)
-			return err
+			return CachePosition{}, err
 		}
 
 		if len(pes) == 0 {
@@ -282,6 +289,20 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
 			// nothing for range, and since the data is pre-zero'd, we
 			// don't need to clear anything here.
 		} else {
+			// Pure read from one extent, optimize!
+			if len(remaining) == 1 && remaining[0] == rng && len(pes) == 1 && pes[0].Flags != Empty {
+				// Invariants: remaining[0] == rng == data.Extent
+				// Invariants: pes[0].Live fully covers remaining[0]
+				pe := pes[0]
+				ld := d.readDisks[pe.Disk]
+				cps, err := ld.readOneExtent(ctx, &pe, rng, data)
+				if err != nil {
+					return CachePosition{}, err
+				}
+
+				return cps, nil
+			}
+
 			for _, pe := range pes {
 				if pe.Size == 0 {
 					if v, ok := data.SubRange(pe.Live); ok {
@@ -335,11 +356,11 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) error {
 		ld := d.readDisks[o.pe.Disk]
 		err := ld.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
 		if err != nil {
-			return err
+			return CachePosition{}, err
 		}
 	}
 
-	return nil
+	return CachePosition{}, nil
 }
 
 func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {
@@ -409,6 +430,90 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log hclog.Logger, 
 	return remaining, nil
 }
 
+func (d *Disk) readOneExtent(
+	ctx context.Context,
+	pe *PartialExtent,
+	x Extent,
+	dest RangeData,
+) (CachePosition, error) {
+	src, cps, err := d.er.fetchExtent(ctx, d.log, pe, true)
+	if err != nil {
+		return CachePosition{}, err
+	}
+
+	if len(cps) == 1 {
+		// There are a few elements, let's write them out so we keep them straight:
+		// pe.Extent is the data covered by cps[0]
+		// pe.Live is sub-range of pe.Extent that is only the data to consider
+		// x is the data the user requests, and it's contained fully within pe.Live
+
+		adjusted := cps[0]
+
+		// go from extent to live
+		adjusted.off += (int64(pe.Live.LBA-pe.LBA) * BlockSize)
+		adjusted.size = int64(pe.Live.ByteSize())
+
+		// go from live to x
+		adjusted.off += (int64(x.LBA-pe.Live.LBA) * BlockSize)
+		adjusted.size = int64(x.ByteSize())
+
+		return adjusted, nil
+	}
+
+	rawData := buffers.Get(int(pe.ExtentLocation.Size))
+
+	err = FillFromeCache(rawData, cps)
+	if err != nil {
+		return CachePosition{}, err
+	}
+
+	defer d.er.returnData(src)
+
+	// the bytes at the beginning of data are for LBA dataBegin.LBA.
+	// the bytes at the beginning of rawData are for LBA full.LBA.
+	// we want to compute the 2 byte ranges:
+	//   1. the byte range for rng within data
+	//   2. the byte range for rng within rawData
+	// Then we copy the bytes from 2 to 1.
+	overlap, ok := pe.Live.Clamp(x)
+	if !ok {
+		d.log.Error("error clamping required range to usable range", "request", x, "partial", pe.Live)
+		return CachePosition{}, fmt.Errorf("error clamping range")
+	}
+
+	d.log.Trace("preparing to copy data from segment", "request", x, "clamped", overlap)
+
+	// Compute our source range and destination range against overlap
+
+	subDest, ok := dest.SubRange(overlap)
+	if !ok {
+		d.log.Error("error clamping range", "full", pe.Live, "sub", overlap)
+		return CachePosition{}, fmt.Errorf("error clamping range: %s => %s", pe.Live, overlap)
+	}
+
+	subSrc, ok := src.SubRange(overlap)
+	if !ok {
+		d.log.Error("error calculate source subrange",
+			"input", src.Extent, "sub", overlap,
+			"request", x, "usable", pe.Live,
+			"full", pe.Extent,
+		)
+		return CachePosition{}, fmt.Errorf("error calculate source subrange")
+	}
+
+	d.log.Trace("copying segment data",
+		"src", src.Extent,
+		"dest", dest.Extent,
+		"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
+	)
+	n := subDest.Copy(subSrc)
+	if n != subDest.ByteSize() {
+		d.log.Error("error copying data from partial extent", "expected", subDest.ByteSize(), "was", n)
+	}
+
+	return CachePosition{}, nil
+}
+
 func (d *Disk) readPartialExtent(
 	ctx context.Context,
 	pe *PartialExtent,
@@ -416,7 +521,7 @@ func (d *Disk) readPartialExtent(
 	dataRange Extent,
 	dest RangeData,
 ) error {
-	src, err := d.er.fetchExtent(ctx, d.log, pe)
+	src, _, err := d.er.fetchExtent(ctx, d.log, pe, false)
 	if err != nil {
 		return err
 	}

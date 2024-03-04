@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
@@ -41,6 +42,8 @@ type Options struct {
 }
 
 func Handle(log hclog.Logger, conn net.Conn, exports []*Export, options *Options) error {
+	sc, canSc := conn.(syscall.Conn)
+
 	if options == nil {
 		options = &Options{
 			ReadOnly:          false,
@@ -428,13 +431,17 @@ nego:
 				return err
 			}
 
-			n, err := backend.ReadAt(b[:length], int64(offset))
-			if err != nil {
-				return err
-			}
+			if canSc {
+				backend.ReadIntoConn(b[:length], int64(offset), sc)
+			} else {
+				n, err := backend.ReadAt(b[:length], int64(offset))
+				if err != nil {
+					return err
+				}
 
-			if _, err := conn.Write(b[:n]); err != nil {
-				return err
+				if _, err := conn.Write(b[:n]); err != nil {
+					return err
+				}
 			}
 		case TRANSMISSION_TYPE_REQUEST_WRITE:
 			if options.ReadOnly {

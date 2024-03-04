@@ -83,11 +83,47 @@ func (d *ExtentReader) fetchData(ctx context.Context, seg SegmentId, data []byte
 	return nil
 }
 
+func FillFromeCache(d []byte, cps []CachePosition) error {
+	for _, c := range cps {
+		_, err := c.fd.ReadAt(d[:c.size], c.off)
+		if err != nil {
+			return err
+		}
+
+		d = d[c.size:]
+	}
+
+	return nil
+}
+
+func (d *ExtentReader) fetchUncompressedExtent(
+	ctx context.Context,
+	log hclog.Logger,
+	pe *PartialExtent,
+) (RangeData, []CachePosition, error) {
+	startFetch := time.Now()
+
+	addr := pe.ExtentLocation
+
+	cp, err := d.rangeCache.CachePositions(ctx, addr.Segment, int64(addr.Size), int64(addr.Offset))
+	if err != nil {
+		return RangeData{}, nil, err
+	}
+
+	readProcessing.Add(time.Since(startFetch).Seconds())
+	return RangeData{}, cp, nil
+}
+
 func (d *ExtentReader) fetchExtent(
 	ctx context.Context,
 	log hclog.Logger,
 	pe *PartialExtent,
-) (RangeData, error) {
+	cpOptz bool,
+) (RangeData, []CachePosition, error) {
+	if cpOptz && pe.Flags == Uncompressed {
+		return d.fetchUncompressedExtent(ctx, log, pe)
+	}
+
 	startFetch := time.Now()
 
 	addr := pe.ExtentLocation
@@ -96,12 +132,12 @@ func (d *ExtentReader) fetchExtent(
 
 	n, err := d.rangeCache.ReadAt(ctx, addr.Segment, rawData, int64(addr.Offset))
 	if err != nil {
-		return RangeData{}, err
+		return RangeData{}, nil, err
 	}
 
 	if n != len(rawData) {
 		log.Error("didn't read full data", "read", n, "expected", len(rawData), "size", addr.Size)
-		return RangeData{}, fmt.Errorf("short read detected")
+		return RangeData{}, nil, fmt.Errorf("short read detected")
 	}
 
 	var rangeData []byte
@@ -117,11 +153,11 @@ func (d *ExtentReader) fetchExtent(
 
 		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
-			return RangeData{}, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
 		}
 
 		if n != int(sz) {
-			return RangeData{}, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
+			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
 
 		// We're finished with the raw extent data.
@@ -137,18 +173,18 @@ func (d *ExtentReader) fetchExtent(
 
 		d, err := zstd.NewReader(nil)
 		if err != nil {
-			return RangeData{}, err
+			return RangeData{}, nil, err
 		}
 
 		res, err := d.DecodeAll(rawData, uncomp[:0])
 		if err != nil {
-			return RangeData{}, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
 		}
 
 		n := len(res)
 
 		if n != int(sz) {
-			return RangeData{}, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
+			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
 
 		// We're finished with the raw extent data.
@@ -157,11 +193,11 @@ func (d *ExtentReader) fetchExtent(
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
 	default:
-		return RangeData{}, fmt.Errorf("unknown flags value: %d", pe.Flags)
+		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags)
 	}
 
 	src := MapRangeData(pe.Extent, rangeData)
 
 	readProcessing.Add(time.Since(startFetch).Seconds())
-	return src, nil
+	return src, nil, nil
 }

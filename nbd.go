@@ -3,11 +3,14 @@ package lsvd
 import (
 	"context"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/pkg/nbd"
 	"github.com/lab47/mode"
+	"golang.org/x/sys/unix"
 )
 
 type nbdWrapper struct {
@@ -97,13 +100,70 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 	data := MapRangeData(ext, b)
 
-	err := n.d.ReadExtentInto(n.ctx, data)
+	cps, err := n.d.ReadExtentInto(n.ctx, data)
 	if err != nil {
 		n.log.Error("nbd read-at error", "error", err, "block", blk)
 		return 0, err
 	}
 
+	if cps.fd != nil {
+		err = FillFromeCache(b, []CachePosition{cps})
+		if err != nil {
+			return 0, err
+		}
+	}
+
 	return len(b), nil
+}
+
+func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (bool, error) {
+	blk := LBA(off / BlockSize)
+	blocks := uint32(len(b) / BlockSize)
+
+	ext := Extent{LBA: blk, Blocks: blocks}
+
+	n.log.Trace("nbd read-at",
+		"size", len(b), "offset", off,
+		"extent", ext,
+	)
+
+	defer n.buf.Reset()
+
+	data := MapRangeData(ext, b)
+
+	cps, err := n.d.ReadExtentInto(n.ctx, data)
+	if err != nil {
+		n.log.Error("nbd read-at error", "error", err, "block", blk)
+		return false, err
+	}
+
+	if cps.fd == nil {
+		return false, nil
+	}
+
+	sc, err := output.SyscallConn()
+	if err != nil {
+		return false, err
+	}
+
+	sc2, err := cps.fd.SyscallConn()
+	if err != nil {
+		return false, err
+	}
+
+	var written int
+	sc2.Read(func(rfd uintptr) (done bool) {
+		sc.Write(func(wfd uintptr) (done bool) {
+			off := cps.off
+			written, err = unix.Sendfile(int(wfd), int(rfd), &off, int(cps.size))
+			return true
+		})
+		return true
+	})
+
+	spew.Dump(written)
+
+	return true, nil
 }
 
 func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {

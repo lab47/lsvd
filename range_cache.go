@@ -92,7 +92,7 @@ func (r *RangeCache) ReadAt(ctx context.Context, seg SegmentId, buf []byte, off 
 				return 0, err
 			}
 
-			err = r.saveChunk(seg, chunk, chunkData)
+			_, err = r.saveChunk(seg, chunk, chunkData)
 			if err != nil {
 				return 0, err
 			}
@@ -113,6 +113,72 @@ func (r *RangeCache) ReadAt(ctx context.Context, seg SegmentId, buf []byte, off 
 	return tot, nil
 }
 
+type CachePosition struct {
+	fd   *os.File
+	off  int64
+	size int64
+}
+
+func (r *RangeCache) CachePositions(ctx context.Context, seg SegmentId, total, off int64) ([]CachePosition, error) {
+	firstChunk := off / r.chunk
+	lastChunk := (off + total - 1) / r.chunk
+
+	innerOff := off % r.chunk
+
+	chunkData := r.chunkBuf
+
+	var ret []CachePosition
+
+	left := total
+
+	for chunk := firstChunk; chunk <= lastChunk; chunk++ {
+		chunkOff := innerOff
+
+		// it's possible r.chunk is wrong for the last chunk, but because we're only request
+		// extents that fall within the chunk regardless, the bytes left will never run
+		// into the area that isn't actually there.
+		chunkLeft := r.chunk - chunkOff
+
+		var consumed int64
+
+		if chunkLeft >= left {
+			consumed = left
+		} else {
+			consumed = chunkLeft
+		}
+
+		off, ok := r.lru.Get(rangeCacheKey{seg, chunk})
+		if ok {
+			extentCacheHits.Inc()
+		} else {
+			extentCacheMiss.Inc()
+
+			err := r.fetch(ctx, seg, chunkData, chunk*r.chunk)
+			if err != nil {
+				return nil, err
+			}
+
+			off, err = r.saveChunk(seg, chunk, chunkData)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		ret = append(ret, CachePosition{
+			fd:   r.f,
+			off:  off + innerOff,
+			size: consumed,
+		})
+
+		left -= consumed
+
+		// Reset back because we want to read from the front of all future chunks
+		innerOff = 0
+	}
+
+	return ret, nil
+}
+
 func (r *RangeCache) readChunk(seg SegmentId, chunk int64, data []byte) (bool, error) {
 	off, ok := r.lru.Get(rangeCacheKey{seg, chunk})
 	if !ok {
@@ -131,41 +197,41 @@ func (r *RangeCache) readChunk(seg SegmentId, chunk int64, data []byte) (bool, e
 	return true, nil
 }
 
-func (r *RangeCache) saveChunk(seg SegmentId, chunk int64, data []byte) error {
+func (r *RangeCache) saveChunk(seg SegmentId, chunk int64, data []byte) (int64, error) {
 	if r.lru.Len() < int(r.max) {
 		off, err := r.f.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		n, err := r.f.Write(data)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		if n != len(data) {
-			return io.ErrShortWrite
+			return 0, io.ErrShortWrite
 		}
 
 		r.lru.Add(rangeCacheKey{seg, chunk}, off)
-		return nil
+		return off, nil
 	}
 
 	_, off, ok := r.lru.RemoveOldest()
 	if !ok {
-		return fmt.Errorf("misused lru is empty")
+		return 0, fmt.Errorf("misused lru is empty")
 	}
 
 	n, err := r.f.WriteAt(data, off)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if n != len(data) {
-		return io.ErrShortWrite
+		return 0, io.ErrShortWrite
 	}
 
 	r.lru.Add(rangeCacheKey{seg, chunk}, off)
 
-	return nil
+	return off, nil
 }
