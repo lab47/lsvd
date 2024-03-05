@@ -50,6 +50,9 @@ func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
 
 	d.SetAfterNS(w.AfterNS)
 
+	// Start a GC cycle on start.
+	w.BeginGC()
+
 	return w
 }
 
@@ -79,6 +82,9 @@ func (n *nbdWrapper) Idle() {
 			n.ci.Close()
 			n.ci = nil
 			n.log.Info("finished GC copy process")
+
+			// Begin another one to try and catch up
+			n.BeginGC()
 		}
 	}
 }
@@ -216,7 +222,7 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	return len(b), nil
 }
 
-func (n *nbdWrapper) AfterNS(_ SegmentId) {
+func (n *nbdWrapper) BeginGC() {
 	ctx := context.Background()
 
 	defer n.buf.Reset()
@@ -243,6 +249,10 @@ func (n *nbdWrapper) AfterNS(_ SegmentId) {
 	n.log.Info("starting GC", "segment", seg)
 
 	n.ci = ci
+}
+
+func (n *nbdWrapper) AfterNS(_ SegmentId) {
+	n.BeginGC()
 }
 
 func (n *nbdWrapper) ZeroAt(off, size int64) error {
