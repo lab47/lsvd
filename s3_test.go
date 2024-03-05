@@ -17,6 +17,8 @@ import (
 )
 
 func TestS3(t *testing.T) {
+	monoRead := ulid.DefaultEntropy()
+
 	host := os.Getenv("S3_URL")
 	if host == "" {
 		t.Skip("no s3 url provided to test with")

@@ -2,7 +2,6 @@ package lsvd
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -35,7 +34,7 @@ type Disk struct {
 
 	prevCache *PreviousCache
 
-	curSeq ulid.ULID
+	curSeq SegmentId
 
 	lba2pba *ExtentMap
 	er      *ExtentReader
@@ -170,19 +169,17 @@ func (r *PartialExtent) String() string {
 	return fmt.Sprintf("%s (%s): %s %d:%d", r.Live, r.Extent, r.Segment, r.Offset, r.Size)
 }
 
-var monoRead = ulid.Monotonic(rand.Reader, 2)
-
-func (d *Disk) nextSeq() (ulid.ULID, error) {
+func (d *Disk) nextSeq() (SegmentId, error) {
 	if d.SeqGen != nil {
-		return d.SeqGen(), nil
+		return SegmentId(d.SeqGen()), nil
 	}
 
-	ul, err := ulid.New(ulid.Now(), monoRead)
+	ul, err := ulid.New(ulid.Now(), ulid.DefaultEntropy())
 	if err != nil {
-		return ulid.ULID{}, err
+		return SegmentId{}, err
 	}
 
-	return ul, nil
+	return SegmentId(ul), nil
 }
 
 func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {

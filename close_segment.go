@@ -26,7 +26,7 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 }
 
 func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
-	segId := SegmentId(d.curSeq)
+	segId := d.curSeq
 
 	s := time.Now()
 	oc := d.curOC
@@ -37,7 +37,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		return nil, err
 	}
 
-	d.log.Debug("starting goroutine to close segment")
+	d.log.Info("flushing segment to storage", "segment", segId)
 
 	d.prevCache.SetWhenClear(oc)
 

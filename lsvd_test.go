@@ -1040,7 +1040,7 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		origSeq := ulid.MustNew(ulid.Now(), monoRead)
+		origSeq := ulid.MustNew(ulid.Now(), ulid.DefaultEntropy())
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
 			return origSeq
