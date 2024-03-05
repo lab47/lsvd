@@ -84,7 +84,7 @@ func (n *nbdWrapper) Idle() {
 			n.log.Info("finished GC copy process")
 
 			// Begin another one to try and catch up
-			n.BeginGC()
+			n.beginGC(n.ctx)
 		}
 	}
 }
@@ -225,10 +225,14 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 func (n *nbdWrapper) BeginGC() {
 	ctx := context.Background()
 
-	defer n.buf.Reset()
-
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	n.beginGC(ctx)
+}
+
+func (n *nbdWrapper) beginGC(ctx context.Context) {
+	defer n.buf.Reset()
 
 	if n.ci != nil {
 		n.log.Debug("currently mid-GC, not starting a new one")
