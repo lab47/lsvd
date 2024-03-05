@@ -7,6 +7,7 @@ import (
 	"os"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/sys/unix"
 )
 
 type rangeCacheKey struct {
@@ -24,6 +25,8 @@ type RangeCache struct {
 	lru *lru.Cache[rangeCacheKey, int64]
 
 	chunkBuf []byte
+
+	cacheRegion []byte
 }
 
 type RangeCacheOptions struct {
@@ -50,6 +53,13 @@ func NewRangeCache(opts RangeCacheOptions) (*RangeCache, error) {
 		return nil, err
 	}
 
+	fd := f.Fd()
+
+	data, err := unix.Mmap(int(fd), 0, int(opts.MaxSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		return nil, err
+	}
+
 	rc := &RangeCache{
 		path:  opts.Path,
 		f:     f,
@@ -59,12 +69,15 @@ func NewRangeCache(opts RangeCacheOptions) (*RangeCache, error) {
 
 		lru:      l,
 		chunkBuf: make([]byte, opts.ChunkSize),
+
+		cacheRegion: data,
 	}
 
 	return rc, nil
 }
 
 func (r *RangeCache) Close() error {
+	unix.Munmap(r.cacheRegion)
 	return r.f.Close()
 }
 
@@ -79,10 +92,7 @@ func (r *RangeCache) ReadAt(ctx context.Context, seg SegmentId, buf []byte, off 
 	chunkData := r.chunkBuf
 
 	for chunk := firstChunk; chunk <= lastChunk; chunk++ {
-		ok, err := r.readChunk(seg, chunk, chunkData)
-		if err != nil {
-			return 0, err
-		}
+		ok, mem := r.memChunk(seg, chunk)
 
 		if !ok {
 			extentCacheMiss.Inc()
@@ -96,11 +106,13 @@ func (r *RangeCache) ReadAt(ctx context.Context, seg SegmentId, buf []byte, off 
 			if err != nil {
 				return 0, err
 			}
+
+			mem = chunkData
 		} else {
 			extentCacheHits.Inc()
 		}
 
-		copied := copy(buf, chunkData[innerOff:])
+		copied := copy(buf, mem[innerOff:])
 
 		if copied < len(buf) {
 			buf = buf[copied:]
@@ -177,6 +189,15 @@ func (r *RangeCache) CachePositions(ctx context.Context, seg SegmentId, total, o
 	}
 
 	return ret, nil
+}
+
+func (r *RangeCache) memChunk(seg SegmentId, chunk int64) (bool, []byte) {
+	off, ok := r.lru.Get(rangeCacheKey{seg, chunk})
+	if !ok {
+		return false, nil
+	}
+
+	return true, r.cacheRegion[off : off+r.chunk]
 }
 
 func (r *RangeCache) readChunk(seg SegmentId, chunk int64, data []byte) (bool, error) {
