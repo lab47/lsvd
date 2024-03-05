@@ -391,10 +391,20 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 		d.Close(ctx)
 	}()
 
-	l, err := net.Listen("tcp", opts.Addr)
-	if err != nil {
-		log.Error("error listening on addr", "error", err, "addr", opts.Addr)
-		os.Exit(1)
+	var l net.Listener
+
+	if strings.HasPrefix(opts.Addr, "unix:") {
+		l, err = net.Listen("unix", opts.Addr[5:])
+		if err != nil {
+			log.Error("error listening on addr", "error", err, "addr", opts.Addr)
+			os.Exit(1)
+		}
+	} else {
+		l, err = net.Listen("tcp", opts.Addr)
+		if err != nil {
+			log.Error("error listening on addr", "error", err, "addr", opts.Addr)
+			os.Exit(1)
+		}
 	}
 
 	go func() {
