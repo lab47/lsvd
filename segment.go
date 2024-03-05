@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/klauspost/compress/zstd"
+	"github.com/lab47/lsvd/pkg/entropy"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
@@ -49,6 +50,8 @@ type SegmentBuilder struct {
 
 	comp    lz4.Compressor
 	useZstd bool
+
+	entropy entropy.Estimator
 }
 
 var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
@@ -467,6 +470,8 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 	return locs, stats, nil
 }
 
+const entropyLimit = 7.0
+
 func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, ExtentHeader, error) {
 	extBytes := ext.ByteSize()
 	if o.buf == nil {
@@ -488,36 +493,51 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 		eh.Flags = Empty
 		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
-		bound := lz4.CompressBlockBound(extBytes)
-
-		if len(o.buf) < bound {
-			o.buf = make([]byte, bound)
+		if o.entropy == nil {
+			o.entropy = entropy.NewEstimator()
 		}
+
+		o.entropy.Reset()
+		o.entropy.Write(ext.ReadData())
+
 		var (
+			useCompression bool
 			compressedSize int
 			err            error
 			flag           byte
 		)
 
-		if false {
-			e, err := zstd.NewWriter(nil)
-			if err != nil {
-				return nil, eh, err
-			}
-			res := e.EncodeAll(ext.ReadData(), o.buf[:0])
+		if o.entropy.Value() <= entropyLimit {
+			bound := lz4.CompressBlockBound(extBytes)
 
-			compressedSize = len(res)
-			flag = ZstdCompressed
-		} else {
-			compressedSize, err = o.comp.CompressBlock(ext.ReadData(), o.buf)
-			if err != nil {
-				return nil, eh, err
+			if len(o.buf) < bound {
+				o.buf = make([]byte, bound)
 			}
-			flag = Compressed
+
+			if false {
+				e, err := zstd.NewWriter(nil)
+				if err != nil {
+					return nil, eh, err
+				}
+				res := e.EncodeAll(ext.ReadData(), o.buf[:0])
+
+				compressedSize = len(res)
+				flag = ZstdCompressed
+			} else {
+				compressedSize, err = o.comp.CompressBlock(ext.ReadData(), o.buf)
+				if err != nil {
+					return nil, eh, err
+				}
+				flag = Compressed
+			}
+
+			// Only keep compression greater than 1.5x
+			if compressedSize > 0 && compressedSize < ((extBytes*3)/2) {
+				useCompression = true
+			}
 		}
 
-		// Only keep compression greater than 2x
-		if compressedSize > 0 && compressedSize < (extBytes/2) {
+		if useCompression {
 			eh.Flags = flag
 			eh.RawSize = uint32(extBytes)
 			eh.Size = uint64(compressedSize)
