@@ -242,7 +242,7 @@ func (n *nbdWrapper) BeginGC() {
 	}
 
 	if ci == nil {
-		n.log.Debug("no segments for GC detected")
+		n.log.Info("no segments for GC detected")
 		return
 	}
 
