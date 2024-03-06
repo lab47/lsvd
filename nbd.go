@@ -49,9 +49,6 @@ func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) nbd.Backend {
 
 	d.SetAfterNS(w.AfterNS)
 
-	// Start a GC cycle on start.
-	w.BeginGC()
-
 	return w
 }
 
@@ -81,9 +78,6 @@ func (n *nbdWrapper) Idle() {
 			n.ci.Close()
 			n.ci = nil
 			n.log.Info("finished GC copy process")
-
-			// Begin another one to try and catch up
-			n.beginGC(n.ctx)
 		}
 	}
 }
