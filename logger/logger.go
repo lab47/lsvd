@@ -625,7 +625,7 @@ func appendValue(v slog.Value, dst []byte) []byte {
 	case slog.KindInt64:
 		return strconv.AppendInt(dst, v.Int64(), 10)
 	case slog.KindUint64:
-		return strconv.AppendUint(dst, uint64(v.Int64()), 10)
+		return strconv.AppendUint(dst, v.Uint64(), 10)
 	case slog.KindFloat64:
 		return strconv.AppendFloat(dst, v.Float64(), 'g', -1, 64)
 	case slog.KindBool:
