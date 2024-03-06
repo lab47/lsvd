@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/klauspost/compress/zstd"
+	"github.com/lab47/lsvd/logger"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
@@ -18,7 +18,7 @@ type ExtentReader struct {
 	rangeCache   *RangeCache
 }
 
-func NewExtentReader(log hclog.Logger, path string, sa SegmentAccess) (*ExtentReader, error) {
+func NewExtentReader(log logger.Logger, path string, sa SegmentAccess) (*ExtentReader, error) {
 	openSegments, err := lru.NewWithEvict[SegmentId, SegmentReader](
 		256, func(key SegmentId, value SegmentReader) {
 			openSegments.Dec()
@@ -98,7 +98,7 @@ func FillFromeCache(d []byte, cps []CachePosition) error {
 
 func (d *ExtentReader) fetchUncompressedExtent(
 	ctx context.Context,
-	log hclog.Logger,
+	log logger.Logger,
 	pe *PartialExtent,
 ) (RangeData, []CachePosition, error) {
 	startFetch := time.Now()
@@ -116,7 +116,7 @@ func (d *ExtentReader) fetchUncompressedExtent(
 
 func (d *ExtentReader) fetchExtent(
 	ctx context.Context,
-	log hclog.Logger,
+	log logger.Logger,
 	pe *PartialExtent,
 	cpOptz bool,
 ) (RangeData, []CachePosition, error) {

@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/pkg/errors"
 )
 
@@ -149,7 +149,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 
 	defer f.Close()
 
-	d.log.Trace("reloading lba map from head.map")
+	d.log.Debug("reloading lba map from head.map")
 
 	m, err := processLBAMap(d.log, f)
 	if err != nil {
@@ -180,7 +180,7 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(log hclog.Logger, f io.Reader) (*ExtentMap, error) {
+func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, error) {
 	m := NewExtentMap()
 
 	for {

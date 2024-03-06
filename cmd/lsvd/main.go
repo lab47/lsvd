@@ -2,12 +2,13 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"os"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/cli"
+	"github.com/lab47/lsvd/logger"
 )
 
 var (
@@ -22,21 +23,13 @@ var (
 )
 
 func main() {
-	level := hclog.Info
+	level := slog.LevelInfo
 
 	if os.Getenv("LSVD_DEBUG") != "" {
-		level = hclog.Trace
+		level = slog.LevelDebug
 	}
 
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "lsvd",
-		Level: level,
-		Color: hclog.AutoColor,
-
-		IndependentLevels: true,
-
-		ColorHeaderAndFields: true,
-	})
+	log := logger.New(level)
 
 	log.Debug("log level configured", "level", level)
 

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/pkg/errors"
 )
 
@@ -41,7 +41,7 @@ type Options struct {
 	SupportsMultiConn  bool
 }
 
-func Handle(log hclog.Logger, conn net.Conn, exports []*Export, options *Options) error {
+func Handle(log logger.Logger, conn net.Conn, exports []*Export, options *Options) error {
 	sc, canSc := conn.(syscall.Conn)
 
 	if options == nil {
@@ -83,9 +83,9 @@ func Handle(log hclog.Logger, conn net.Conn, exports []*Export, options *Options
 		return err
 	}
 
-	log.Trace("client flags", "value", clientFlags)
+	log.Debug("client flags", "value", clientFlags)
 
-	log.Trace("sent negotation header, reading options")
+	log.Debug("sent negotation header, reading options")
 
 	var export *Export
 	var backend Backend
@@ -101,7 +101,7 @@ nego:
 			return ErrInvalidMagic
 		}
 
-		log.Trace("negoation option", "id", optionHeader.ID, "len", optionHeader.Length)
+		log.Debug("negoation option", "id", optionHeader.ID, "len", optionHeader.Length)
 
 		switch optionHeader.ID {
 		case NEGOTIATION_ID_OPTION_INFO, NEGOTIATION_ID_OPTION_GO:

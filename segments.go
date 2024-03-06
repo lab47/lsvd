@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/mode"
 )
 
@@ -70,7 +71,7 @@ func (s *Segments) CreateOrUpdate(segId SegmentId, usedBytes, usedBlocks uint64)
 	}
 }
 
-func (s *Segments) UpdateUsage(log hclog.Logger, self SegmentId, affected []PartialExtent) {
+func (s *Segments) UpdateUsage(log logger.Logger, self SegmentId, affected []PartialExtent) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
 

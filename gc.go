@@ -21,7 +21,7 @@ func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
 		return segId, nil
 	}
 
-	d.log.Trace("copying live data from segment", "seg", segId)
+	d.log.Debug("copying live data from segment", "seg", segId)
 
 	defer ci.Close()
 
@@ -46,7 +46,7 @@ func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterat
 		return SegmentId{}, nil, err
 	}
 
-	d.log.Trace("copying live data from segment", "seg", toGC)
+	d.log.Debug("copying live data from segment", "seg", toGC)
 
 	ci, err := d.CopyIterator(ctx, toGC)
 	if err != nil {
@@ -95,7 +95,7 @@ loop:
 
 		extent := eh.Extent
 
-		c.d.log.Trace("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
+		c.d.log.Debug("considering for copy", "extent", extent, "size", eh.Size, "offset", eh.Offset)
 
 		pes, err := c.d.lba2pba.Resolve(c.d.log, extent)
 		if err != nil {
@@ -104,7 +104,7 @@ loop:
 
 		for _, pe := range pes {
 			if pe.Segment != c.seg {
-				c.d.log.Trace("discarding segment", "extent", extent, "target", pe.Extent, "segment", pe.Segment, "seg", c.seg)
+				c.d.log.Debug("discarding segment", "extent", extent, "target", pe.Extent, "segment", pe.Segment, "seg", c.seg)
 				continue loop
 			}
 		}
@@ -148,7 +148,7 @@ loop:
 				view = uncomp
 			}
 
-			c.d.log.Trace("copying extent", "extent", extent, "view", len(view))
+			c.d.log.Debug("copying extent", "extent", extent, "view", len(view))
 
 			err = c.d.WriteExtent(ctx, MapRangeData(eh.Extent, view))
 			if err != nil {

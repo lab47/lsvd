@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -19,9 +20,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/lab47/lsvd/logger"
+
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/cleo"
 	"github.com/lab47/lsvd"
 	"github.com/lab47/lsvd/pkg/nbd"
@@ -33,7 +35,7 @@ import (
 )
 
 type CLI struct {
-	log hclog.Logger
+	log logger.Logger
 
 	lc *cli.CLI
 }
@@ -43,7 +45,7 @@ type Global struct {
 	Debug  bool   `short:"D" long:"debug" description:"enabel debug mode"`
 }
 
-func NewCLI(log hclog.Logger, args []string) (*CLI, error) {
+func NewCLI(log logger.Logger, args []string) (*CLI, error) {
 	c := &CLI{
 		log: log,
 		lc:  cli.NewCLI("lsvd", "alpha"),
@@ -298,7 +300,7 @@ func (c *CLI) volumePack(ctx context.Context, opts struct {
 	log := c.log
 
 	if opts.Debug {
-		log.SetLevel(hclog.Trace)
+		log.SetLevel(slog.LevelDebug)
 	}
 
 	d, err := lsvd.NewDisk(ctx, log, opts.Path,
@@ -360,7 +362,7 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 	name := opts.Name
 
 	if opts.Debug {
-		log.SetLevel(hclog.Trace)
+		log.SetLevel(slog.LevelDebug)
 	}
 
 	d, err := lsvd.NewDisk(ctx, log, path,
@@ -470,7 +472,7 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 	name := opts.Name
 
 	if opts.Debug {
-		log.SetLevel(hclog.Trace)
+		log.SetLevel(slog.LevelDebug)
 	}
 
 	var verify []byte
@@ -660,7 +662,7 @@ func (c *CLI) sha256(ctx context.Context, opts struct {
 	name := opts.Name
 
 	if opts.Debug {
-		log.SetLevel(hclog.Trace)
+		log.SetLevel(slog.LevelDebug)
 	}
 
 	d, err := lsvd.NewDisk(ctx, log, path,

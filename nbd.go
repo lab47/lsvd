@@ -6,14 +6,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lsvd/pkg/nbd"
 	"github.com/lab47/mode"
 	"golang.org/x/sys/unix"
 )
 
 type nbdWrapper struct {
-	log hclog.Logger
+	log logger.Logger
 	ctx context.Context
 	d   *Disk
 
@@ -25,7 +25,7 @@ type nbdWrapper struct {
 
 type NBDBackendOpen struct {
 	Ctx  context.Context
-	Log  hclog.Logger
+	Log  logger.Logger
 	Disk *Disk
 }
 
@@ -37,8 +37,7 @@ func (n *NBDBackendOpen) Close(b nbd.Backend) {}
 
 var _ nbd.Backend = &nbdWrapper{}
 
-func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
-	log = log.Named("nbd")
+func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) nbd.Backend {
 	w := &nbdWrapper{
 		log: log,
 		ctx: ctx,
@@ -56,9 +55,9 @@ func NBDWrapper(ctx context.Context, log hclog.Logger, d *Disk) nbd.Backend {
 	return w
 }
 
-func logBlocks(log hclog.Logger, msg string, idx LBA, data []byte) {
+func logBlocks(log logger.Logger, msg string, idx LBA, data []byte) {
 	for len(data) > 0 {
-		log.Trace(msg, "block", idx, "sum", blkSum(data))
+		log.Debug(msg, "block", idx, "sum", blkSum(data))
 		data = data[BlockSize:]
 		idx++
 	}
@@ -71,7 +70,7 @@ func (n *nbdWrapper) Idle() {
 	if n.ci != nil {
 		defer n.buf.Reset()
 
-		n.log.Trace("processing GC copy iterator")
+		n.log.Debug("processing GC copy iterator")
 		ctx := context.Background()
 		done, err := n.ci.Process(ctx, 100*time.Millisecond)
 		if err != nil {
@@ -95,7 +94,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 	ext := Extent{LBA: blk, Blocks: blocks}
 
-	n.log.Trace("nbd read-at",
+	n.log.Debug("nbd read-at",
 		"size", len(b), "offset", off,
 		"extent", ext,
 	)
@@ -126,7 +125,7 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 
 	ext := Extent{LBA: blk, Blocks: blocks}
 
-	n.log.Trace("nbd read-at",
+	n.log.Debug("nbd read-at",
 		"size", len(b), "offset", off,
 		"extent", ext,
 	)
@@ -150,7 +149,7 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 	var written int
 
 	sc.Write(func(wfd uintptr) (done bool) {
-		n.log.Trace("beginning write back procedure")
+		n.log.Debug("beginning write back procedure")
 		left := len(b)
 
 		if cps.fd == nil {
@@ -162,7 +161,7 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 				left -= written
 				off += written
 
-				n.log.Trace("wrote data back data to nbd directly", "request", cps.size, "written", written)
+				n.log.Debug("wrote data back data to nbd directly", "request", cps.size, "written", written)
 			}
 			return true
 		}
@@ -184,7 +183,7 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 					return true
 				}
 
-				n.log.Trace("sendfile complete", "request", cps.size, "written", written, "left", left)
+				n.log.Debug("sendfile complete", "request", cps.size, "written", written, "left", left)
 				left -= written
 				off += int64(written)
 			}
@@ -198,7 +197,7 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 }
 
 func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
-	n.log.Trace("nbd write-at", "size", len(b), "offset", off)
+	n.log.Debug("nbd write-at", "size", len(b), "offset", off)
 
 	defer n.buf.Reset()
 
@@ -266,7 +265,7 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 
 	numBlocks := uint32(size / BlockSize)
 
-	n.log.Trace("nbd zero-at",
+	n.log.Debug("nbd zero-at",
 		"size", size, "offset", off,
 		"extent", Extent{blk, uint32(numBlocks)},
 	)
@@ -287,7 +286,7 @@ func (n *nbdWrapper) Trim(off, size int64) error {
 
 	numBlocks := uint32(size / BlockSize)
 
-	n.log.Trace("nbd trim",
+	n.log.Debug("nbd trim",
 		"size", size, "offset", off,
 		"extent", Extent{blk, uint32(numBlocks)},
 	)
@@ -329,6 +328,6 @@ func (n *nbdWrapper) Size() (int64, error) {
 func (n *nbdWrapper) Sync() error {
 	defer n.buf.Reset()
 
-	n.log.Trace("nbd sync")
+	n.log.Debug("nbd sync")
 	return n.d.SyncWriteCache()
 }

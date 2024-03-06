@@ -9,15 +9,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/klauspost/compress/zstd"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lsvd/pkg/entropy"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
 )
 
 type SegmentCreator struct {
-	log hclog.Logger
+	log logger.Logger
 
 	builder SegmentBuilder
 
@@ -56,7 +56,7 @@ type SegmentBuilder struct {
 
 var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
 
-func NewSegmentCreator(log hclog.Logger, vol, path string) (*SegmentCreator, error) {
+func NewSegmentCreator(log logger.Logger, vol, path string) (*SegmentCreator, error) {
 	oc := &SegmentCreator{
 		log:     log,
 		volName: vol,
@@ -221,7 +221,7 @@ func (o *SegmentCreator) writeLog(
 // readLog is used to restore the state of the SegmentCreator from the
 // log written to data.
 func (o *SegmentCreator) readLog(f *os.File) error {
-	o.log.Trace("rebuilding memory from log", "path", f.Name())
+	o.log.Debug("rebuilding memory from log", "path", f.Name())
 
 	br := bufio.NewReader(f)
 
@@ -237,7 +237,7 @@ func (o *SegmentCreator) readLog(f *os.File) error {
 			return err
 		}
 
-		o.log.Trace("read extent header", "extent", eh.Extent, "flags", eh.Flags, "raw-size", eh.RawSize)
+		o.log.Debug("read extent header", "extent", eh.Extent, "flags", eh.Flags, "raw-size", eh.RawSize)
 
 		o.builder.totalBlocks += int(eh.Blocks)
 
@@ -302,7 +302,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			return nil, fmt.Errorf("error calculating subrange")
 		}
 
-		o.log.Trace("calculating relevant ranges",
+		o.log.Debug("calculating relevant ranges",
 			"data", rng,
 			"src", srcRng.Live,
 			"dest", subDest.Extent,
@@ -318,7 +318,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 		srcBytes := body[srcRng.Offset:]
 
-		o.log.Trace("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
+		o.log.Debug("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
 
 		var srcData []byte
 
@@ -334,13 +334,13 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			srcBytes = srcBytes[:srcRng.Size]
 
-			o.log.Trace("compressed range", "offset", srcRng.Offset)
+			o.log.Debug("compressed range", "offset", srcRng.Offset)
 
 			if len(o.buf) < int(origSize) {
 				o.buf = make([]byte, origSize)
 			}
 
-			o.log.Trace("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
+			o.log.Debug("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
 
 			n, err := lz4.UncompressBlock(srcBytes, o.buf)
 			if err != nil {
@@ -364,13 +364,13 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			srcBytes = srcBytes[:srcRng.Size]
 
-			o.log.Trace("compressed range", "offset", srcRng.Offset)
+			o.log.Debug("compressed range", "offset", srcRng.Offset)
 
 			if len(o.buf) < int(origSize) {
 				o.buf = make([]byte, origSize)
 			}
 
-			o.log.Trace("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
+			o.log.Debug("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
 
 			d, err := zstd.NewReader(nil)
 			if err != nil {
@@ -405,11 +405,11 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			return nil, fmt.Errorf("error calculating src subrange")
 		}
 
-		o.log.Trace("mapping src range", "rng", subSrc.Extent)
+		o.log.Debug("mapping src range", "rng", subSrc.Extent)
 
 		n := subDest.Copy(subSrc)
 
-		o.log.Trace("copied range", "bytes", n, "blocks", n/BlockSize)
+		o.log.Debug("copied range", "bytes", n, "blocks", n/BlockSize)
 	}
 
 	e := time.Since(startFill)
@@ -460,7 +460,7 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 	if o.logF != nil {
 		o.logF.Close()
 
-		o.log.Trace("removing log file", "name", o.logF.Name())
+		o.log.Debug("removing log file", "name", o.logF.Name())
 		err = os.Remove(o.logF.Name())
 		if err != nil {
 			o.log.Error("error removing log file", "error", err)
@@ -472,7 +472,7 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 
 const entropyLimit = 7.0
 
-func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, ExtentHeader, error) {
+func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeData) ([]byte, ExtentHeader, error) {
 	extBytes := ext.ByteSize()
 	if o.buf == nil {
 		o.buf = make([]byte, extBytes*2)
@@ -544,7 +544,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 
 			data = o.buf[:compressedSize]
 
-			log.Trace("writing compressed range",
+			log.Debug("writing compressed range",
 				"offset", o.offset,
 				"size", eh.Size,
 				"input-size", eh.RawSize,
@@ -557,7 +557,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 
 			data = ext.ReadData()
 
-			log.Trace("writing uncompressed range",
+			log.Debug("writing uncompressed range",
 				"offset", o.offset,
 				"size", eh.Size,
 				"raw-size", eh.RawSize,
@@ -583,7 +583,7 @@ func (o *SegmentBuilder) WriteExtent(log hclog.Logger, ext RangeData) ([]byte, E
 	return data, eh, nil
 }
 
-func (o *SegmentBuilder) Flush(ctx context.Context, log hclog.Logger,
+func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 	sa SegmentAccess, seg SegmentId, volName string,
 ) ([]ExtentLocation, *SegmentStats, error) {
 	start := time.Now()

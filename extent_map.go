@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lsvd/pkg/treemap"
 	"github.com/lab47/mode"
 )
@@ -35,7 +35,7 @@ func (e *ExtentMap) Iterator() Iterator {
 	return Iterator{ForwardIterator: e.m.Iterator()}
 }
 
-func (e *ExtentMap) Populate(log hclog.Logger, o *ExtentMap, diskId uint16) error {
+func (e *ExtentMap) Populate(log logger.Logger, o *ExtentMap, diskId uint16) error {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		loc := i.Value().ExtentLocation
 		loc.Disk = diskId
@@ -72,13 +72,13 @@ func (m *ExtentMap) checkExtent(e Extent) Extent {
 	return e
 }
 
-func (e *ExtentMap) UpdateBatch(log hclog.Logger, entries []ExtentLocation, segId SegmentId, s *Segments) error {
+func (e *ExtentMap) UpdateBatch(log logger.Logger, entries []ExtentLocation, segId SegmentId, s *Segments) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	for _, ent := range entries {
 		if mode.Debug() {
-			log.Trace("updating read map", "extent", ent.Extent)
+			log.Debug("updating read map", "extent", ent.Extent)
 		}
 		affected, err := e.update(log, ent)
 		if err != nil {
@@ -91,14 +91,14 @@ func (e *ExtentMap) UpdateBatch(log hclog.Logger, entries []ExtentLocation, segI
 	return nil
 }
 
-func (e *ExtentMap) Update(log hclog.Logger, pba ExtentLocation) ([]PartialExtent, error) {
+func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	return e.update(log, pba)
 }
 
-func (e *ExtentMap) update(log hclog.Logger, pba ExtentLocation) ([]PartialExtent, error) {
+func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
 	var (
 		toDelete []LBA
 		toAdd    []*PartialExtent
@@ -113,7 +113,7 @@ func (e *ExtentMap) update(log hclog.Logger, pba ExtentLocation) ([]PartialExten
 
 	e.checkExtent(rng)
 
-	log.Trace("triggered update", "extent", rng)
+	log.Debug("triggered update", "extent", rng)
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
@@ -123,7 +123,7 @@ loop:
 			break
 		}
 
-		log.Trace("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
+		log.Debug("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
 
 		cur := i.Value()
 
@@ -131,7 +131,7 @@ loop:
 
 		coverage := cur.Live.Cover(rng)
 
-		log.Trace("considering",
+		log.Debug("considering",
 			"a", orig, "b", rng,
 			"a-sub-b", coverage,
 		)
@@ -213,7 +213,7 @@ loop2:
 
 		orig := cur.Live
 
-		log.Trace("considering",
+		log.Debug("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)
@@ -248,7 +248,7 @@ loop2:
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, cur)
-			log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Live)
+			log.Debug("pivoting range", "pivot", pivot, "from", old, "to", cur.Live)
 			e.checkExtent(cur.Live)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
@@ -256,19 +256,19 @@ loop2:
 	}
 
 	for _, lba := range toDelete {
-		log.Trace("deleting range", "lba", lba)
+		log.Debug("deleting range", "lba", lba)
 		e.m.Del(lba)
 	}
 
 	for _, pba := range toAdd {
 		e.checkExtent(pba.Live)
-		log.Trace("adding range", "rng", pba.Live)
+		log.Debug("adding range", "rng", pba.Live)
 		e.m.Set(pba.Live.LBA, pba)
 	}
 
 	e.checkExtent(rng)
 
-	log.Trace("adding read range", "range", rng)
+	log.Debug("adding read range", "range", rng)
 	e.m.Set(rng.LBA, &PartialExtent{
 		ExtentLocation: pba,
 
@@ -286,7 +286,7 @@ loop2:
 	return affected, nil
 }
 
-func (e *ExtentMap) Validate(log hclog.Logger) error {
+func (e *ExtentMap) Validate(log logger.Logger) error {
 	var prev *PartialExtent
 
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
@@ -334,7 +334,7 @@ func (e *ExtentMap) Render() string {
 	return strings.Join(parts, " ")
 }
 
-func (e *ExtentMap) Resolve(log hclog.Logger, rng Extent) ([]PartialExtent, error) {
+func (e *ExtentMap) Resolve(log logger.Logger, rng Extent) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -349,7 +349,7 @@ loop:
 
 		cur := i.Value()
 
-		log.Trace("consider for resolve", "cur", cur.Live, "against", rng)
+		log.Debug("consider for resolve", "cur", cur.Live, "against", rng)
 
 		switch cur.Live.Cover(rng) {
 		case CoverPartly:
@@ -370,7 +370,7 @@ loop2:
 
 		orig := cur.Live
 
-		log.Trace("considering",
+		log.Debug("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)

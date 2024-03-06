@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
@@ -27,7 +27,7 @@ type S3Access struct {
 	bucket   string
 }
 
-func NewS3Access(log hclog.Logger, host, bucket string, cfg aws.Config) (*S3Access, error) {
+func NewS3Access(log logger.Logger, host, bucket string, cfg aws.Config) (*S3Access, error) {
 	sc := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true
 		o.BaseEndpoint = &host

@@ -3,13 +3,13 @@ package lsvd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
-	"github.com/lab47/hclogx"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/mode"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
@@ -24,7 +24,7 @@ const (
 
 type Disk struct {
 	SeqGen func() ulid.ULID
-	log    hclog.Logger
+	log    logger.Logger
 	path   string
 
 	size     int64
@@ -49,7 +49,7 @@ type Disk struct {
 	readDisks []*Disk
 }
 
-func NewDisk(ctx context.Context, log hclog.Logger, path string, options ...Option) (*Disk, error) {
+func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
 	var o opts
 	o.autoCreate = true
 
@@ -230,11 +230,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	log := d.log
 
-	if mode.Debug() {
-		log = hclogx.NewOpLogger(d.log)
-	}
-
-	log.Trace("attempting to fill request from write cache", "extent", rng)
+	log.Debug("attempting to fill request from write cache", "extent", rng)
 
 	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
@@ -243,17 +239,11 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	// Completely filled range from the write cache
 	if len(remaining) == 0 {
-		d.log.Trace("extent filled entirely from write cache")
+		d.log.Debug("extent filled entirely from write cache")
 		return CachePosition{}, nil
 	}
 
-	log.Trace("remaining extents needed", "total", len(remaining))
-
-	if log.IsTrace() {
-		for _, r := range remaining {
-			log.Trace("remaining", "extent", r)
-		}
-	}
+	log.Debug("remaining extents needed", "total", len(remaining))
 
 	type readRequest struct {
 		pe      PartialExtent
@@ -279,7 +269,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		}
 
 		if len(pes) == 0 {
-			log.Trace("no partial extents found")
+			log.Debug("no partial extents found")
 			if v, ok := data.SubRange(h); ok {
 				clear(v.WriteData())
 			}
@@ -312,7 +302,6 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 				}
 
 				if mode.Debug() && pe.Live.Cover(h) == CoverNone {
-					hclogx.Flush(log)
 					log.Error("resolve returned extent that doesn't cover", "hole", h, "pe", pe.Live)
 				}
 
@@ -334,11 +323,11 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		}
 	}
 
-	if log.IsTrace() {
-		log.Trace("pes needed", "total", len(reqs))
+	if log.Enabled(ctx, slog.LevelDebug) {
+		log.Debug("pes needed", "total", len(reqs))
 
 		for _, o := range reqs {
-			log.Trace("partial-extent needed",
+			log.Debug("partial-extent needed",
 				"segment", o.pe.Segment, "offset", o.pe.Offset, "size", o.pe.Size,
 				"usable", o.pe.Live, "full", o.pe.Extent,
 				"disk-id", o.pe.Disk,
@@ -360,7 +349,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 	return CachePosition{}, nil
 }
 
-func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data RangeData) ([]Extent, error) {
+func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data RangeData) ([]Extent, error) {
 	if d.curOC == nil {
 		return []Extent{data.Extent}, nil
 	}
@@ -372,7 +361,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data Ra
 
 	var remaining []Extent
 
-	log.Trace("write cache used", "request", data.Extent, "used", used)
+	log.Debug("write cache used", "request", data.Extent, "used", used)
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -384,12 +373,12 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log hclog.Logger, data Ra
 		}
 	}
 
-	log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	log.Debug("requesting reads from prev cache", "used", used, "remaining", remaining)
 
 	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }
 
-func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log hclog.Logger, data RangeData, holes []Extent) ([]Extent, error) {
+func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log logger.Logger, data RangeData, holes []Extent) ([]Extent, error) {
 	oc := d.prevCache.Load()
 
 	// If there is no previous cache, bail.
@@ -422,7 +411,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log hclog.Logger, 
 		}
 	}
 
-	log.Trace("write cache didn't find", "input", holes, "holes", remaining)
+	log.Debug("write cache didn't find", "input", holes, "holes", remaining)
 
 	return remaining, nil
 }
@@ -481,7 +470,7 @@ func (d *Disk) readOneExtent(
 		return CachePosition{}, fmt.Errorf("error clamping range")
 	}
 
-	d.log.Trace("preparing to copy data from segment", "request", x, "clamped", overlap)
+	d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
 
 	// Compute our source range and destination range against overlap
 
@@ -501,7 +490,7 @@ func (d *Disk) readOneExtent(
 		return CachePosition{}, fmt.Errorf("error calculate source subrange")
 	}
 
-	d.log.Trace("copying segment data",
+	d.log.Debug("copying segment data",
 		"src", src.Extent,
 		"dest", dest.Extent,
 		"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
@@ -541,7 +530,7 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error clamping range")
 		}
 
-		d.log.Trace("preparing to copy data from segment", "request", x, "clamped", overlap)
+		d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
 
 		// Compute our source range and destination range against overlap
 
@@ -561,7 +550,7 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error calculate source subrange")
 		}
 
-		d.log.Trace("copying segment data",
+		d.log.Debug("copying segment data",
 			"src", src.Extent,
 			"dest", dest.Extent,
 			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,

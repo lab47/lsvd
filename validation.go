@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 )
 
 type extentValidator struct {
@@ -13,7 +13,7 @@ type extentValidator struct {
 	entries []ExtentLocation
 }
 
-func (e *extentValidator) populate(log hclog.Logger, d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
+func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
 	e.sums = map[Extent]string{}
 	e.resi = map[Extent][]PartialExtent{}
 	e.entries = entries
@@ -42,7 +42,7 @@ func (e *extentValidator) populate(log hclog.Logger, d *Disk, oc *SegmentCreator
 	}
 }
 
-func (e *extentValidator) validate(ctx context.Context, log hclog.Logger, d *Disk) {
+func (e *extentValidator) validate(ctx context.Context, log logger.Logger, d *Disk) {
 	entries := e.entries
 
 	d.log.Info("performing extent validation")

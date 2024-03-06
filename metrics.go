@@ -3,7 +3,7 @@ package lsvd
 import (
 	"time"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	dto "github.com/prometheus/client_model/go"
@@ -141,7 +141,7 @@ func timeAvgValue(c prometheus.Histogram) time.Duration {
 	return time.Duration(m.Histogram.GetSampleSum()*float64(time.Second)) / time.Duration(samples)
 }
 
-func LogMetrics(log hclog.Logger) {
+func LogMetrics(log logger.Logger) {
 	log.Info("disk stats",
 		"written-bytes", counterValue(writtenBytes),
 		"segment-bytes", counterValue(segmentsBytes),
