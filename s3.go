@@ -246,7 +246,7 @@ func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg 
 		return err
 	}
 
-	slices.DeleteFunc(segments, func(si SegmentId) bool { return si == seg })
+	segments = slices.DeleteFunc(segments, func(si SegmentId) bool { return si == seg })
 
 	var buf bytes.Buffer
 
