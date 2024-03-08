@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"slices"
 	"sort"
 	"sync"
 
@@ -177,7 +178,7 @@ func (d *Segments) AllDeadSegments() ([]SegmentId, error) {
 	return ret, nil
 }
 
-func (d *Segments) PickSegmentToGC(min float64) (SegmentId, bool, error) {
+func (d *Segments) PickSegmentToGC(log logger.Logger, min float64, skip []SegmentId) (SegmentId, bool, error) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
 
@@ -191,7 +192,14 @@ func (d *Segments) PickSegmentToGC(min float64) (SegmentId, bool, error) {
 			continue
 		}
 
+		if slices.Contains(skip, segId) {
+			continue
+		}
+
 		d := stats.Density()
+
+		log.Trace("segment density", "segment", segId, "density", d)
+
 		if d > min {
 			continue
 		}

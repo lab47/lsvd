@@ -78,7 +78,7 @@ func (e *ExtentMap) UpdateBatch(log logger.Logger, entries []ExtentLocation, seg
 
 	for _, ent := range entries {
 		if mode.Debug() {
-			log.Debug("updating read map", "extent", ent.Extent)
+			log.Trace("updating read map", "extent", ent.Extent)
 		}
 		affected, err := e.update(log, ent)
 		if err != nil {
@@ -113,7 +113,7 @@ func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExte
 
 	e.checkExtent(rng)
 
-	log.Debug("triggered update", "extent", rng)
+	log.Trace("triggered update", "extent", rng)
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
@@ -123,7 +123,7 @@ loop:
 			break
 		}
 
-		log.Debug("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
+		log.Trace("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
 
 		cur := i.Value()
 
@@ -131,7 +131,7 @@ loop:
 
 		coverage := cur.Live.Cover(rng)
 
-		log.Debug("considering",
+		log.Trace("considering",
 			"a", orig, "b", rng,
 			"a-sub-b", coverage,
 		)
@@ -213,7 +213,7 @@ loop2:
 
 		orig := cur.Live
 
-		log.Debug("considering",
+		log.Trace("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)
@@ -256,19 +256,19 @@ loop2:
 	}
 
 	for _, lba := range toDelete {
-		log.Debug("deleting range", "lba", lba)
+		log.Trace("deleting range", "lba", lba)
 		e.m.Del(lba)
 	}
 
 	for _, pba := range toAdd {
 		e.checkExtent(pba.Live)
-		log.Debug("adding range", "rng", pba.Live)
+		log.Trace("adding range", "rng", pba.Live)
 		e.m.Set(pba.Live.LBA, pba)
 	}
 
 	e.checkExtent(rng)
 
-	log.Debug("adding read range", "range", rng)
+	log.Trace("adding read range", "range", rng)
 	e.m.Set(rng.LBA, &PartialExtent{
 		ExtentLocation: pba,
 
@@ -370,7 +370,7 @@ loop2:
 
 		orig := cur.Live
 
-		log.Debug("considering",
+		log.Trace("considering",
 			"a", rng, "b", orig,
 			"a-sub-b", coverage,
 		)

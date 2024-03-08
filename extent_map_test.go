@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/mode"
 
 	"github.com/oklog/ulid/v2"
@@ -14,10 +14,7 @@ import (
 func TestExtentMap(t *testing.T) {
 	t.Logf("build mode: %s", mode.Mode())
 
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "extentmap",
-		Level: hclog.Trace,
-	})
+	log := logger.New(logger.Trace)
 
 	s1 := SegmentId(ulid.MustNew(ulid.Now(), rand.Reader))
 

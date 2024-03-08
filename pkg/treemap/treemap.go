@@ -608,6 +608,9 @@ func (i ForwardIterator[Key, Value]) Key() Key { return i.node.key }
 // Value returns a value at the iterator position
 func (i ForwardIterator[Key, Value]) Value() Value { return i.node.value }
 
+// Value returns a pointer to the value at the iterator position
+func (i ForwardIterator[Key, Value]) ValuePtr() *Value { return &i.node.value }
+
 // ReverseIterator represents a position in a tree map.
 // It is designed to iterate a map in a reverse order.
 // It can point to any position from the one-before-the-start element to the last element.

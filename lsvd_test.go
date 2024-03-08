@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
@@ -87,10 +87,7 @@ func extentEqual(t *testing.T, actual RawBlocks, expected RangeData) {
 }
 
 func TestLSVD(t *testing.T) {
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "lsvdtest",
-		Level: hclog.Trace,
-	})
+	log := logger.New(logger.Trace)
 
 	testUlid := ulid.MustNew(ulid.Now(), rand.Reader)
 
@@ -1031,64 +1028,6 @@ func TestLSVD(t *testing.T) {
 		r.Len(d.s.segments, 2)
 
 		r.Equal(uint64(1), stats.Used)
-	})
-
-	t.Run("gc pulls still used blocks out of the oldest segment and moves them forward", func(t *testing.T) {
-		r := require.New(t)
-
-		tmpdir, err := os.MkdirTemp("", "lsvd")
-		r.NoError(err)
-		defer os.RemoveAll(tmpdir)
-
-		origSeq := ulid.MustNew(ulid.Now(), ulid.DefaultEntropy())
-
-		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
-			return origSeq
-		}))
-		r.NoError(err)
-
-		err = d.WriteExtent(ctx, testExtent.MapTo(0))
-		r.NoError(err)
-
-		err = d.WriteExtent(ctx, testExtent2.MapTo(1))
-		r.NoError(err)
-
-		d.SeqGen = nil
-
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
-
-		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
-		r.NoError(err)
-
-		err = d.CloseSegment(ctx)
-		r.NoError(err)
-
-		gcSeg, err := d.GCOnce(ctx)
-		r.NoError(err)
-
-		r.Equal(SegmentId(origSeq), gcSeg)
-
-		d.Close(ctx)
-
-		// We delete entries AFTER we write the segment that contains the remaints
-		_, err = os.Stat(filepath.Join(tmpdir, "segments", "segment."+origSeq.String()))
-		r.ErrorIs(err, os.ErrNotExist)
-
-		t.Log("reloading disk")
-
-		d2, err := NewDisk(ctx, log, tmpdir)
-		r.NoError(err)
-
-		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
-		r.NoError(err)
-
-		extentEqual(t, testExtent3, x2)
-
-		x2, err = d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
-		r.NoError(err)
-
-		extentEqual(t, testExtent2, x2)
 	})
 
 	t.Run("zero blocks works like an empty write", func(t *testing.T) {

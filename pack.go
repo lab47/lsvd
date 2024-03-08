@@ -33,7 +33,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 
 			if live.Blocks >= 100 {
 				d.log.Debug("writing packed extent (big)", "extent", live.Extent)
-				_, _, err := sb.WriteExtent(d.log, live)
+				_, _, err := sb.WriteExtent(d.log, live.View())
 				if err != nil {
 					return err
 				}
@@ -41,7 +41,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 			}
 		} else {
 			d.log.Debug("writing packed extent (disjoint)", "extent", live.Extent)
-			_, _, err := sb.WriteExtent(d.log, live)
+			_, _, err := sb.WriteExtent(d.log, live.View())
 			if err != nil {
 				return err
 			}
@@ -63,7 +63,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 
 	if live.Blocks > 0 {
 		d.log.Debug("writing packed extent (final)", "extent", live.Extent)
-		_, _, err := sb.WriteExtent(d.log, live)
+		_, _, err := sb.WriteExtent(d.log, live.View())
 		if err != nil {
 			return err
 		}

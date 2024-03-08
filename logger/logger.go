@@ -32,6 +32,14 @@ func (l *LabLogger) SetLevel(level slog.Level) {
 	l.level.Set(level)
 }
 
+func (l *LabLogger) Trace(msg string, args ...any) {
+	l.Log(context.Background(), Trace, msg, args...)
+}
+
+func (l *LabLogger) Is(level slog.Level) bool {
+	return l.Enabled(context.Background(), level)
+}
+
 type HCLogLike struct {
 	implied []slog.Attr
 }
@@ -48,15 +56,27 @@ func New(level slog.Level) Logger {
 	return lab
 }
 
+func Test() Logger {
+	return New(Trace)
+}
+
 var (
-	_levelToBracket = map[slog.Level]string{
-		slog.LevelDebug: "[DEBUG]",
-		slog.LevelInfo:  "[INFO] ",
-		slog.LevelWarn:  "[WARN] ",
-		slog.LevelError: "[ERROR]",
+	Trace = slog.LevelDebug - 4
+	Debug = slog.LevelDebug
+	Info  = slog.LevelInfo
+	Warn  = slog.LevelWarn
+	Error = slog.LevelError
+
+	_levelToName = map[slog.Level]string{
+		Trace:           "TRACE",
+		slog.LevelDebug: "DEBUG",
+		slog.LevelInfo:  "INFO",
+		slog.LevelWarn:  "WARN",
+		slog.LevelError: "ERROR",
 	}
 
 	_levelToColor = map[slog.Level]*color.Color{
+		Trace:           color.New(color.FgHiGreen),
 		slog.LevelDebug: color.New(color.FgHiWhite),
 		slog.LevelInfo:  color.New(color.FgHiBlue),
 		slog.LevelWarn:  color.New(color.FgHiYellow),
@@ -89,17 +109,17 @@ func NewTextHandler(w io.Writer, opts *slog.HandlerOptions) *TextHandler {
 // Enabled reports whether the handler handles records at the given level.
 // The handler ignores records whose level is lower.
 func (h *TextHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return h.commonHandler.enabled(level)
+	return h.enabled(level)
 }
 
 // WithAttrs returns a new [TextHandler] whose attributes consists
 // of h's attributes followed by attrs.
 func (h *TextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &TextHandler{commonHandler: h.commonHandler.withAttrs(attrs)}
+	return &TextHandler{commonHandler: h.withAttrs(attrs)}
 }
 
 func (h *TextHandler) WithGroup(name string) slog.Handler {
-	return &TextHandler{commonHandler: h.commonHandler.withGroup(name)}
+	return &TextHandler{commonHandler: h.withGroup(name)}
 }
 
 // Handle formats its argument [Record] as a single line of space-separated
@@ -139,7 +159,7 @@ func (h *TextHandler) WithGroup(name string) slog.Handler {
 // Each call to Handle results in a single serialized call to
 // io.Writer.Write.
 func (h *TextHandler) Handle(_ context.Context, r slog.Record) error {
-	return h.commonHandler.handle(r)
+	return h.handle(r)
 }
 
 type commonHandler struct {
@@ -260,11 +280,15 @@ func (h *commonHandler) handle(r slog.Record) error {
 	// level
 	key := slog.LevelKey
 	val := r.Level
-
 	str := val.String()
 
+	spec, ok := _levelToName[r.Level]
+	if ok {
+		str = spec
+	}
+
 	str = " [" + str + "]"
-	for len(str) < 8 {
+	for len(str) < 9 {
 		str += " "
 	}
 
@@ -712,8 +736,7 @@ func (s *handleState) appendValue(v slog.Value) {
 		}
 	}()
 
-	var err error
-	err = appendTextValue(s, v)
+	err := appendTextValue(s, v)
 	if err != nil {
 		s.appendError(err)
 	}

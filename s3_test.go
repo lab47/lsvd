@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -27,10 +27,7 @@ func TestS3(t *testing.T) {
 	access := "admin"
 	secret := "password"
 
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "s3access",
-		Level: hclog.Trace,
-	})
+	log := logger.New(logger.Trace)
 
 	ctx := context.Background()
 

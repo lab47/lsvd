@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/lab47/lsvd/logger"
@@ -47,6 +48,10 @@ type Disk struct {
 	afterNS func(SegmentId)
 
 	readDisks []*Disk
+
+	bgmu   sync.Mutex
+	bgCopy *CopyIterator
+	bgDone chan struct{}
 }
 
 func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
@@ -199,6 +204,11 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 	return sc, nil
 }
 
+// Used to test things are setup the way we expect
+func (d *Disk) resolveSegmentAccess(ext Extent) ([]PartialExtent, error) {
+	return d.lba2pba.Resolve(d.log, ext)
+}
+
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	b := B(ctx)
 
@@ -243,7 +253,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		return CachePosition{}, nil
 	}
 
-	log.Debug("remaining extents needed", "total", len(remaining))
+	log.Trace("remaining extents needed", "total", len(remaining))
 
 	type readRequest struct {
 		pe      PartialExtent
@@ -361,7 +371,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 
 	var remaining []Extent
 
-	log.Debug("write cache used", "request", data.Extent, "used", used)
+	log.Trace("write cache used", "request", data.Extent, "used", used)
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -373,7 +383,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		}
 	}
 
-	log.Debug("requesting reads from prev cache", "used", used, "remaining", remaining)
+	log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
 
 	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }

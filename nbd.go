@@ -18,7 +18,9 @@ type nbdWrapper struct {
 	d   *Disk
 
 	mu sync.Mutex
-	ci *CopyIterator
+
+	gcRunning      bool
+	lastCheckpoint time.Time
 
 	buf *Buffers
 }
@@ -64,20 +66,19 @@ func (n *nbdWrapper) Idle() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.ci != nil {
-		defer n.buf.Reset()
+	if n.gcRunning && time.Since(n.lastCheckpoint) > 1*time.Minute {
+		n.lastCheckpoint = time.Now()
 
-		n.log.Debug("processing GC copy iterator")
 		ctx := context.Background()
-		done, err := n.ci.Process(ctx, 100*time.Millisecond)
+
+		more, err := n.d.CheckpointGC(ctx)
 		if err != nil {
-			n.log.Error("error processing GC copy", "error", err)
+			n.log.Error("error checkpointing gc", "error", err)
 		}
 
-		if done {
-			n.ci.Close()
-			n.ci = nil
-			n.log.Info("finished GC copy process")
+		if !more {
+			n.log.Info("detected GC process finished")
+			n.gcRunning = false
 		}
 	}
 }
@@ -225,27 +226,25 @@ func (n *nbdWrapper) BeginGC() {
 }
 
 func (n *nbdWrapper) beginGC(ctx context.Context) {
-	defer n.buf.Reset()
-
-	if n.ci != nil {
+	if n.gcRunning {
 		n.log.Debug("currently mid-GC, not starting a new one")
 		return
 	}
 
-	seg, ci, err := n.d.StartGC(ctx, 0.30)
+	seg, running, err := n.d.GCInBackground(ctx, 0.30)
 	if err != nil {
 		n.log.Error("error starting GC", "error", err)
 		return
 	}
 
-	if ci == nil {
-		n.log.Info("no segments for GC detected")
+	if !running {
 		return
 	}
 
 	n.log.Info("starting GC", "segment", seg)
 
-	n.ci = ci
+	n.lastCheckpoint = time.Now()
+	n.gcRunning = true
 }
 
 func (n *nbdWrapper) AfterNS(_ SegmentId) {

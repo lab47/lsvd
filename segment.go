@@ -142,6 +142,10 @@ func (o *SegmentBuilder) ZeroBlocks(rng Extent) error {
 	return nil
 }
 
+func (o *SegmentCreator) EmptyP() bool {
+	return o.builder.cnt == 0
+}
+
 func (o *SegmentBuilder) ShouldFlush(sizeThreshold int) bool {
 	return o.BodySize() >= sizeThreshold
 }
@@ -302,7 +306,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			return nil, fmt.Errorf("error calculating subrange")
 		}
 
-		o.log.Debug("calculating relevant ranges",
+		o.log.Trace("calculating relevant ranges",
 			"data", rng,
 			"src", srcRng.Live,
 			"dest", subDest.Extent,
@@ -318,7 +322,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 		srcBytes := body[srcRng.Offset:]
 
-		o.log.Debug("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
+		o.log.Trace("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
 
 		var srcData []byte
 
@@ -421,7 +425,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 }
 
 func (o *SegmentCreator) WriteExtent(ext RangeData) error {
-	data, eh, err := o.builder.WriteExtent(o.log, ext)
+	data, eh, err := o.builder.WriteExtent(o.log, ext.View())
 	if err != nil {
 		return err
 	}
@@ -472,14 +476,13 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 
 const entropyLimit = 7.0
 
-func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeData) ([]byte, ExtentHeader, error) {
+func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]byte, ExtentHeader, error) {
 	extBytes := ext.ByteSize()
 	if o.buf == nil {
 		o.buf = make([]byte, extBytes*2)
 	}
 
 	o.totalBlocks += int(ext.Extent.Blocks)
-	o.inputBytes += int64(len(ext.data))
 
 	var data []byte
 
@@ -493,6 +496,9 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeData) ([]byte, 
 		eh.Flags = Empty
 		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
+		input := ext.ReadData()
+		o.inputBytes += int64(len(input))
+
 		if o.entropy == nil {
 			o.entropy = entropy.NewEstimator()
 		}
@@ -550,7 +556,7 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeData) ([]byte, 
 				"input-size", eh.RawSize,
 			)
 
-			o.addToHistogram(float64(len(ext.data)) / float64(len(data)))
+			o.addToHistogram(float64(len(input)) / float64(len(data)))
 		} else {
 			eh.Flags = Uncompressed
 			eh.Size = uint64(extBytes)
@@ -566,7 +572,7 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeData) ([]byte, 
 		}
 
 		o.storageBytes += int64(len(data))
-		o.storageRatio += (float64(len(data)) / float64(len(ext.data)))
+		o.storageRatio += (float64(len(data)) / float64(len(input)))
 
 		n, err := o.body.Write(data)
 		if err != nil {
@@ -641,15 +647,19 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 		return nil, nil, err
 	}
 
-	_, err = io.Copy(f, bytes.NewReader(o.header.Bytes()))
+	n, err := io.Copy(f, bytes.NewReader(o.header.Bytes()))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	_, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
+	stats.TotalBytes += uint64(n)
+
+	n, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
 	if err != nil {
 		return nil, nil, err
 	}
+
+	stats.TotalBytes += uint64(n)
 
 	f.Close()
 
@@ -657,6 +667,10 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 	if err != nil {
 		return nil, nil, err
 	}
+
+	log.Info("segment persistent to storage", "segment", seg, "volume", volName,
+		"blocks", stats.Blocks,
+		"size", stats.TotalBytes)
 
 	return entries, stats, nil
 }

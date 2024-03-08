@@ -7,15 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSegmentCreator(t *testing.T) {
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "octest",
-		Level: hclog.Trace,
-	})
+	log := logger.New(logger.Trace)
 
 	t.Run("logs writes to disk", func(t *testing.T) {
 		r := require.New(t)

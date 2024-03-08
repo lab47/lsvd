@@ -7,8 +7,16 @@ import (
 	"github.com/lab47/mode"
 )
 
+// CloseSegment synchronously closes the current segment, as well as giving
+// any background GC process to finish up first.
 func (d *Disk) CloseSegment(ctx context.Context) error {
-	if d.curOC == nil {
+	d.flushGC(ctx, true)
+
+	if d.curOC == nil || d.curOC.EmptyP() {
+		err := d.cleanupDeletedSegments(ctx)
+		if err != nil {
+			d.log.Error("error cleaning up deleted segments", "error", err)
+		}
 		return nil
 	}
 
@@ -37,7 +45,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		return nil, err
 	}
 
-	d.log.Info("flushing segment to storage", "segment", segId)
+	d.log.Info("flushing segment to storage in background", "segment", segId)
 
 	d.prevCache.SetWhenClear(oc)
 
@@ -57,6 +65,13 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			stats   *SegmentStats
 			err     error
 		)
+
+		// We flush the GC again here because we want any current GC segment to
+		// be added before we're about to upload this one, so that the lba map
+		// stays correct. If we don't do this then any live extents that were shrunk
+		// while we were GC'ing will be written to the lba map AFTER the update that shrank
+		// the extent, corrupting the disk.
+		d.flushGC(ctx, true)
 
 		// We retry because flush does network calls and we want to just keep trying
 		// forever.
@@ -87,7 +102,10 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		d.s.Create(segId, stats)
 
-		d.lba2pba.UpdateBatch(d.log, entries, segId, d.s)
+		err = d.lba2pba.UpdateBatch(d.log, entries, segId, d.s)
+		if err != nil {
+			d.log.Error("error updating lba map", "error", err)
+		}
 
 		d.prevCache.Clear()
 

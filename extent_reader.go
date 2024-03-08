@@ -201,3 +201,86 @@ func (d *ExtentReader) fetchExtent(
 	readProcessing.Add(time.Since(startFetch).Seconds())
 	return src, nil, nil
 }
+
+func (d *ExtentReader) fetchExtentUncached(
+	ctx context.Context,
+	log logger.Logger,
+	pe *PartialExtent,
+	cpOptz bool,
+) (RangeData, []CachePosition, error) {
+	if cpOptz && pe.Flags == Uncompressed {
+		return d.fetchUncompressedExtent(ctx, log, pe)
+	}
+
+	startFetch := time.Now()
+
+	addr := pe.ExtentLocation
+
+	rawData := buffers.Get(int(addr.Size))
+
+	err := d.fetchData(ctx, addr.Segment, rawData, int64(addr.Offset))
+	if err != nil {
+		return RangeData{}, nil, err
+	}
+
+	var rangeData []byte
+
+	switch pe.Flags {
+	case Uncompressed:
+		rangeData = rawData
+	case Compressed:
+		startDecomp := time.Now()
+		sz := pe.RawSize
+
+		uncomp := buffers.Get(int(sz))
+
+		n, err := lz4.UncompressBlock(rawData, uncomp)
+		if err != nil {
+			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+		}
+
+		if n != int(sz) {
+			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
+		}
+
+		// We're finished with the raw extent data.
+		buffers.Return(rawData)
+
+		rangeData = uncomp
+		compressionOverhead.Add(time.Since(startDecomp).Seconds())
+	case ZstdCompressed:
+		startDecomp := time.Now()
+		sz := pe.RawSize
+
+		uncomp := buffers.Get(int(sz))
+
+		d, err := zstd.NewReader(nil)
+		if err != nil {
+			return RangeData{}, nil, err
+		}
+
+		res, err := d.DecodeAll(rawData, uncomp[:0])
+		if err != nil {
+			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+		}
+
+		n := len(res)
+
+		if n != int(sz) {
+			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
+		}
+
+		// We're finished with the raw extent data.
+		buffers.Return(rawData)
+
+		rangeData = uncomp
+		compressionOverhead.Add(time.Since(startDecomp).Seconds())
+	default:
+		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags)
+	}
+
+	src := MapRangeData(pe.Extent, rangeData)
+
+	readProcessing.Add(time.Since(startFetch).Seconds())
+	return src, nil, nil
+}

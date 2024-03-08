@@ -206,6 +206,10 @@ func (r RangeDataView) SubRange(ext Extent) (RangeDataView, bool) {
 	}, true
 }
 
+func (v RangeDataView) EmptyP() bool {
+	return v.r.EmptyP()
+}
+
 func (v RangeDataView) WriteData() []byte {
 	b := v.r.WriteData()
 

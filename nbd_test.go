@@ -7,16 +7,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hashicorp/go-hclog"
+	"github.com/lab47/lsvd/logger"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
 
 func TestNBD(t *testing.T) {
-	log := hclog.New(&hclog.LoggerOptions{
-		Name:  "lsvdtest",
-		Level: hclog.Trace,
-	})
+	log := logger.New(logger.Trace)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
