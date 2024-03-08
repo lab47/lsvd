@@ -187,16 +187,7 @@ func (d *Segments) sortedSegments() []SegmentId {
 	}
 
 	slices.SortFunc(ret, func(a, b SegmentId) int {
-		at := ulid.ULID(a).Time()
-		bt := ulid.ULID(b).Time()
-		switch {
-		case at < bt:
-			return -1
-		case at > bt:
-			return 1
-		default:
-			return 0
-		}
+		return ulid.ULID(a).Compare(ulid.ULID(b))
 	})
 
 	return ret

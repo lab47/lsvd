@@ -6,7 +6,6 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/klauspost/compress/zstd"
 	"github.com/lab47/lsvd/logger"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
@@ -98,7 +97,7 @@ func FillFromeCache(d []byte, cps []CachePosition) error {
 
 func (d *ExtentReader) fetchUncompressedExtent(
 	ctx context.Context,
-	log logger.Logger,
+	_ logger.Logger,
 	pe *PartialExtent,
 ) (RangeData, []CachePosition, error) {
 	startFetch := time.Now()
@@ -120,7 +119,7 @@ func (d *ExtentReader) fetchExtent(
 	pe *PartialExtent,
 	cpOptz bool,
 ) (RangeData, []CachePosition, error) {
-	if cpOptz && pe.Flags == Uncompressed {
+	if cpOptz && pe.Flags() == Uncompressed {
 		return d.fetchUncompressedExtent(ctx, log, pe)
 	}
 
@@ -142,7 +141,7 @@ func (d *ExtentReader) fetchExtent(
 
 	var rangeData []byte
 
-	switch pe.Flags {
+	switch pe.Flags() {
 	case Uncompressed:
 		rangeData = rawData
 	case Compressed:
@@ -165,35 +164,8 @@ func (d *ExtentReader) fetchExtent(
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
-	case ZstdCompressed:
-		startDecomp := time.Now()
-		sz := pe.RawSize
-
-		uncomp := buffers.Get(int(sz))
-
-		d, err := zstd.NewReader(nil)
-		if err != nil {
-			return RangeData{}, nil, err
-		}
-
-		res, err := d.DecodeAll(rawData, uncomp[:0])
-		if err != nil {
-			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
-		}
-
-		n := len(res)
-
-		if n != int(sz) {
-			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
-		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
-
-		rangeData = uncomp
-		compressionOverhead.Add(time.Since(startDecomp).Seconds())
 	default:
-		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags)
+		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags())
 	}
 
 	src := MapRangeData(pe.Extent, rangeData)
@@ -208,7 +180,7 @@ func (d *ExtentReader) fetchExtentUncached(
 	pe *PartialExtent,
 	cpOptz bool,
 ) (RangeData, []CachePosition, error) {
-	if cpOptz && pe.Flags == Uncompressed {
+	if cpOptz && pe.Flags() == Uncompressed {
 		return d.fetchUncompressedExtent(ctx, log, pe)
 	}
 
@@ -225,7 +197,7 @@ func (d *ExtentReader) fetchExtentUncached(
 
 	var rangeData []byte
 
-	switch pe.Flags {
+	switch pe.Flags() {
 	case Uncompressed:
 		rangeData = rawData
 	case Compressed:
@@ -248,35 +220,7 @@ func (d *ExtentReader) fetchExtentUncached(
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
-	case ZstdCompressed:
-		startDecomp := time.Now()
-		sz := pe.RawSize
-
-		uncomp := buffers.Get(int(sz))
-
-		d, err := zstd.NewReader(nil)
-		if err != nil {
-			return RangeData{}, nil, err
-		}
-
-		res, err := d.DecodeAll(rawData, uncomp[:0])
-		if err != nil {
-			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
-		}
-
-		n := len(res)
-
-		if n != int(sz) {
-			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
-		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
-
-		rangeData = uncomp
-		compressionOverhead.Add(time.Since(startDecomp).Seconds())
-	default:
-		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags)
+		return RangeData{}, nil, fmt.Errorf("unknown flags value: %d", pe.Flags())
 	}
 
 	src := MapRangeData(pe.Extent, rangeData)

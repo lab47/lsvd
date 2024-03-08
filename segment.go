@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lsvd/pkg/entropy"
 	"github.com/pierrec/lz4/v4"
@@ -136,7 +135,6 @@ func (o *SegmentBuilder) ZeroBlocks(rng Extent) error {
 
 	o.extents = append(o.extents, ExtentHeader{
 		Extent: rng,
-		Flags:  Empty,
 	})
 
 	return nil
@@ -201,10 +199,6 @@ func (o *SegmentCreator) writeLog(
 	data []byte,
 ) error {
 	dw := o.logW
-
-	if eh.Flags == Compressed && eh.RawSize == 0 {
-		panic("bad header at writeLog")
-	}
 
 	err := eh.Write(dw)
 	if err != nil {
@@ -326,7 +320,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 		var srcData []byte
 
-		switch srcRng.Flags {
+		switch srcRng.Flags() {
 		case Uncompressed:
 			srcData = srcBytes[:srcRng.Size]
 		case Compressed:
@@ -359,46 +353,11 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			srcData = o.buf[:origSize]
 			compTime += time.Since(s)
-		case ZstdCompressed:
-			s := time.Now()
-			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
-			if origSize == 0 {
-				panic("missing rawsize")
-			}
-
-			srcBytes = srcBytes[:srcRng.Size]
-
-			o.log.Debug("compressed range", "offset", srcRng.Offset)
-
-			if len(o.buf) < int(origSize) {
-				o.buf = make([]byte, origSize)
-			}
-
-			o.log.Debug("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
-
-			d, err := zstd.NewReader(nil)
-			if err != nil {
-				return nil, err
-			}
-
-			res, err := d.DecodeAll(srcBytes, o.buf[:0])
-			if err != nil {
-				return nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(srcBytes), origSize)
-			}
-
-			n := len(res)
-
-			if n != int(origSize) {
-				return nil, fmt.Errorf("didn't fill destination (%d != %d)", n, origSize)
-			}
-
-			srcData = o.buf[:origSize]
-			compTime += time.Since(s)
 		case Empty:
 			// handled above, shouldn't be here.
 			return nil, fmt.Errorf("invalid flag 2, should have size == 0, did not")
 		default:
-			return nil, fmt.Errorf("invalid flag %d", srcRng.Flags)
+			return nil, fmt.Errorf("invalid flag %d", srcRng.Flags())
 		}
 
 		src := MapRangeData(srcRng.Extent, srcData)
@@ -494,7 +453,6 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 	o.cnt++
 
 	if ext.EmptyP() {
-		eh.Flags = Empty
 		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
 		input := ext.ReadData()
@@ -511,7 +469,6 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 			useCompression bool
 			compressedSize int
 			err            error
-			flag           byte
 		)
 
 		if o.entropy.Value() <= entropyLimit {
@@ -521,21 +478,9 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 				o.buf = make([]byte, bound)
 			}
 
-			if false {
-				e, err := zstd.NewWriter(nil)
-				if err != nil {
-					return nil, eh, err
-				}
-				res := e.EncodeAll(ext.ReadData(), o.buf[:0])
-
-				compressedSize = len(res)
-				flag = ZstdCompressed
-			} else {
-				compressedSize, err = o.comp.CompressBlock(ext.ReadData(), o.buf)
-				if err != nil {
-					return nil, eh, err
-				}
-				flag = Compressed
+			compressedSize, err = o.comp.CompressBlock(ext.ReadData(), o.buf)
+			if err != nil {
+				return nil, eh, err
 			}
 
 			// Only keep compression greater than 1.5x
@@ -545,7 +490,6 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 		}
 
 		if useCompression {
-			eh.Flags = flag
 			eh.RawSize = uint32(extBytes)
 			eh.Size = uint64(compressedSize)
 
@@ -559,7 +503,6 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 
 			o.addToHistogram(float64(len(input)) / float64(len(data)))
 		} else {
-			eh.Flags = Uncompressed
 			eh.Size = uint64(extBytes)
 
 			data = ext.ReadData()
@@ -624,10 +567,6 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 	entries := make([]ExtentLocation, len(o.extents))
 
 	for i, eh := range o.extents {
-		if eh.Flags == Compressed && eh.RawSize == 0 {
-			panic("bad header")
-		}
-
 		eh.Offset += dataBegin
 		entries[i] = ExtentLocation{
 			ExtentHeader: eh,

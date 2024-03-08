@@ -350,7 +350,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(0xf), hdrLen)
+		r.Equal(uint32(0xe), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -361,11 +361,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		r.Equal(uint64(1), blocks)
-
-		flags, err := br.ReadByte()
-		r.NoError(err)
-
-		r.Equal(byte(1), flags)
 
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -448,7 +443,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(5+10), hdrLen)
+		r.Equal(uint32(4+10), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -459,11 +454,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		r.Equal(uint64(1), bloccks)
-
-		flags, err := br.ReadByte()
-		r.NoError(err)
-
-		r.Equal(byte(0), flags)
 
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -528,7 +518,7 @@ func TestLSVD(t *testing.T) {
 		err = binary.Read(br, binary.BigEndian, &hdrLen)
 		r.NoError(err)
 
-		r.Equal(uint32(4+10), hdrLen)
+		r.Equal(uint32(3+10), hdrLen)
 
 		lba, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -539,11 +529,6 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		r.Equal(uint64(1), blocks)
-
-		flags, err := br.ReadByte()
-		r.NoError(err)
-
-		r.Equal(byte(2), flags)
 
 		blkSize, err := binary.ReadUvarint(br)
 		r.NoError(err)

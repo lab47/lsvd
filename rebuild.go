@@ -199,7 +199,7 @@ func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, error) {
 
 		// log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
 
-		m.m.Set(pba.Live.LBA, &pba)
+		m.m.Set(pba.Live.LBA, pba)
 	}
 
 	return m, nil

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/klauspost/compress/zstd"
 	"github.com/lab47/lsvd/logger"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
@@ -109,7 +108,7 @@ func (c *CopyIterator) gatherExtents() {
 	c.extents = c.extents[:0]
 
 	for i := c.d.lba2pba.Iterator(); i.Valid(); i.Next() {
-		pe := i.Value()
+		pe := i.ValuePtr()
 		if pe.Segment == c.seg {
 			c.extents = append(c.extents, gcExtent{
 				PartialExtent: pe,
@@ -136,7 +135,7 @@ func (d *CopyIterator) fetchExtent(
 
 	var rangeData []byte
 
-	switch addr.Flags {
+	switch addr.Flags() {
 	case Uncompressed:
 		rangeData = rawData
 	case Compressed:
@@ -159,35 +158,8 @@ func (d *CopyIterator) fetchExtent(
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
-	case ZstdCompressed:
-		startDecomp := time.Now()
-		sz := addr.RawSize
-
-		uncomp := buffers.Get(int(sz))
-
-		d, err := zstd.NewReader(nil)
-		if err != nil {
-			return RangeData{}, err
-		}
-
-		res, err := d.DecodeAll(rawData, uncomp[:0])
-		if err != nil {
-			return RangeData{}, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
-		}
-
-		n := len(res)
-
-		if n != int(sz) {
-			return RangeData{}, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
-		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
-
-		rangeData = uncomp
-		compressionOverhead.Add(time.Since(startDecomp).Seconds())
 	default:
-		return RangeData{}, fmt.Errorf("unknown flags value: %d", addr.Flags)
+		return RangeData{}, fmt.Errorf("unknown flags value: %d", addr.Flags())
 	}
 
 	src := MapRangeData(addr.Extent, rangeData)

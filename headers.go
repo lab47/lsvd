@@ -2,8 +2,10 @@ package lsvd
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
+	"unsafe"
 )
 
 type Segment struct {
@@ -73,18 +75,34 @@ func (s *SegmentHeader) Read(r io.Reader) error {
 }
 
 const (
-	Uncompressed   = 0
-	Compressed     = 1
-	Empty          = 2
-	ZstdCompressed = 3
+	Uncompressed = 0
+	Compressed   = 1
+	Empty        = 2
 )
 
 type ExtentHeader struct {
 	Extent
-	Flags   byte
 	Size    uint64
 	Offset  uint32
 	RawSize uint32 // used when the extent is compressed
+}
+
+func (e *ExtentHeader) Flags() byte {
+	switch {
+	case e.Size == 0:
+		return Empty
+	case e.RawSize != 0:
+		return Compressed
+	default:
+		return Uncompressed
+	}
+}
+
+func init() {
+	sz := unsafe.Sizeof(ExtentHeader{})
+	if sz != 32 {
+		panic(fmt.Sprintf("wrong size: %d", sz))
+	}
 }
 
 func (e *ExtentHeader) Read(r io.ByteReader) error {
@@ -101,11 +119,6 @@ func (e *ExtentHeader) Read(r io.ByteReader) error {
 	}
 
 	e.Blocks = uint32(blocks)
-
-	e.Flags, err = r.ReadByte()
-	if err != nil {
-		return err
-	}
 
 	e.Size, err = binary.ReadUvarint(r)
 	if err != nil {
@@ -153,11 +166,6 @@ func (e *ExtentHeader) Write(w io.ByteWriter) error {
 	}
 
 	_, err = WriteUvarint(w, uint64(e.Blocks))
-	if err != nil {
-		return err
-	}
-
-	err = w.WriteByte(e.Flags)
 	if err != nil {
 		return err
 	}

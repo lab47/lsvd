@@ -285,7 +285,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 			// don't need to clear anything here.
 		} else {
 			// Pure read from one extent, optimize!
-			if len(remaining) == 1 && remaining[0] == rng && len(pes) == 1 && pes[0].Flags == Uncompressed {
+			if len(remaining) == 1 && remaining[0] == rng && len(pes) == 1 && pes[0].Flags() == Uncompressed {
 				// Invariants: remaining[0] == rng == data.Extent
 				// Invariants: pes[0].Live fully covers remaining[0]
 				pe := pes[0]
