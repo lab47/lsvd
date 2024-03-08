@@ -66,19 +66,14 @@ func (n *nbdWrapper) Idle() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.gcRunning && time.Since(n.lastCheckpoint) > 1*time.Minute {
+	if time.Since(n.lastCheckpoint) > 1*time.Minute {
 		n.lastCheckpoint = time.Now()
 
 		ctx := context.Background()
 
-		more, err := n.d.CheckpointGC(ctx)
+		err := n.d.CheckpointGC(ctx)
 		if err != nil {
 			n.log.Error("error checkpointing gc", "error", err)
-		}
-
-		if !more {
-			n.log.Info("detected GC process finished")
-			n.gcRunning = false
 		}
 	}
 }

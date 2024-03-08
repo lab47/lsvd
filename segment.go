@@ -451,6 +451,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 type SegmentStats struct {
 	Blocks     uint64
 	TotalBytes uint64
+	DataOffset uint32
 }
 
 func (o *SegmentCreator) Flush(ctx context.Context,
@@ -614,6 +615,8 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 		"body-size", o.offset,
 		"blocks", len(o.extents),
 	)
+
+	stats.DataOffset = dataBegin
 
 	writtenBytes.Add(float64(o.inputBytes))
 	segmentsBytes.Add(float64(o.storageBytes))

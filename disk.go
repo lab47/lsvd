@@ -49,9 +49,7 @@ type Disk struct {
 
 	readDisks []*Disk
 
-	bgmu   sync.Mutex
-	bgCopy *CopyIterator
-	bgDone chan struct{}
+	bgmu sync.Mutex
 }
 
 func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
@@ -682,6 +680,8 @@ func (d *Disk) SyncWriteCache() error {
 }
 
 func (d *Disk) Close(ctx context.Context) error {
+	d.CheckpointGC(ctx)
+
 	err := d.CloseSegment(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "error closing segment")

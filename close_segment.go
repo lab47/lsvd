@@ -10,8 +10,6 @@ import (
 // CloseSegment synchronously closes the current segment, as well as giving
 // any background GC process to finish up first.
 func (d *Disk) CloseSegment(ctx context.Context) error {
-	d.flushGC(ctx, true)
-
 	if d.curOC == nil || d.curOC.EmptyP() {
 		err := d.cleanupDeletedSegments(ctx)
 		if err != nil {
@@ -65,13 +63,6 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			stats   *SegmentStats
 			err     error
 		)
-
-		// We flush the GC again here because we want any current GC segment to
-		// be added before we're about to upload this one, so that the lba map
-		// stays correct. If we don't do this then any live extents that were shrunk
-		// while we were GC'ing will be written to the lba map AFTER the update that shrank
-		// the extent, corrupting the disk.
-		d.flushGC(ctx, true)
 
 		// We retry because flush does network calls and we want to just keep trying
 		// forever.

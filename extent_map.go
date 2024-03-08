@@ -72,6 +72,13 @@ func (m *ExtentMap) checkExtent(e Extent) Extent {
 	return e
 }
 
+func (e *ExtentMap) LockToPatch(fn func() error) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return fn()
+}
+
 func (e *ExtentMap) UpdateBatch(log logger.Logger, entries []ExtentLocation, segId SegmentId, s *Segments) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -332,6 +339,21 @@ func (e *ExtentMap) Render() string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func (e *ExtentMap) RenderExpanded() string {
+	var parts []string
+	for i := e.m.Iterator(); i.Valid(); i.Next() {
+		pba := i.Value()
+
+		if pba.Live.Blocks == 1 {
+			parts = append(parts, fmt.Sprintf("%p %d => %s [%s]", pba, pba.Live.LBA, pba.Segment.String(), pba.Extent))
+		} else {
+			parts = append(parts, fmt.Sprintf("%p %d-%d => %s [%s]", pba, pba.Live.LBA, pba.Live.Last(), pba.Segment.String(), pba.Extent))
+		}
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 func (e *ExtentMap) Resolve(log logger.Logger, rng Extent) ([]PartialExtent, error) {

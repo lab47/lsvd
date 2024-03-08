@@ -672,16 +672,16 @@ func writeIndent(w *handleState, str string, indent string) {
 		nl := strings.IndexByte(str, "\n"[0])
 		if nl == -1 {
 			if str != "" {
-				w.appendString(indent)
+				w.appendRawString(indent)
 				writeEscapedForOutput(w, str, false)
-				w.appendString("\n")
+				w.appendRawString("\n")
 			}
 			return
 		}
 
-		w.appendString(indent)
+		w.appendRawString(indent)
 		writeEscapedForOutput(w, str[:nl], false)
-		w.appendString("\n")
+		w.appendRawString("\n")
 		str = str[nl+1:]
 	}
 }
@@ -882,7 +882,7 @@ func needsEscaping(str string) bool {
 
 func writeEscapedForOutput(w *handleState, str string, escapeQuotes bool) {
 	if !needsEscaping(str) {
-		w.appendString(str)
+		w.appendRawString(str)
 		return
 	}
 

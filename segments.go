@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/mode"
+	"github.com/oklog/ulid/v2"
 )
 
 type Segments struct {
@@ -178,6 +179,29 @@ func (d *Segments) AllDeadSegments() ([]SegmentId, error) {
 	return ret, nil
 }
 
+func (d *Segments) sortedSegments() []SegmentId {
+	var ret []SegmentId
+
+	for segId := range d.segments {
+		ret = append(ret, segId)
+	}
+
+	slices.SortFunc(ret, func(a, b SegmentId) int {
+		at := ulid.ULID(a).Time()
+		bt := ulid.ULID(b).Time()
+		switch {
+		case at < bt:
+			return -1
+		case at > bt:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	return ret
+}
+
 func (d *Segments) PickSegmentToGC(log logger.Logger, min float64, skip []SegmentId) (SegmentId, bool, error) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
@@ -187,7 +211,9 @@ func (d *Segments) PickSegmentToGC(log logger.Logger, min float64, skip []Segmen
 		smallestStats *Segment
 	)
 
-	for segId, stats := range d.segments {
+	for _, segId := range d.sortedSegments() {
+		stats := d.segments[segId]
+
 		if stats.deleted {
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/klauspost/compress/zstd"
 	"github.com/lab47/lsvd/logger"
 	"github.com/pierrec/lz4/v4"
@@ -25,16 +26,11 @@ func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
 		return segId, nil
 	}
 
-	defer ci.Close()
+	defer ci.Close(ctx)
 
 	err = ci.ProcessFromExtents(ctx, d.log)
 	if err != nil {
 		return segId, err
-	}
-
-	err = ci.updateDisk(ctx)
-	if err != nil {
-		return segId, nil
 	}
 
 	return segId, nil
@@ -61,33 +57,19 @@ func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterat
 }
 
 func (d *Disk) GCInBackground(ctx context.Context, min float64) (SegmentId, bool, error) {
-	toGC, ok, err := d.s.PickSegmentToGC(d.log, min, nil)
-	if !ok {
-		return SegmentId{}, false, nil
-	}
-
+	toGC, ci, err := d.StartGC(ctx, min)
 	if err != nil {
 		return SegmentId{}, false, err
 	}
-
-	d.log.Info("starting background GC process", "segment", toGC)
-
-	ci, err := d.CopyIterator(ctx, toGC)
-	if err != nil {
-		return SegmentId{}, false, err
-	}
-
-	d.bgCopy = ci
-	d.bgDone = make(chan struct{})
 
 	go func() {
-		defer d.doneWithCopy(ci)
-
 		err := ci.ProcessFromExtents(ctx, d.log)
 		if err != nil {
 			ci.err = err
 			return
 		}
+
+		ci.err = ci.Close(ctx)
 	}()
 
 	return toGC, true, nil
@@ -119,6 +101,7 @@ type CopyIterator struct {
 
 	segmentsProcessed []SegmentId
 	extents           []gcExtent
+	results           []ExtentHeader
 }
 
 func (c *CopyIterator) gatherExtents() {
@@ -132,6 +115,7 @@ func (c *CopyIterator) gatherExtents() {
 				PartialExtent: pe,
 				Live:          pe.Live,
 			})
+			c.d.log.Trace("captured extent to update", "addr", spew.Sdump(pe))
 		}
 	}
 }
@@ -218,6 +202,7 @@ func (c *CopyIterator) ProcessFromExtents(ctx context.Context, log logger.Logger
 	for _, rng := range c.extents {
 		if rng.Size == 0 {
 			c.builder.ZeroBlocks(rng.Live)
+			c.results = append(c.results, rng.ExtentHeader)
 			continue
 		}
 
@@ -241,83 +226,16 @@ func (c *CopyIterator) ProcessFromExtents(ctx context.Context, log logger.Logger
 		c.copiedBlocks += uint64(eh.Blocks)
 		c.copiedExtents++
 
+		c.results = append(c.results, eh)
+
 		buffers.Return(data.data)
 	}
 
 	return nil
 }
 
-func (d *Disk) doneWithCopy(_ *CopyIterator) {
-	close(d.bgDone)
-}
-
-func (d *Disk) flushGC(ctx context.Context, wait bool) (bool, error) {
-	ci := d.bgCopy
-	if ci == nil {
-		return false, nil
-	}
-
-	if wait {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-d.bgDone:
-			d.bgCopy = nil
-
-			d.log.Debug("flushing background gc data")
-
-			ci.updateDisk(ctx)
-			return false, ci.Close()
-		}
-	}
-
-	// Since the caller isn't waitiing, then if the background is done,
-	// we'll attempt keep it the process running by spawning a new goroutine
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-d.bgDone:
-		// ok
-	default:
-		return true, nil
-	}
-
-	more, err := ci.attemptAnotherSegment(ctx, d, defaultGCRatio)
-	if err != nil {
-		return false, err
-	}
-
-	if more {
-		d.log.Debug("found another segment to gc")
-		return true, nil
-	}
-
-	// TODO: future feature: when there are no more segments, don't
-	// immediately close and upload the segment. Instead we can keep
-	// this iterator open and wait for the next GC cycle to create
-	// a larger object. In the end, it doesn't matter that much if we
-	// upload a new, smaller object since the pre-caching we were doing
-	// on the older one didn't help anyway since it a lot of dead extents.
-
-	d.bgCopy = nil
-
-	d.log.Debug("flushing background gc data")
-
-	ci.updateDisk(ctx)
-	err = ci.Close()
-
-	return false, err
-}
-
-func (d *Disk) CheckpointGC(ctx context.Context) (bool, error) {
-	more, err := d.flushGC(ctx, false)
-	if err != nil {
-		return false, err
-	}
-
-	d.cleanupDeletedSegments(ctx)
-
-	return more, nil
+func (d *Disk) CheckpointGC(ctx context.Context) error {
+	return d.cleanupDeletedSegments(ctx)
 }
 
 func (ci *CopyIterator) extentsByteSize() int {
@@ -330,64 +248,45 @@ func (ci *CopyIterator) extentsByteSize() int {
 	return bs
 }
 
-func (ci *CopyIterator) attemptAnotherSegment(ctx context.Context, d *Disk, min float64) (bool, error) {
-	toGC, ok, err := d.s.PickSegmentToGC(d.log, min, ci.segmentsProcessed)
-	if err != nil {
-		return false, err
-	}
-
-	if !ok {
-		d.log.Trace("attempting to GC another segment, couldn't find one")
-		return false, nil
-	}
-
-	// See if we can/should fit this new segment into the open iterator
-	if ci.extentsByteSize()+ci.builder.BodySize() > FlushThreshHold {
-		d.log.Trace("next segment too large for existing copy iterator, not continuing")
-		return false, nil
-	}
-
-	f, err := d.sa.OpenSegment(ctx, toGC)
-	if err != nil {
-		return false, errors.Wrapf(err, "opening segment %s", toGC)
-	}
-
-	ci.or = f
-	ci.seg = toGC
-
-	d.log.Debug("continuing gc in existing segment", "from", toGC, "to", ci.newSegment)
-
-	ci.gatherExtents()
-
-	ci.d.bgDone = make(chan struct{})
-
-	go func() {
-		defer d.doneWithCopy(ci)
-
-		err := ci.ProcessFromExtents(ctx, d.log)
-		if err != nil {
-			ci.err = err
-			return
-		}
-	}()
-
-	return true, nil
-}
-
 func (c *CopyIterator) updateDisk(ctx context.Context) error {
 	c.d.log.Trace("uploading post-gc segment", "segment", c.newSegment)
-	locs, stats, err := c.builder.Flush(ctx, c.d.log, c.d.sa, c.newSegment, c.d.volName)
+	_, stats, err := c.builder.Flush(ctx, c.d.log, c.d.sa, c.newSegment, c.d.volName)
 	if err != nil {
 		return err
 	}
 
-	c.d.log.Trace("updating disk with data from post-gc segment", "segment", c.newSegment)
+	c.d.log.Trace("patching block map from post-gc segment", "segment", c.newSegment)
 	c.d.s.Create(c.newSegment, stats)
 
-	return c.d.lba2pba.UpdateBatch(c.d.log, locs, c.newSegment, c.d.s)
+	return c.d.lba2pba.LockToPatch(func() error {
+		for i, pe := range c.extents {
+			if pe.Segment != c.seg {
+				c.d.log.Error("wrong segment in partial-extent while patching", "expected", c.seg, "actual", pe.Segment)
+				continue
+			}
+
+			eh := c.results[i]
+			if eh.Size != 0 {
+				eh.Offset += stats.DataOffset
+			}
+
+			pe.ExtentLocation = ExtentLocation{
+				ExtentHeader: eh,
+				Segment:      c.newSegment,
+				Disk:         pe.Disk,
+			}
+		}
+
+		return nil
+	})
 }
 
-func (c *CopyIterator) Close() error {
+func (c *CopyIterator) Close(ctx context.Context) error {
+	err := c.updateDisk(ctx)
+	if err != nil {
+		return err
+	}
+
 	c.d.s.SetDeleted(c.seg)
 
 	c.d.log.Info("gc cycle complete",
@@ -396,6 +295,7 @@ func (c *CopyIterator) Close() error {
 		"blocks", c.copiedBlocks,
 		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
 	)
+
 	return c.or.Close()
 }
 
