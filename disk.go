@@ -136,12 +136,14 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		log.Info("starting sequence", "seq", d.curSeq)
 	}
 
-	goodMap, err := d.loadLBAMap(ctx)
-	if err != nil {
-		return nil, err
-	}
+	/*
+		goodMap, err := d.loadLBAMap(ctx)
+		if err != nil {
+			return nil, err
+		}
+	*/
 
-	if goodMap {
+	if false {
 		log.Info("reusing serialized LBA map", "blocks", d.lba2pba.Len())
 	} else {
 		err = d.rebuildFromSegments(ctx)
