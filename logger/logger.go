@@ -40,8 +40,8 @@ func (l *LabLogger) Is(level slog.Level) bool {
 	return l.Enabled(context.Background(), level)
 }
 
-type HCLogLike struct {
-	implied []slog.Attr
+func (l *LabLogger) IsTrace() bool {
+	return l.Is(Trace)
 }
 
 func New(level slog.Level) Logger {

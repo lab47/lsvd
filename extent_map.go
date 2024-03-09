@@ -116,7 +116,11 @@ func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExte
 
 	e.checkExtent(rng)
 
-	log.Trace("triggered update", "extent", rng)
+	isTrace := log.IsTrace()
+
+	if isTrace {
+		log.Trace("triggered update", "extent", rng)
+	}
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {
@@ -126,7 +130,9 @@ loop:
 			break
 		}
 
-		log.Trace("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
+		if isTrace {
+			log.Trace("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
+		}
 
 		cur := i.ValuePtr()
 
@@ -134,10 +140,12 @@ loop:
 
 		coverage := cur.Live.Cover(rng)
 
-		log.Trace("considering",
-			"a", orig, "b", rng,
-			"a-sub-b", coverage,
-		)
+		if isTrace {
+			log.Trace("considering",
+				"a", orig, "b", rng,
+				"a-sub-b", coverage,
+			)
+		}
 
 		switch coverage {
 		case CoverNone:
@@ -216,10 +224,12 @@ loop2:
 
 		orig := cur.Live
 
-		log.Trace("considering",
-			"a", rng, "b", orig,
-			"a-sub-b", coverage,
-		)
+		if isTrace {
+			log.Trace("considering",
+				"a", rng, "b", orig,
+				"a-sub-b", coverage,
+			)
+		}
 
 		switch coverage {
 		case CoverNone:
@@ -251,7 +261,10 @@ loop2:
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, *cur)
-			log.Debug("pivoting range", "pivot", pivot, "from", old, "to", cur.Live)
+
+			if isTrace {
+				log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Live)
+			}
 			e.checkExtent(cur.Live)
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
@@ -259,19 +272,26 @@ loop2:
 	}
 
 	for _, lba := range toDelete {
-		log.Trace("deleting range", "lba", lba)
+		if isTrace {
+			log.Trace("deleting range", "lba", lba)
+		}
 		e.m.Del(lba)
 	}
 
 	for _, pba := range toAdd {
 		e.checkExtent(pba.Live)
-		log.Trace("adding range", "rng", pba.Live)
+		if isTrace {
+			log.Trace("adding range", "rng", pba.Live)
+		}
 		e.m.Set(pba.Live.LBA, pba)
 	}
 
 	e.checkExtent(rng)
 
-	log.Trace("adding read range", "range", rng)
+	if isTrace {
+		log.Trace("adding read range", "range", rng)
+	}
+
 	e.m.Set(rng.LBA, PartialExtent{
 		ExtentLocation: pba,
 
@@ -367,7 +387,9 @@ loop:
 
 		cur := i.Value()
 
-		log.Debug("consider for resolve", "cur", cur.Live, "against", rng)
+		if log.IsTrace() {
+			log.Trace("consider for resolve", "cur", cur.Live, "against", rng)
+		}
 
 		switch cur.Live.Cover(rng) {
 		case CoverPartly:
@@ -388,10 +410,14 @@ loop2:
 
 		orig := cur.Live
 
-		log.Trace("considering",
-			"a", rng, "b", orig,
-			"a-sub-b", coverage,
-		)
+		// Guard for performance. Logging any variable data causes allocations as they're
+		// promoted to interfaces.
+		if log.IsTrace() {
+			log.Trace("considering",
+				"a", rng, "b", orig,
+				"a-sub-b", coverage,
+			)
+		}
 
 		switch coverage {
 		case CoverNone:
