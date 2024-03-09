@@ -61,6 +61,10 @@ func (d *Disk) GCInBackground(ctx context.Context, min float64) (SegmentId, bool
 		return SegmentId{}, false, err
 	}
 
+	if ci == nil {
+		return SegmentId{}, false, nil
+	}
+
 	go func() {
 		err := ci.ProcessFromExtents(ctx, d.log)
 		if err != nil {
