@@ -71,7 +71,7 @@ func (e RawBlocks) BlockView(cnt int) []byte {
 
 var smallDB = sync.Pool{
 	New: func() any {
-		return make([]byte, smallRange)
+		return make(RawBlocks, smallRange)
 	},
 }
 
@@ -87,10 +87,10 @@ func (b *blockData) allocate(ext Extent) []byte {
 	var data []byte
 
 	if ext.Blocks <= smallRangeBlocks {
-		data = smallDB.Get().([]byte)[:BlockSize*ext.Blocks]
+		data = smallDB.Get().(RawBlocks)[:BlockSize*ext.Blocks]
 		clear(data)
 	} else {
-		data = make([]byte, BlockSize*ext.Blocks)
+		data = make(RawBlocks, BlockSize*ext.Blocks)
 	}
 
 	b.data = data
