@@ -87,12 +87,17 @@ func (s *Segments) UpdateUsage(log logger.Logger, self SegmentId, affected []Par
 				continue
 			}
 
-			if mode.Debug() {
+			// If we've affected ourselves, that's fine, but we can't
+			// run the detectedCleared logic because it will misfire since
+			// we might have the same extent written multiple times in the same
+			// segment, that's totally valid.
+			if r.Segment != self && mode.Debug() {
 				if o, ok := seg.detectedCleared(rng); ok {
 					log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
 				}
+				seg.cleared = append(seg.cleared, rng)
 			}
-			seg.cleared = append(seg.cleared, rng)
+
 			seg.Used -= uint64(rng.Blocks)
 		} else {
 			if _, seen := warnedSegments[r.Segment]; !seen {
