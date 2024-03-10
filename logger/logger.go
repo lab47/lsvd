@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -175,7 +176,7 @@ type commonHandler struct {
 	mu          *sync.Mutex
 	w           io.Writer
 
-	lastTime time.Time
+	lastTime atomic.Int64
 }
 
 func (h *commonHandler) clone() *commonHandler {
@@ -266,12 +267,14 @@ func (h *commonHandler) handle(r slog.Record) error {
 		val := r.Time.Round(0) // strip monotonic to match Attr behavior
 
 		if rep == nil {
-			if h.lastTime.IsZero() || val.Sub(h.lastTime) < 1*time.Hour || val.YearDay() != h.lastTime.YearDay() {
+			lastTime := time.Unix(h.lastTime.Load(), 0)
+
+			if lastTime.IsZero() || val.Sub(lastTime) < 1*time.Hour || val.YearDay() != lastTime.YearDay() {
 				state.appendMiniTime(val)
 			} else {
 				state.appendShortTime(val)
 			}
-			h.lastTime = val
+			h.lastTime.Store(val.Unix())
 		} else {
 			state.appendAttr(slog.Time(key, val))
 		}

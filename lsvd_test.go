@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1066,7 +1067,7 @@ func TestLSVD(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
-		r.True(sa.waiting)
+		r.True(sa.waiting.Load())
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -1108,7 +1109,7 @@ func TestLSVD(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
-		r.True(sa.waiting)
+		r.True(sa.waiting.Load())
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(1))
 		r.NoError(err)
@@ -1375,12 +1376,12 @@ func TestLSVD(t *testing.T) {
 
 type slowLocal struct {
 	LocalFileAccess
-	waiting bool
+	waiting atomic.Bool
 	wait    chan struct{}
 }
 
 func (s *slowLocal) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error) {
-	s.waiting = true
+	s.waiting.Store(true)
 
 	if s.wait != nil {
 		select {
@@ -1395,7 +1396,7 @@ func (s *slowLocal) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCl
 }
 
 func (s *slowLocal) UploadSegment(ctx context.Context, seg SegmentId, f *os.File) error {
-	s.waiting = true
+	s.waiting.Store(true)
 
 	if s.wait != nil {
 		select {
