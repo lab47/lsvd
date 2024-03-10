@@ -60,6 +60,8 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 
 	stats := &SegmentStats{}
 
+	d.s.Create(seg, stats)
+
 	for i := uint32(0); i < hdr.ExtentCount; i++ {
 		var eh ExtentHeader
 
@@ -83,6 +85,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 		d.s.UpdateUsage(d.log, seg, affected)
 	}
 
+	// Now reset the stats for our seg to the correct ones.
 	d.s.Create(seg, stats)
 
 	return nil
