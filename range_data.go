@@ -107,6 +107,12 @@ func NewRangeData(ext Extent) RangeData {
 	}
 }
 
+func (r *RangeData) Discard() {
+	if r.data != nil {
+		r.blockData.Discard()
+	}
+}
+
 func AlignToBlock(b []byte) []byte {
 	if len(b)%BlockSize == 0 {
 		return b

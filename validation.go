@@ -40,6 +40,8 @@ func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreato
 		} else {
 			e.resi[ent.Extent] = ranges
 		}
+
+		data.Discard()
 	}
 }
 
