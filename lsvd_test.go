@@ -89,8 +89,6 @@ func extentEqual(t *testing.T, actual RawBlocks, expected RangeData) {
 func TestLSVD(t *testing.T) {
 	log := logger.New(logger.Trace)
 
-	testUlid := ulid.MustNew(ulid.Now(), rand.Reader)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -195,9 +193,12 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
+		t.Logf("data sum: %s", rangeSum(testRandX))
+
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
 
+		t.Log("closing")
 		r.NoError(d.Close(ctx))
 
 		t.Log("reopening disk")
@@ -321,9 +322,9 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
-			return testUlid
-		}))
+		var ur UlidRecall
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
@@ -333,7 +334,7 @@ func TestLSVD(t *testing.T) {
 		r.NoError(d.Close(ctx))
 
 		t.Log("reopening disk")
-		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+ur.First().String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -370,7 +371,7 @@ func TestLSVD(t *testing.T) {
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0), offset)
+		r.Equal(uint64(6), offset)
 
 		rawSize, err := binary.ReadUvarint(br)
 		r.NoError(err)
@@ -406,7 +407,7 @@ func TestLSVD(t *testing.T) {
 		_, err = gbr.Read(iseg[:])
 		r.NoError(err)
 
-		r.Equal(ulid.ULID(iseg), testUlid)
+		r.Equal(ulid.ULID(iseg), ur.First())
 	})
 
 	t.Run("segments that can't be compressed are flagged", func(t *testing.T) {
@@ -416,9 +417,9 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
-			return testUlid
-		}))
+		var ur UlidRecall
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(47))
@@ -426,7 +427,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+ur.First().String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -463,7 +464,7 @@ func TestLSVD(t *testing.T) {
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0), offset)
+		r.Equal(uint64(6), offset)
 
 		_, err = f.Seek(int64(uint64(hdrLen)+offset), io.SeekStart)
 		r.NoError(err)
@@ -491,9 +492,9 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 		defer os.RemoveAll(tmpdir)
 
-		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
-			return testUlid
-		}))
+		var ur UlidRecall
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
 
 		err = d.WriteExtent(ctx, testEmptyX.MapTo(47))
@@ -501,7 +502,7 @@ func TestLSVD(t *testing.T) {
 
 		r.NoError(d.Close(ctx))
 
-		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+testUlid.String()))
+		f, err := os.Open(filepath.Join(tmpdir, "segments", "segment."+ur.First().String()))
 		r.NoError(err)
 
 		defer f.Close()
@@ -538,7 +539,7 @@ func TestLSVD(t *testing.T) {
 		offset, err := binary.ReadUvarint(br)
 		r.NoError(err)
 
-		r.Equal(uint64(0), offset)
+		r.Equal(uint64(5), offset)
 	})
 
 	t.Run("reads empty from a previous empty write", func(t *testing.T) {
@@ -1338,13 +1339,17 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, bd)
 		r.NoError(err)
 
+		t.Log("closing segment")
 		r.NoError(d.CloseSegment(ctx))
 
+		t.Log("writing into new segment")
 		err = d.WriteExtent(ctx, testExtent.MapTo(100))
 		r.NoError(err)
 
 		t.Log("packing")
 		r.NoError(d.Pack(ctx))
+
+		r.Len(d.s.LiveSegments(), 1)
 
 		r.NoError(d.Close(ctx))
 
@@ -1387,6 +1392,21 @@ func (s *slowLocal) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCl
 	}
 
 	return s.LocalFileAccess.WriteSegment(ctx, seg)
+}
+
+func (s *slowLocal) UploadSegment(ctx context.Context, seg SegmentId, f *os.File) error {
+	s.waiting = true
+
+	if s.wait != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.wait:
+			// ok
+		}
+	}
+
+	return s.LocalFileAccess.UploadSegment(ctx, seg, f)
 }
 
 func emptyBytesI(b []byte) bool {

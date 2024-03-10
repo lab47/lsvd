@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/lab47/mode"
@@ -43,7 +44,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		return nil, err
 	}
 
-	d.log.Info("flushing segment to storage in background", "segment", segId)
+	d.log.Info("flushing segment to storage in background", "segment", segId, "oc", fmt.Sprintf("%p", oc))
 
 	d.prevCache.SetWhenClear(oc)
 
@@ -53,6 +54,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 		defer d.log.Debug("finished goroutine to close segment")
 		defer close(done)
 		defer segmentsWritten.Inc()
+		defer oc.Close()
 
 		defer func() {
 			segmentTotalTime.Add(time.Since(s).Seconds())

@@ -80,26 +80,24 @@ func (s *Segments) UpdateUsage(log logger.Logger, self SegmentId, affected []Par
 	warnedSegments := map[SegmentId]struct{}{}
 
 	for _, r := range affected {
-		if r.Segment != self {
-			rng := r.Live
+		rng := r.Live
 
-			if seg, ok := s.segments[r.Segment]; ok {
-				if seg.deleted {
-					continue
-				}
+		if seg, ok := s.segments[r.Segment]; ok {
+			if seg.deleted {
+				continue
+			}
 
-				if mode.Debug() {
-					if o, ok := seg.detectedCleared(rng); ok {
-						log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
-					}
+			if mode.Debug() {
+				if o, ok := seg.detectedCleared(rng); ok {
+					log.Warn("detected clearing overlapping extent", "orig", o, "cur", r)
 				}
-				seg.cleared = append(seg.cleared, rng)
-				seg.Used -= uint64(rng.Blocks)
-			} else {
-				if _, seen := warnedSegments[r.Segment]; !seen {
-					log.Warn("missing segment during usage update", "id", r.Segment.String())
-					warnedSegments[r.Segment] = struct{}{}
-				}
+			}
+			seg.cleared = append(seg.cleared, rng)
+			seg.Used -= uint64(rng.Blocks)
+		} else {
+			if _, seen := warnedSegments[r.Segment]; !seen {
+				log.Warn("missing segment during usage update", "id", r.Segment.String())
+				warnedSegments[r.Segment] = struct{}{}
 			}
 		}
 	}

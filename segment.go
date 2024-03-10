@@ -24,9 +24,6 @@ type SegmentCreator struct {
 
 	buf []byte
 
-	logF *os.File
-	logW *bufio.Writer
-
 	em *ExtentMap
 }
 
@@ -35,6 +32,7 @@ type SegmentBuilder struct {
 
 	emptyBlocks   int
 	totalBlocks   int
+	singleBEs     int
 	inputBytes    int64
 	storageBytes  int64
 	storageRatio  float64
@@ -51,6 +49,13 @@ type SegmentBuilder struct {
 	useZstd bool
 
 	entropy entropy.Estimator
+
+	path      string
+	logF      *os.File
+	logW      *bufio.Writer
+	curOffset int64
+
+	em *ExtentMap
 }
 
 var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
@@ -62,7 +67,9 @@ func NewSegmentCreator(log logger.Logger, vol, path string) (*SegmentCreator, er
 		em:      NewExtentMap(),
 	}
 
-	err := oc.OpenWrite(path)
+	oc.builder.em = oc.em
+
+	err := oc.builder.OpenWrite(path, log)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +90,7 @@ func (o *SegmentBuilder) addToHistogram(val float64) {
 	}
 }
 
-func (o *SegmentCreator) Sync() error {
+func (o *SegmentBuilder) Sync() error {
 	if o.logW != nil {
 		o.logW.Flush()
 	}
@@ -95,13 +102,13 @@ func (o *SegmentCreator) Sync() error {
 	return nil
 }
 
-func (o *SegmentCreator) OpenWrite(path string) error {
+func (o *SegmentBuilder) OpenWrite(path string, log logger.Logger) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
 
-	err = o.readLog(f)
+	err = o.readLog(f, log)
 	if err != nil {
 		return errors.Wrapf(err, "error reading segment log")
 	}
@@ -194,82 +201,85 @@ func (o *SegmentCreator) CompressionRateHistogram() []int {
 
 // writeLog writes the header and the data to the log so that we can
 // recover the write with readLog if need be.
-func (o *SegmentCreator) writeLog(
+func (o *SegmentBuilder) writeLog(
 	eh ExtentHeader,
 	data []byte,
-) error {
+) (int, int, error) {
 	dw := o.logW
 
-	err := eh.Write(dw)
+	sz, err := eh.Write(dw)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
-	if n, err := dw.Write(data); err != nil || n != len(data) {
+	n, err := dw.Write(data)
+	if err != nil || n != len(data) {
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 
-		return fmt.Errorf("short write to log: %d != %d", n, len(data))
+		return 0, 0, fmt.Errorf("short write to log: %d != %d", n, len(data))
 	}
 
-	return dw.Flush()
+	return sz, sz + n, dw.Flush()
 }
 
 // readLog is used to restore the state of the SegmentCreator from the
 // log written to data.
-func (o *SegmentCreator) readLog(f *os.File) error {
-	o.log.Debug("rebuilding memory from log", "path", f.Name())
+func (o *SegmentBuilder) readLog(f *os.File, log logger.Logger) error {
+	log.Debug("rebuilding memory from log", "path", f.Name())
 
 	br := bufio.NewReader(f)
 
 	for {
 		var eh ExtentHeader
 
-		if err := eh.Read(br); err != nil {
+		hdrLen, err := eh.Read(br)
+		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 
-			o.log.Error("observed error reading extent header", "error", err)
+			log.Error("observed error reading extent header", "error", err)
 			return err
 		}
 
-		o.log.Debug("read extent header", "extent", eh.Extent, "flags", eh.Flags, "raw-size", eh.RawSize)
+		log.Debug("read extent header", "extent", eh.Extent, "flags", eh.Flags(), "raw-size", eh.RawSize)
 
-		o.builder.totalBlocks += int(eh.Blocks)
+		o.totalBlocks += int(eh.Blocks)
 
-		o.builder.cnt++
+		o.cnt++
 
 		if eh.Size > 0 {
-			n, err := io.CopyN(&o.builder.body, br, int64(eh.Size))
+			n, err := br.Discard(int(eh.Size))
 			if err != nil {
 				return errors.Wrapf(err, "error copying body, expecting %d, got %d", eh.Size, n)
 			}
-			if n != int64(eh.Size) {
+			if n != int(eh.Size) {
 				return fmt.Errorf("short copy: %d != %d", n, eh.Size)
 			}
 
 			if eh.RawSize > 0 {
-				o.builder.storageRatio += float64(eh.Size) / float64(eh.RawSize)
+				o.storageRatio += float64(eh.Size) / float64(eh.RawSize)
 			} else {
-				o.builder.storageRatio += 1
+				o.storageRatio += 1
 			}
 
 			// Update offset to match where it is in body
-			eh.Offset = uint32(o.builder.offset)
+			eh.Offset = uint32(o.offset) + uint32(hdrLen)
+			log.Trace("log rebuild offset", "extent", eh.Extent, "offset", eh.Offset)
 		}
 
-		o.builder.extents = append(o.builder.extents, eh)
+		o.extents = append(o.extents, eh)
 
-		_, err := o.em.Update(o.log, ExtentLocation{
+		_, err = o.em.Update(log, ExtentLocation{
 			ExtentHeader: eh,
 		})
 		if err != nil {
 			return err
 		}
 
-		o.builder.offset += eh.Size
+		o.offset += (eh.Size + uint64(hdrLen))
 	}
 
 	return nil
@@ -287,8 +297,6 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	body := o.builder.body.Bytes()
 
 	var ret []Extent
 
@@ -314,44 +322,69 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 			continue
 		}
 
-		srcBytes := body[srcRng.Offset:]
-
-		o.log.Trace("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags)
+		o.log.Trace("reading partial from write cache", "rng", srcRng.Live, "dest", subDest.Extent, "flags", srcRng.Flags())
 
 		var srcData []byte
 
 		switch srcRng.Flags() {
 		case Uncompressed:
-			srcData = srcBytes[:srcRng.Size]
-		case Compressed:
-			s := time.Now()
-			origSize := srcRng.RawSize // binary.BigEndian.Uint32(srcBytes)
-			if origSize == 0 {
-				panic("missing rawsize")
+			if len(o.buf) < int(srcRng.Size) {
+				o.buf = make([]byte, srcRng.Size)
 			}
 
-			srcBytes = srcBytes[:srcRng.Size]
+			srcData = o.buf[:srcRng.Size]
 
-			o.log.Debug("compressed range", "offset", srcRng.Offset)
+			offset := srcRng.Offset // + (uint32(subDest.LBA-srcRng.LBA) * BlockSize)
+			o.log.Trace("reading uncompressed from write log", "src", srcRng.Live, "dest", subDest.Extent, "byte-offset", offset)
+			n, err := o.builder.logF.ReadAt(srcData, int64(offset))
+			if err != nil {
+				return nil, err
+			}
+
+			if n != len(srcData) {
+				return nil, fmt.Errorf("reading from write log returned wrong number of bytes (%d, %d)", n, subDest.ByteSize())
+			}
+		case Compressed:
+			s := time.Now()
+			origSize := srcRng.Size // Size is the "on-disk" size, ie the compressed size
 
 			if len(o.buf) < int(origSize) {
 				o.buf = make([]byte, origSize)
 			}
 
-			o.log.Debug("original size of compressed extent", "len", origSize, "comp size", srcRng.Size)
+			srcData = o.buf[:origSize]
 
-			n, err := lz4.UncompressBlock(srcBytes, o.buf)
+			n, err := o.builder.logF.ReadAt(srcData, int64(srcRng.Offset))
 			if err != nil {
-				return nil, fmt.Errorf("error uncompressing (src=%d, dest=%d): %w", len(srcBytes), len(o.buf), err)
+				o.log.Trace("file size on read failure", "size", o.builder.offset)
+				return nil, errors.Wrapf(err, "reading extent at %d:%d (%d, %d)",
+					srcRng.Offset, srcRng.Size, len(srcData), srcRng.RawSize)
 			}
 
-			if n > int(origSize) {
+			if n != len(srcData) {
+				return nil, fmt.Errorf("reading from write log returned wrong number of bytes 2 (%d, %d)", n, len(srcData))
+			}
+
+			o.log.Debug("compressed range", "offset", srcRng.Offset)
+
+			o.log.Debug("original size of compressed extent", "len", srcRng.RawSize, "comp-size", srcRng.Size)
+
+			uncompData := buffers.Get(int(srcRng.RawSize))
+			defer buffers.Return(uncompData)
+
+			n, err = lz4.UncompressBlock(srcData, uncompData)
+			if err != nil {
+				return nil, fmt.Errorf("fill-extent: error uncompressing (src=%d, dest=%d): %w", len(srcData), len(uncompData), err)
+			}
+
+			if n > int(srcRng.RawSize) {
 				o.log.Warn("unusual long write detected", "expected", origSize, "actual", n, "buf-len", len(o.buf))
-			} else if n < int(origSize) {
+			} else if n < int(srcRng.RawSize) {
 				return nil, fmt.Errorf("didn't fill destination (%d != %d)", n, origSize)
 			}
 
-			srcData = o.buf[:origSize]
+			srcData = uncompData
+
 			compTime += time.Since(s)
 		case Empty:
 			// handled above, shouldn't be here.
@@ -384,7 +417,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 }
 
 func (o *SegmentCreator) WriteExtent(ext RangeData) error {
-	data, eh, err := o.builder.WriteExtent(o.log, ext.View())
+	_, eh, err := o.builder.WriteExtent(o.log, ext.View())
 	if err != nil {
 		return err
 	}
@@ -401,10 +434,7 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 		return err
 	}
 
-	return o.writeLog(
-		eh,
-		data,
-	)
+	return nil
 }
 
 type SegmentStats struct {
@@ -421,17 +451,25 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 		return locs, stats, err
 	}
 
+	return locs, stats, nil
+}
+
+func (o *SegmentCreator) Close() error {
+	return o.builder.Close(o.log)
+}
+
+func (o *SegmentBuilder) Close(log logger.Logger) error {
 	if o.logF != nil {
 		o.logF.Close()
 
-		o.log.Debug("removing log file", "name", o.logF.Name())
-		err = os.Remove(o.logF.Name())
+		log.Debug("removing log file", "name", o.logF.Name())
+		err := os.Remove(o.logF.Name())
 		if err != nil {
-			o.log.Error("error removing log file", "error", err)
+			log.Error("error removing log file", "error", err)
 		}
 	}
 
-	return locs, stats, nil
+	return nil
 }
 
 const entropyLimit = 7.0
@@ -455,6 +493,10 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 	if ext.EmptyP() {
 		o.emptyBlocks += int(ext.Extent.Blocks)
 	} else {
+		if ext.Extent.Blocks == 1 {
+			o.singleBEs++
+		}
+
 		input := ext.ReadData()
 		o.inputBytes += int64(len(input))
 
@@ -484,7 +526,7 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 			}
 
 			// Only keep compression greater than 1.5x
-			if compressedSize > 0 && compressedSize < ((extBytes*3)/2) {
+			if compressedSize > 0 && ((compressedSize*3)/2) < extBytes {
 				useCompression = true
 			}
 		}
@@ -495,39 +537,35 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 
 			data = o.buf[:compressedSize]
 
-			log.Debug("writing compressed range",
-				"offset", o.offset,
-				"size", eh.Size,
-				"input-size", eh.RawSize,
-			)
-
 			o.addToHistogram(float64(len(input)) / float64(len(data)))
 		} else {
 			eh.Size = uint64(extBytes)
 
 			data = ext.ReadData()
 
-			log.Debug("writing uncompressed range",
-				"offset", o.offset,
-				"size", eh.Size,
-				"raw-size", eh.RawSize,
-			)
 			o.addToHistogram(1)
 		}
 
 		o.storageBytes += int64(len(data))
 		o.storageRatio += (float64(len(data)) / float64(len(input)))
-
-		n, err := o.body.Write(data)
-		if err != nil {
-			return nil, eh, err
-		}
-
-		eh.Offset = uint32(o.offset)
-
-		o.offset += uint64(n)
 	}
 
+	hdr, n, err := o.writeLog(eh, data)
+	if err != nil {
+		return nil, eh, err
+	}
+
+	eh.Offset = uint32(o.offset) + uint32(hdr)
+
+	o.offset += uint64(n)
+
+	log.Debug("wrote range",
+		"offset", eh.Offset,
+		"size", eh.Size,
+		"raw-size", eh.RawSize,
+		"blocks", eh.Blocks,
+		"offset", eh.Offset,
+	)
 	o.extents = append(o.extents, eh)
 
 	return data, eh, nil
@@ -545,7 +583,9 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 
 	for _, blk := range o.extents {
 		stats.Blocks += uint64(blk.Blocks)
-		err := blk.Write(&o.header)
+
+		log.Trace("writing extent to header", "extent", blk.Extent, "offset", blk.Offset, "blocks", blk.Blocks)
+		_, err := blk.Write(&o.header)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -572,9 +612,19 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 			ExtentHeader: eh,
 			Segment:      seg,
 		}
+		log.Trace("advertising extent", "extent", eh.Extent, "offset", eh.Offset, "blocks", eh.Blocks)
 	}
 
-	f, err := sa.WriteSegment(ctx, seg)
+	//f, err := sa.WriteSegment(ctx, seg)
+	//if err != nil {
+	//return nil, nil, err
+	//}
+
+	completedPath := o.path + ".complete"
+
+	defer os.Remove(completedPath)
+
+	f, err := os.Create(completedPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -596,14 +646,24 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 
 	stats.TotalBytes += uint64(n)
 
-	n, err = io.Copy(f, bytes.NewReader(o.body.Bytes()))
+	_, err = o.logF.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	n, err = io.Copy(f, o.logF)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	stats.TotalBytes += uint64(n)
 
-	f.Close()
+	f.Seek(0, io.SeekStart)
+
+	err = sa.UploadSegment(ctx, seg, f)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	err = sa.AppendToSegments(ctx, volName, seg)
 	if err != nil {

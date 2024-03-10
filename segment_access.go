@@ -3,6 +3,7 @@ package lsvd
 import (
 	"context"
 	"io"
+	"os"
 )
 
 type SegmentReader interface {
@@ -24,6 +25,7 @@ type SegmentAccess interface {
 	ListSegments(ctx context.Context, vol string) ([]SegmentId, error)
 	OpenSegment(ctx context.Context, seg SegmentId) (SegmentReader, error)
 	WriteSegment(ctx context.Context, seg SegmentId) (io.WriteCloser, error)
+	UploadSegment(ctx context.Context, seg SegmentId, f *os.File) error
 
 	RemoveSegment(ctx context.Context, seg SegmentId) error
 	RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error

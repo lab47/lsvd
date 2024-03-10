@@ -195,6 +195,17 @@ func (s *S3Access) WriteSegment(ctx context.Context, seg SegmentId) (io.WriteClo
 	return bg, nil
 }
 
+func (s *S3Access) UploadSegment(ctx context.Context, seg SegmentId, f *os.File) error {
+	key := "segments/segment." + ulid.ULID(seg).String()
+	_, err := s.sc.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+		Body:   f,
+	})
+
+	return err
+}
+
 func (s *S3Access) WriteMetadata(ctx context.Context, volName, name string) (io.WriteCloser, error) {
 	var mw mdWriter
 	mw.ctx = ctx

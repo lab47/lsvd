@@ -1,10 +1,15 @@
 package lsvd
 
-import "context"
+import (
+	"context"
+	"path/filepath"
+)
 
 type Packer struct {
 	d *Disk
 	m *ExtentMap
+
+	segId SegmentId
 }
 
 func (p *Packer) iterateExtents(ctx context.Context) error {
@@ -12,6 +17,12 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 
 	sb := &SegmentBuilder{
 		useZstd: true,
+	}
+
+	path := filepath.Join(p.d.path, "writecache."+p.segId.String())
+	err := sb.OpenWrite(path, p.d.log)
+	if err != nil {
+		return err
 	}
 
 	d := p.d
@@ -73,14 +84,11 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 }
 
 func (p *Packer) flushSegment(ctx context.Context, sb *SegmentBuilder) error {
+	defer sb.Close(p.d.log)
+
 	d := p.d
 
-	newSeg, err := d.nextSeq()
-	if err != nil {
-		return err
-	}
-
-	sid := SegmentId(newSeg)
+	sid := p.segId
 
 	d.log.Debug("creating packed segment", "id", sid)
 
@@ -100,12 +108,28 @@ func (p *Packer) flushSegment(ctx context.Context, sb *SegmentBuilder) error {
 }
 
 func (p *Packer) Pack(ctx context.Context) error {
-	err := p.iterateExtents(ctx)
+	seg, err := p.d.nextSeq()
 	if err != nil {
 		return err
 	}
 
-	return p.removeOldSegments(ctx)
+	p.segId = seg
+
+	for seg, stats := range p.d.s.segments {
+		p.d.log.Trace("pre-pack segment", "segment", seg, "used", stats.Used)
+	}
+
+	err = p.iterateExtents(ctx)
+	if err != nil {
+		return err
+	}
+
+	err = p.removeOldSegments(ctx)
+	for seg, stats := range p.d.s.segments {
+		p.d.log.Trace("post-pack segment", "segment", seg, "used", stats.Used)
+	}
+
+	return err
 }
 
 func (p *Packer) removeOldSegments(ctx context.Context) error {
@@ -134,6 +158,8 @@ func (d *Disk) Pack(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	d.log.Trace("beginning pack process")
 
 	packer := &Packer{d: d, m: d.lba2pba}
 	return packer.Pack(ctx)

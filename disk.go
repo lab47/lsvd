@@ -123,13 +123,13 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	if !d.readOnly {
 		err = d.restoreWriteCache(ctx)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrapf(err, "restoring write cache")
 		}
 
 		if d.curOC == nil {
 			d.curOC, err = d.newSegmentCreator()
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrapf(err, "creating segment creator")
 			}
 		}
 
@@ -148,7 +148,7 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	} else {
 		err = d.rebuildFromSegments(ctx)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrapf(err, "rebuilding segments")
 		}
 	}
 
@@ -201,6 +201,7 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 		return nil, err
 	}
 
+	d.log.Trace("creating new segment creator", "segment", seq, "oc", fmt.Sprintf("%p", sc))
 	return sc, nil
 }
 
@@ -288,6 +289,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		} else {
 			// Pure read from one extent, optimize!
 			if len(remaining) == 1 && remaining[0] == rng && len(pes) == 1 && pes[0].Flags() == Uncompressed {
+				log.Trace("reading single, uncompressed extent via fast path")
 				// Invariants: remaining[0] == rng == data.Extent
 				// Invariants: pes[0].Live fully covers remaining[0]
 				pe := pes[0]
@@ -364,6 +366,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		return []Extent{data.Extent}, nil
 	}
 
+	log.Trace("consulting oc for extent", "oc", fmt.Sprintf("%p", d.curOC))
 	used, err := d.curOC.FillExtent(data.View())
 	if err != nil {
 		return nil, err
@@ -438,6 +441,7 @@ func (d *Disk) readOneExtent(
 	}
 
 	if len(cps) == 1 {
+		d.log.Trace("single extent found directly in read cache")
 		// There are a few elements, let's write them out so we keep them straight:
 		// pe.Extent is the data covered by cps[0]
 		// pe.Live is sub-range of pe.Extent that is only the data to consider
@@ -455,6 +459,8 @@ func (d *Disk) readOneExtent(
 
 		return adjusted, nil
 	}
+
+	d.log.Trace("single extent not found in cache", "cps", len(cps))
 
 	inflateCache.Inc()
 
@@ -593,6 +599,7 @@ func (d *Disk) checkFlush(ctx context.Context) error {
 			"blocks", d.curOC.TotalBlocks(),
 			"input-bytes", d.curOC.InputBytes(),
 			"empty-blocks", d.curOC.EmptyBlocks(),
+			"single-bes", d.curOC.builder.singleBEs,
 			"compression-rate", d.curOC.CompressionRate(),
 			"storage-ratio", d.curOC.StorageRatio(),
 			"comp-rate-histo", d.curOC.CompressionRateHistogram(),
@@ -675,7 +682,7 @@ func (d *Disk) SyncWriteCache() error {
 	iops.Inc()
 
 	if d.curOC != nil {
-		return d.curOC.Sync()
+		return d.curOC.builder.Sync()
 	}
 
 	return nil

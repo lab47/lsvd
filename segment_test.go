@@ -1,7 +1,6 @@
 package lsvd
 
 import (
-	"bufio"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,17 +21,10 @@ func TestSegmentCreator(t *testing.T) {
 
 		defer os.RemoveAll(tmpdir)
 
-		f, err := os.Create(filepath.Join(tmpdir, "log"))
+		path := filepath.Join(tmpdir, "log")
+
+		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
-
-		defer f.Close()
-
-		oc := &SegmentCreator{
-			log: log,
-
-			logF: f,
-			logW: bufio.NewWriter(f),
-		}
 
 		data := NewRangeData(Extent{47, 5})
 
@@ -43,6 +35,8 @@ func TestSegmentCreator(t *testing.T) {
 		err = oc.WriteExtent(data)
 		r.NoError(err)
 
+		f := oc.builder.logF
+
 		_, err = f.Seek(0, io.SeekStart)
 		r.NoError(err)
 
@@ -51,7 +45,9 @@ func TestSegmentCreator(t *testing.T) {
 			em:  NewExtentMap(),
 		}
 
-		err = oc2.readLog(f)
+		oc2.builder.em = oc2.em
+
+		err = oc2.builder.readLog(f, log)
 		r.NoError(err)
 
 		r.Equal(oc.builder.body.Bytes(), oc2.builder.body.Bytes())
@@ -65,17 +61,10 @@ func TestSegmentCreator(t *testing.T) {
 
 		defer os.RemoveAll(tmpdir)
 
-		f, err := os.Create(filepath.Join(tmpdir, "log"))
+		path := filepath.Join(tmpdir, "log")
+
+		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
-
-		defer f.Close()
-
-		oc := &SegmentCreator{
-			log: log,
-
-			logF: f,
-			logW: bufio.NewWriter(f),
-		}
 
 		data := NewRangeData(Extent{47, 5})
 
@@ -107,17 +96,10 @@ func TestSegmentCreator(t *testing.T) {
 
 		defer os.RemoveAll(tmpdir)
 
-		f, err := os.Create(filepath.Join(tmpdir, "log"))
+		path := filepath.Join(tmpdir, "log")
+
+		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
-
-		defer f.Close()
-
-		oc := &SegmentCreator{
-			log: log,
-
-			logF: f,
-			logW: bufio.NewWriter(f),
-		}
 
 		data := NewRangeData(Extent{47, 5})
 

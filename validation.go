@@ -23,7 +23,7 @@ func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreato
 
 		_, err := oc.FillExtent(data.View())
 		if err != nil {
-			d.log.Error("error reading extent for validation", "error", err)
+			d.log.Error("error reading extent for validation", "error", err, "extent", ent.Extent, "offset", ent.Offset, "size", ent.Size)
 		}
 
 		sum := "0"
@@ -32,6 +32,7 @@ func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreato
 		}
 
 		e.sums[ent.Extent] = sum
+		d.log.Trace("sum of extent", "extent", ent.Extent, "sum", sum)
 
 		ranges, err := d.lba2pba.Resolve(log, ent.Extent)
 		if err != nil {

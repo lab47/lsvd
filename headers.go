@@ -105,41 +105,53 @@ func init() {
 	}
 }
 
-func (e *ExtentHeader) Read(r io.ByteReader) error {
-	lba, err := binary.ReadUvarint(r)
+func (e *ExtentHeader) Read(r io.ByteReader) (int, error) {
+	var size int
+
+	lba, n, err := ReadUvarint(r)
 	if err != nil {
-		return err
+		return size, err
 	}
+
+	size += n
 
 	e.LBA = LBA(lba)
 
-	blocks, err := binary.ReadUvarint(r)
+	blocks, n, err := ReadUvarint(r)
 	if err != nil {
-		return err
+		return size, err
 	}
+
+	size += n
 
 	e.Blocks = uint32(blocks)
 
-	e.Size, err = binary.ReadUvarint(r)
+	e.Size, n, err = ReadUvarint(r)
 	if err != nil {
-		return err
+		return size, err
 	}
 
-	off, err := binary.ReadUvarint(r)
+	size += n
+
+	off, n, err := ReadUvarint(r)
 	if err != nil {
-		return err
+		return size, err
 	}
+
+	size += n
 
 	e.Offset = uint32(off)
 
-	rs, err := binary.ReadUvarint(r)
+	rs, n, err := ReadUvarint(r)
 	if err != nil {
-		return err
+		return size, err
 	}
+
+	size += n
 
 	e.RawSize = uint32(rs)
 
-	return nil
+	return size, nil
 }
 
 // PutUvarint encodes a uint64 into buf and returns the number of bytes written.
@@ -159,31 +171,70 @@ func WriteUvarint(w io.ByteWriter, x uint64) (int, error) {
 	return i + 1, err
 }
 
-func (e *ExtentHeader) Write(w io.ByteWriter) error {
-	_, err := WriteUvarint(w, uint64(e.LBA))
+// ReadUvarint reads an encoded unsigned integer from r and returns it as a uint64.
+// The error is [io.EOF] only if no bytes were read.
+// If an [io.EOF] happens after reading some but not all the bytes,
+// ReadUvarint returns [io.ErrUnexpectedEOF].
+func ReadUvarint(r io.ByteReader) (uint64, int, error) {
+	var x uint64
+	var s uint
+	for i := 0; i < binary.MaxVarintLen64; i++ {
+		b, err := r.ReadByte()
+		if err != nil {
+			if i > 0 && err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return x, i, err
+		}
+		if b < 0x80 {
+			if i == binary.MaxVarintLen64-1 && b > 1 {
+				return x, i, io.EOF
+			}
+			return x | uint64(b)<<s, i + 1, nil
+		}
+		x |= uint64(b&0x7f) << s
+		s += 7
+	}
+	return x, binary.MaxVarintLen64, io.EOF
+}
+
+func (e *ExtentHeader) Write(w io.ByteWriter) (int, error) {
+	var sz int
+
+	n, err := WriteUvarint(w, uint64(e.LBA))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	_, err = WriteUvarint(w, uint64(e.Blocks))
+	sz += n
+
+	n, err = WriteUvarint(w, uint64(e.Blocks))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	_, err = WriteUvarint(w, uint64(e.Size))
+	sz += n
+
+	n, err = WriteUvarint(w, uint64(e.Size))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	_, err = WriteUvarint(w, uint64(e.Offset))
+	sz += n
+
+	n, err = WriteUvarint(w, uint64(e.Offset))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	_, err = WriteUvarint(w, uint64(e.RawSize))
+	sz += n
+
+	n, err = WriteUvarint(w, uint64(e.RawSize))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	sz += n
+
+	return sz, nil
 }

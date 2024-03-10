@@ -103,6 +103,17 @@ func (l *LocalFileAccess) WriteSegment(ctx context.Context, seg SegmentId) (io.W
 	return os.Create(path)
 }
 
+func (l *LocalFileAccess) UploadSegment(ctx context.Context, seg SegmentId, f *os.File) error {
+	path := filepath.Join(l.Dir, "segments", "segment."+ulid.ULID(seg).String())
+	dest, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(dest, f)
+	return err
+}
+
 func (l *LocalFileAccess) AppendToSegments(ctx context.Context, vol string, seg SegmentId) error {
 	segments, err := l.ListSegments(ctx, vol)
 	if err != nil {

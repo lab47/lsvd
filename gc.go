@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -295,6 +296,14 @@ func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, 
 		seg: seg,
 
 		newSegment: newSeg,
+	}
+
+	ci.builder.em = NewExtentMap()
+
+	path := filepath.Join(d.path, "writecache."+seg.String())
+	err = ci.builder.OpenWrite(path, d.log)
+	if err != nil {
+		return nil, err
 	}
 
 	err = ci.hdr.Read(br)

@@ -12,6 +12,7 @@ import (
 )
 
 type ExtentReader struct {
+	log          logger.Logger
 	openSegments *lru.Cache[SegmentId, SegmentReader]
 	sa           SegmentAccess
 	rangeCache   *RangeCache
@@ -28,6 +29,7 @@ func NewExtentReader(log logger.Logger, path string, sa SegmentAccess) (*ExtentR
 	}
 
 	er := &ExtentReader{
+		log:          log,
 		openSegments: openSegments,
 		sa:           sa,
 	}
@@ -72,6 +74,8 @@ func (d *ExtentReader) fetchData(ctx context.Context, seg SegmentId, data []byte
 		openSegments.Inc()
 	}
 
+	d.log.Trace("reading data from segment in storage", "segment", seg, "offset", off)
+
 	_, err := ci.ReadAt(data, off)
 	if err != nil {
 		return nil
@@ -97,7 +101,7 @@ func FillFromeCache(d []byte, cps []CachePosition) error {
 
 func (d *ExtentReader) fetchUncompressedExtent(
 	ctx context.Context,
-	_ logger.Logger,
+	log logger.Logger,
 	pe *PartialExtent,
 ) (RangeData, []CachePosition, error) {
 	startFetch := time.Now()
@@ -108,6 +112,8 @@ func (d *ExtentReader) fetchUncompressedExtent(
 	if err != nil {
 		return RangeData{}, nil, err
 	}
+
+	log.Trace("reading uncompressed extent", "offset", addr.Offset, "size", addr.Size, "cache-offset", cp[0].off)
 
 	readProcessing.Add(time.Since(startFetch).Seconds())
 	return RangeData{}, cp, nil

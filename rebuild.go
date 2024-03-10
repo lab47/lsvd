@@ -63,7 +63,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 	for i := uint32(0); i < hdr.ExtentCount; i++ {
 		var eh ExtentHeader
 
-		err := eh.Read(br)
+		_, err := eh.Read(br)
 		if err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func (d *Disk) restoreWriteCache(ctx context.Context) error {
 		return nil
 	}
 
-	d.log.Info("restoring write cache")
+	d.log.Info("restoring write cache", "entries", entries)
 
 	for _, ent := range entries {
 		err := d.restoreWriteCacheFile(ctx, ent)
