@@ -164,7 +164,7 @@ func (o *SegmentCreator) ShouldFlush(sizeThreshold int) bool {
 }
 
 func (o *SegmentCreator) BodySize() int {
-	return o.builder.body.Len()
+	return int(o.builder.offset)
 }
 
 func (o *SegmentCreator) Entries() int {
