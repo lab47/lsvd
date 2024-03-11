@@ -82,7 +82,7 @@ const (
 
 type ExtentHeader struct {
 	Extent
-	Size    uint64
+	Size    uint32
 	Offset  uint32
 	RawSize uint32 // used when the extent is compressed
 }
@@ -126,10 +126,12 @@ func (e *ExtentHeader) Read(r io.ByteReader) (int, error) {
 
 	e.Blocks = uint32(blocks)
 
-	e.Size, n, err = ReadUvarint(r)
+	esz, n, err := ReadUvarint(r)
 	if err != nil {
 		return size, err
 	}
+
+	e.Size = uint32(esz)
 
 	size += n
 

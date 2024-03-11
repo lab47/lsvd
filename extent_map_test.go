@@ -1,7 +1,6 @@
 package lsvd
 
 import (
-	"crypto/rand"
 	"testing"
 
 	"github.com/lab47/lsvd/logger"
@@ -16,7 +15,7 @@ func TestExtentMap(t *testing.T) {
 
 	log := logger.New(logger.Trace)
 
-	s1 := SegmentId(ulid.MustNew(ulid.Now(), rand.Reader))
+	s1 := SegmentId(ulid.MustNew(ulid.Now(), ulid.DefaultEntropy()))
 
 	t.Run("disjoint updates prefix", func(t *testing.T) {
 		r := require.New(t)

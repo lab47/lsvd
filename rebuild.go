@@ -162,7 +162,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	for i := m.m.Iterator(); i.Valid(); i.Next() {
 		ro := i.Value()
 
-		d.s.CreateOrUpdate(ro.Segment, ro.Size, uint64(ro.Live.Blocks))
+		d.s.CreateOrUpdate(ro.Segment, uint64(ro.Size), uint64(ro.Live.Blocks))
 	}
 
 	d.lba2pba = m

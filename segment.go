@@ -279,7 +279,7 @@ func (o *SegmentBuilder) readLog(f *os.File, log logger.Logger) error {
 			return err
 		}
 
-		o.offset += (eh.Size + uint64(hdrLen))
+		o.offset += (uint64(eh.Size) + uint64(hdrLen))
 	}
 
 	return nil
@@ -480,7 +480,7 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 		o.buf = make([]byte, extBytes*2)
 	}
 
-	o.totalBlocks += int(ext.Extent.Blocks)
+	o.totalBlocks += int(ext.Blocks)
 
 	var data []byte
 
@@ -491,9 +491,9 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 	o.cnt++
 
 	if ext.EmptyP() {
-		o.emptyBlocks += int(ext.Extent.Blocks)
+		o.emptyBlocks += int(ext.Blocks)
 	} else {
-		if ext.Extent.Blocks == 1 {
+		if ext.Blocks == 1 {
 			o.singleBEs++
 		}
 
@@ -533,13 +533,13 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 
 		if useCompression {
 			eh.RawSize = uint32(extBytes)
-			eh.Size = uint64(compressedSize)
+			eh.Size = uint32(compressedSize)
 
 			data = o.buf[:compressedSize]
 
 			o.addToHistogram(float64(len(input)) / float64(len(data)))
 		} else {
-			eh.Size = uint64(extBytes)
+			eh.Size = uint32(extBytes)
 
 			data = ext.ReadData()
 
@@ -614,11 +614,6 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 		}
 		log.Trace("advertising extent", "extent", eh.Extent, "offset", eh.Offset, "blocks", eh.Blocks)
 	}
-
-	//f, err := sa.WriteSegment(ctx, seg)
-	//if err != nil {
-	//return nil, nil, err
-	//}
 
 	completedPath := o.path + ".complete"
 
