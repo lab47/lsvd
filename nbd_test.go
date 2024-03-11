@@ -67,4 +67,67 @@ func TestNBD(t *testing.T) {
 
 		blockEqual(t, testRandX, data)
 	})
+
+	t.Run("attempts to build larger write extents", func(t *testing.T) {
+		r := require.New(t)
+
+		dir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(dir)
+
+		d, err := NewDisk(ctx, log, dir)
+		r.NoError(err)
+
+		b := NBDWrapper(ctx, log, d)
+
+		n, err := b.WriteAt(testRand, 0)
+		r.NoError(err)
+		r.Equal(len(testRand), n)
+
+		r.Equal(Extent{0, 1}, b.pendingWrite)
+		r.Equal([]byte(testRand), b.pendingWriteData.Bytes())
+
+		n, err = b.WriteAt(testRand, BlockSize)
+		r.NoError(err)
+		r.Equal(len(testRand), n)
+
+		r.Equal(Extent{0, 2}, b.pendingWrite)
+		r.Equal(BlockSize*2, b.pendingWriteData.Len())
+		r.Equal([]byte(testRand), b.pendingWriteData.Bytes()[:BlockSize])
+		r.Equal([]byte(testRand), b.pendingWriteData.Bytes()[BlockSize:])
+
+		n, err = b.WriteAt(testRand, BlockSize*10)
+		r.NoError(err)
+		r.Equal(len(testRand), n)
+
+		r.Equal(Extent{10, 1}, b.pendingWrite)
+		r.Equal(BlockSize, b.pendingWriteData.Len())
+		r.Equal([]byte(testRand), b.pendingWriteData.Bytes())
+
+		err = b.Trim(0, BlockSize)
+		r.NoError(err)
+
+		r.Equal(Extent{0, 0}, b.pendingWrite)
+		r.Equal(0, b.pendingWriteData.Len())
+		r.Equal(Extent{0, 1}, b.pendingTrim)
+
+		n, err = b.WriteAt(testRand, 0)
+		r.NoError(err)
+		r.Equal(len(testRand), n)
+
+		r.Equal(Extent{0, 0}, b.pendingTrim)
+		r.Equal(Extent{0, 1}, b.pendingWrite)
+		r.Equal(BlockSize, b.pendingWriteData.Len())
+		r.Equal([]byte(testRand), b.pendingWriteData.Bytes())
+
+		err = b.Trim(0, BlockSize)
+		r.NoError(err)
+
+		r.Equal(Extent{0, 1}, b.pendingTrim)
+
+		err = b.Trim(0, 2*BlockSize)
+		r.NoError(err)
+
+		r.Equal(Extent{0, 2}, b.pendingTrim)
+	})
 }

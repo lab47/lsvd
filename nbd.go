@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"syscall"
@@ -23,6 +24,11 @@ type nbdWrapper struct {
 	lastCheckpoint time.Time
 
 	buf *Buffers
+
+	pendingWrite     Extent
+	pendingWriteData bytes.Buffer
+
+	pendingTrim Extent
 }
 
 type NBDBackendOpen struct {
@@ -39,7 +45,7 @@ func (n *NBDBackendOpen) Close(b nbd.Backend) {}
 
 var _ nbd.Backend = &nbdWrapper{}
 
-func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) nbd.Backend {
+func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) *nbdWrapper {
 	w := &nbdWrapper{
 		log: log,
 		ctx: ctx,
@@ -91,6 +97,11 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 	defer n.buf.Reset()
 
+	err := n.flushPendingWrite()
+	if err != nil {
+		return 0, err
+	}
+
 	data := MapRangeData(ext, b)
 
 	cps, err := n.d.ReadExtentInto(n.ctx, data)
@@ -121,6 +132,11 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 	)
 
 	defer n.buf.Reset()
+
+	err := n.flushPendingWrite()
+	if err != nil {
+		return false, err
+	}
 
 	data := MapRangeData(ext, b)
 
@@ -186,6 +202,70 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 	return true, nil
 }
 
+func (n *nbdWrapper) flushPendingWrite() error {
+	if n.pendingTrim.Blocks > 0 {
+		err := n.d.ZeroBlocks(n.ctx, n.pendingTrim)
+		n.pendingTrim = Extent{}
+		if err != nil {
+			return err
+		}
+	}
+
+	if n.pendingWriteData.Len() == 0 {
+		return nil
+	}
+
+	defer n.pendingWriteData.Reset()
+
+	pending := n.pendingWrite
+	n.pendingWrite = Extent{}
+
+	return n.d.WriteExtent(n.ctx, MapRangeData(pending, n.pendingWriteData.Bytes()))
+}
+
+func (n *nbdWrapper) queuePendingWrite(ext Extent, data []byte) bool {
+	if n.pendingTrim.Blocks > 0 {
+		return false
+	}
+
+	if n.pendingWriteData.Len() == 0 {
+		n.pendingWrite = ext
+		n.pendingWriteData.Write(data)
+		return true
+	}
+
+	if n.pendingWrite.Last()+1 != ext.LBA {
+		return false
+	}
+
+	if n.pendingWrite.Blocks+ext.Blocks > 20 {
+		return false
+	}
+
+	n.pendingWrite.Blocks += ext.Blocks
+	n.pendingWriteData.Write(data)
+
+	return true
+}
+
+func (n *nbdWrapper) queueTrim(ext Extent) bool {
+	if n.pendingWrite.Blocks > 0 {
+		return false
+	}
+
+	if n.pendingTrim.Blocks == 0 {
+		n.pendingTrim = ext
+		return true
+	}
+
+	if n.pendingTrim.Last()+1 == ext.LBA {
+		n.pendingTrim.Blocks += ext.Blocks
+		return true
+	}
+
+	return false
+}
+
 func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	n.log.Debug("nbd write-at", "size", len(b), "offset", off)
 
@@ -202,10 +282,21 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 		logBlocks(n.log, "write block sums", blk, b)
 	}
 
-	err := n.d.WriteExtent(n.ctx, MapRangeData(ext, b))
+	if n.queuePendingWrite(ext, b) {
+		return len(b), nil
+	}
+
+	err := n.flushPendingWrite()
 	if err != nil {
-		n.log.Error("nbd write-at error", "error", err, "block", blk)
 		return 0, err
+	}
+
+	if !n.queuePendingWrite(ext, b) {
+		err := n.d.WriteExtent(n.ctx, MapRangeData(ext, b))
+		if err != nil {
+			n.log.Error("nbd write-at error", "error", err, "block", blk)
+			return 0, err
+		}
 	}
 
 	return len(b), nil
@@ -258,34 +349,30 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 		"extent", Extent{blk, uint32(numBlocks)},
 	)
 
-	err := n.d.ZeroBlocks(n.ctx, Extent{blk, numBlocks})
+	ext := Extent{LBA: blk, Blocks: numBlocks}
+
+	if n.queueTrim(ext) {
+		return nil
+	}
+
+	err := n.flushPendingWrite()
 	if err != nil {
-		n.log.Error("nbd write-at error", "error", err, "block", blk)
 		return err
+	}
+
+	if !n.queueTrim(ext) {
+		err := n.d.ZeroBlocks(n.ctx, Extent{blk, numBlocks})
+		if err != nil {
+			n.log.Error("nbd write-at error", "error", err, "block", blk)
+			return err
+		}
 	}
 
 	return nil
 }
 
 func (n *nbdWrapper) Trim(off, size int64) error {
-	blk := LBA(off / BlockSize)
-
-	defer n.buf.Reset()
-
-	numBlocks := uint32(size / BlockSize)
-
-	n.log.Debug("nbd trim",
-		"size", size, "offset", off,
-		"extent", Extent{blk, uint32(numBlocks)},
-	)
-
-	err := n.d.ZeroBlocks(n.ctx, Extent{blk, numBlocks})
-	if err != nil {
-		n.log.Error("nbd trim error", "error", err, "block", blk)
-		return err
-	}
-
-	return nil
+	return n.ZeroAt(off, size)
 }
 
 func RoundToBlockSize(sz int64) int64 {
@@ -317,5 +404,11 @@ func (n *nbdWrapper) Sync() error {
 	defer n.buf.Reset()
 
 	n.log.Debug("nbd sync")
+
+	err := n.flushPendingWrite()
+	if err != nil {
+		return err
+	}
+
 	return n.d.SyncWriteCache()
 }
