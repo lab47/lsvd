@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -25,6 +26,8 @@ type S3Access struct {
 	sc       *s3.Client
 	uploader *manager.Uploader
 	bucket   string
+
+	mu sync.Mutex
 }
 
 func NewS3Access(log logger.Logger, host, bucket string, cfg aws.Config) (*S3Access, error) {
@@ -252,6 +255,9 @@ func (s *S3Access) RemoveSegment(ctx context.Context, seg SegmentId) error {
 }
 
 func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg SegmentId) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	segments, err := s.ListSegments(ctx, vol)
 	if err != nil {
 		return err
@@ -267,15 +273,18 @@ func (s *S3Access) RemoveSegmentFromVolume(ctx context.Context, vol string, seg 
 
 	name := filepath.Join("volumes", vol, "segments")
 
-	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err = s.sc.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket,
 		Key:    &name,
-		Body:   &buf,
+		Body:   bytes.NewReader(buf.Bytes()),
 	})
 	return err
 }
 
 func (s *S3Access) AppendToSegments(ctx context.Context, vol string, seg SegmentId) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	segments, err := s.ListSegments(ctx, vol)
 	if err != nil {
 		return err
@@ -291,10 +300,10 @@ func (s *S3Access) AppendToSegments(ctx context.Context, vol string, seg Segment
 
 	name := filepath.Join("volumes", vol, "segments")
 
-	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err = s.sc.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket,
 		Key:    &name,
-		Body:   &buf,
+		Body:   bytes.NewReader(buf.Bytes()),
 	})
 	return err
 }
@@ -311,7 +320,7 @@ func (s *S3Access) InitVolume(ctx context.Context, vol *VolumeInfo) error {
 		return err
 	}
 
-	_, err = s.uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err = s.sc.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
 		Body:   bytes.NewReader(data),
