@@ -647,6 +647,10 @@ func (d *Disk) WriteExtent(ctx context.Context, data RangeData) error {
 	return d.checkFlush(ctx)
 }
 
+func (d *Disk) Extents() int {
+	return d.lba2pba.Len()
+}
+
 // WriteExtents writes multiple extents without performing any segment
 // flush checking between them, thusly making sure that all of them end
 // up in the same segment.
