@@ -97,9 +97,8 @@ func (t *TreeMap[Key, Value]) Set(key Key, value Value) {
 		t.freelist = t.freelist[:len(t.freelist)-1]
 		*x = node[Key, Value]{parent: parent, value: value, key: key}
 	} else {
-		idx := len(t.nodes)
-		t.nodes = append(t.nodes, node[Key, Value]{parent: parent, value: value, key: key})
-		x = &t.nodes[idx]
+		x = t.allocNode()
+		*x = node[Key, Value]{parent: parent, value: value, key: key}
 	}
 
 	//x := &node[Key, Value]{parent: parent, value: value, key: key}
