@@ -131,15 +131,13 @@ type CachePosition struct {
 	size int64
 }
 
-func (r *RangeCache) CachePositions(ctx context.Context, seg SegmentId, total, off int64) ([]CachePosition, error) {
+func (r *RangeCache) CachePositions(ctx context.Context, seg SegmentId, total, off int64, ret []CachePosition) ([]CachePosition, error) {
 	firstChunk := off / r.chunk
 	lastChunk := (off + total - 1) / r.chunk
 
 	innerOff := off % r.chunk
 
 	chunkData := r.chunkBuf
-
-	var ret []CachePosition
 
 	left := total
 

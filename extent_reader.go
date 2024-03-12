@@ -103,17 +103,20 @@ func (d *ExtentReader) fetchUncompressedExtent(
 	ctx context.Context,
 	log logger.Logger,
 	pe *PartialExtent,
+	cps []CachePosition,
 ) (RangeData, []CachePosition, error) {
 	startFetch := time.Now()
 
 	addr := pe.ExtentLocation
 
-	cp, err := d.rangeCache.CachePositions(ctx, addr.Segment, int64(addr.Size), int64(addr.Offset))
+	cp, err := d.rangeCache.CachePositions(ctx, addr.Segment, int64(addr.Size), int64(addr.Offset), cps)
 	if err != nil {
 		return RangeData{}, nil, err
 	}
 
-	log.Trace("reading uncompressed extent", "offset", addr.Offset, "size", addr.Size, "cache-offset", cp[0].off)
+	if log.IsTrace() {
+		log.Trace("reading uncompressed extent", "offset", addr.Offset, "size", addr.Size, "cache-offset", cp[0].off)
+	}
 
 	readProcessing.Add(time.Since(startFetch).Seconds())
 	return RangeData{}, cp, nil
@@ -123,10 +126,10 @@ func (d *ExtentReader) fetchExtent(
 	ctx context.Context,
 	log logger.Logger,
 	pe *PartialExtent,
-	cpOptz bool,
+	cps []CachePosition,
 ) (RangeData, []CachePosition, error) {
-	if cpOptz && pe.Flags() == Uncompressed {
-		return d.fetchUncompressedExtent(ctx, log, pe)
+	if cap(cps) > 0 && pe.Flags() == Uncompressed {
+		return d.fetchUncompressedExtent(ctx, log, pe, cps)
 	}
 
 	startFetch := time.Now()
@@ -184,10 +187,10 @@ func (d *ExtentReader) fetchExtentUncached(
 	ctx context.Context,
 	log logger.Logger,
 	pe *PartialExtent,
-	cpOptz bool,
+	cps []CachePosition,
 ) (RangeData, []CachePosition, error) {
-	if cpOptz && pe.Flags() == Uncompressed {
-		return d.fetchUncompressedExtent(ctx, log, pe)
+	if cap(cps) > 0 && pe.Flags() == Uncompressed {
+		return d.fetchUncompressedExtent(ctx, log, pe, cps)
 	}
 
 	startFetch := time.Now()
