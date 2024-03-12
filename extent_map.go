@@ -95,6 +95,10 @@ type ExtentMap struct {
 
 	segmentByDesc map[segLocations]uint32
 	segmentByIdx  map[uint32]segLocations
+
+	affected   []PartialExtent
+	addScratch []compactPE
+	delScratch []LBA
 }
 
 func NewExtentMap() *ExtentMap {
@@ -182,17 +186,25 @@ func (e *ExtentMap) UpdateBatch(log logger.Logger, entries []ExtentLocation, seg
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	var (
+		affected = e.affected
+		err      error
+	)
+
 	for _, ent := range entries {
 		if mode.Debug() {
 			log.Trace("updating read map", "extent", ent.Extent)
 		}
-		affected, err := e.update(log, ent)
+		affected = affected[:0]
+		affected, err = e.update(log, ent, affected)
 		if err != nil {
 			log.Error("error updating read map", "error", err)
 		}
 
 		s.UpdateUsage(log, segId, affected)
 	}
+
+	e.affected = affected
 
 	return nil
 }
@@ -201,21 +213,22 @@ func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation) ([]PartialExte
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.update(log, pba)
+	return e.update(log, pba, nil)
 }
 
-func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
-	defer func() {
-		extentUpdates.Inc()
-	}()
-
+func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation, affected []PartialExtent) ([]PartialExtent, error) {
 	var (
-		toDelete []LBA
-		toAdd    []compactPE
-		affected []compactPE
+		toDelete = e.delScratch[:0]
+		toAdd    = e.addScratch[:0]
 
 		rng = pba.Extent
 	)
+
+	defer func() {
+		extentUpdates.Inc()
+		e.addScratch = toAdd[:0]
+		e.delScratch = toDelete[:0]
+	}()
 
 	e.checkExtent(rng)
 
@@ -239,13 +252,11 @@ loop:
 
 		cur := i.ValuePtr()
 
-		orig := cur.Live
-
 		coverage := cur.Live().Cover(rng)
 
 		if isTrace {
 			log.Trace("considering",
-				"a", orig, "b", rng,
+				"a", cur.Live(), "b", rng,
 				"a-sub-b", coverage,
 			)
 		}
@@ -259,7 +270,7 @@ loop:
 			// The ranges are exactly the same, so we don't
 			// need to adjust anything.
 
-			affected = append(affected, *cur)
+			affected = append(affected, e.ToPE(*cur))
 		case CoverSuperRange:
 			// The new range is a complete subrange (ie a hole)
 			// into the existing range, so we need to adjust
@@ -281,7 +292,7 @@ loop:
 
 			rem := *cur
 			rem.SetLive(rng)
-			affected = append(affected, rem)
+			affected = append(affected, e.ToPE(rem))
 
 			e.checkExtent(cur.Live())
 		case CoverPartly:
@@ -311,7 +322,7 @@ loop:
 
 			rem := *cur
 			rem.SetLive(masked)
-			affected = append(affected, rem)
+			affected = append(affected, e.ToPE(rem))
 
 			e.checkExtent(cur.Live())
 		default:
@@ -325,11 +336,9 @@ loop2:
 		cur := i.ValuePtr()
 		coverage := rng.Cover(cur.Live())
 
-		orig := cur.Live
-
 		if isTrace {
 			log.Trace("considering",
-				"a", rng, "b", orig,
+				"a", rng, "b", cur.Live(),
 				"a-sub-b", coverage,
 			)
 		}
@@ -340,7 +349,7 @@ loop2:
 
 		case CoverSuperRange, CoverExact:
 			// our new range completely covers the exist one, so we delete it.
-			affected = append(affected, *cur)
+			affected = append(affected, e.ToPE(*cur))
 			toDelete = append(toDelete, i.Key())
 		case CoverPartly:
 			old := cur.Live()
@@ -359,7 +368,7 @@ loop2:
 				return nil, fmt.Errorf("error calculating new extent")
 			}
 			rem.SetLive(remLive)
-			affected = append(affected, *rem)
+			affected = append(affected, e.ToPE(*rem))
 
 			cur.SetLive(update)
 
@@ -410,13 +419,7 @@ loop2:
 		return nil, e.Validate(log)
 	}
 
-	ret := make([]PartialExtent, len(affected))
-
-	for i, ce := range affected {
-		ret[i] = e.ToPE(ce)
-	}
-
-	return ret, nil
+	return affected, nil
 }
 
 func (e *ExtentMap) segmentIdx(loc ExtentLocation) uint32 {
