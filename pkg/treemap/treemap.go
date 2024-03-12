@@ -115,6 +115,20 @@ func (t *TreeMap[Key, Value]) Set(key Key, value Value) {
 	t.count++
 }
 
+func (t *TreeMap[Key, Value]) allocNode() *node[Key, Value] {
+	idx := len(t.nodes)
+
+	if idx >= cap(t.nodes) {
+		newNodes := make([]node[Key, Value], idx+1024)
+		copy(newNodes, t.nodes)
+		t.nodes = newNodes[:idx+1]
+		return &newNodes[idx]
+	}
+
+	t.nodes = append(t.nodes, node[Key, Value]{})
+	return &t.nodes[idx]
+}
+
 // Del deletes the value.
 // Complexity: O(log N).
 func (t *TreeMap[Key, Value]) Del(key Key) {
