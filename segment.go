@@ -367,6 +367,9 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			o.log.Debug("compressed range", "offset", srcRng.Offset)
 
+			//rawSize := binary.BigEndian.Uint32(srcData)
+			//srcData = srcData[4:]
+
 			o.log.Debug("original size of compressed extent", "len", srcRng.RawSize, "comp-size", srcRng.Size)
 
 			uncompData := buffers.Get(int(srcRng.RawSize))

@@ -159,7 +159,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	for i := m.m.Iterator(); i.Valid(); i.Next() {
+	for i := m.Iterator(); i.Valid(); i.Next() {
 		ro := i.Value()
 
 		d.s.CreateOrUpdate(ro.Segment, uint64(ro.Size), uint64(ro.Live.Blocks))
@@ -171,7 +171,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 }
 
 func saveLBAMap(m *ExtentMap, f io.Writer) error {
-	for it := m.m.Iterator(); it.Valid(); it.Next() {
+	for it := m.Iterator(); it.Valid(); it.Next() {
 		cur := it.Value()
 
 		err := binary.Write(f, binary.BigEndian, cur)
@@ -202,7 +202,7 @@ func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, error) {
 
 		// log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
 
-		m.m.Set(pba.Live.LBA, pba)
+		m.set(pba)
 	}
 
 	return m, nil
