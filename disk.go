@@ -54,6 +54,7 @@ type Disk struct {
 	cpsScratch     []CachePosition
 	readReqScratch []readRequest
 	extentsScratch []Extent
+	peScratch      []PartialExtent
 }
 
 func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
@@ -122,6 +123,7 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		cpsScratch:     make([]CachePosition, 0, 1),
 		readReqScratch: make([]readRequest, 0, 10),
 		extentsScratch: make([]Extent, 0, 10),
+		peScratch:      make([]PartialExtent, 0, 10),
 	}
 
 	d.readDisks = append(d.readDisks, d)
@@ -214,7 +216,7 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 
 // Used to test things are setup the way we expect
 func (d *Disk) resolveSegmentAccess(ext Extent) ([]PartialExtent, error) {
-	return d.lba2pba.Resolve(d.log, ext)
+	return d.lba2pba.Resolve(d.log, ext, nil)
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
@@ -272,8 +274,9 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 	log.Trace("remaining extents needed", "total", len(remaining))
 
 	var (
-		reqs = d.readReqScratch[:0]
-		last *readRequest
+		reqs      = d.readReqScratch[:0]
+		peScratch = d.peScratch[:0]
+		last      *readRequest
 	)
 
 	// remaining is the extents that we still need to fill.
@@ -283,7 +286,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		// information about which segment the partials are in.
 		//
 		// Invariant: each of the pes.Partial extents must be a part of +h+.
-		pes, err := d.lba2pba.Resolve(log, h)
+		pes, err := d.lba2pba.Resolve(log, h, peScratch)
 		if err != nil {
 			log.Error("error computing opbas", "error", err, "rng", h)
 			return CachePosition{}, err
@@ -384,7 +387,6 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		return []Extent{data.Extent}, nil
 	}
 
-	log.Trace("consulting oc for extent", "oc", fmt.Sprintf("%p", d.curOC))
 	used, err := d.curOC.FillExtent(data.View())
 	if err != nil {
 		return nil, err
@@ -392,7 +394,9 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 
 	var remaining []Extent
 
-	log.Trace("write cache used", "request", data.Extent, "used", used)
+	if log.IsTrace() {
+		log.Trace("write cache used", "request", data.Extent, "used", used)
+	}
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -404,7 +408,9 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		}
 	}
 
-	log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	if log.IsTrace() {
+		log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	}
 
 	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }

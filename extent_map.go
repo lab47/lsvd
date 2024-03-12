@@ -535,11 +535,9 @@ func (e *ExtentMap) RenderExpanded() string {
 	return strings.Join(parts, "\n")
 }
 
-func (e *ExtentMap) Resolve(log logger.Logger, rng Extent) ([]PartialExtent, error) {
+func (e *ExtentMap) Resolve(log logger.Logger, rng Extent, ret []PartialExtent) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	var ret []PartialExtent
 
 loop:
 	for i := e.m.Floor(rng.LBA); i.Valid(); i.Next() {

@@ -472,7 +472,7 @@ func TestExtentMap(t *testing.T) {
 
 		r.Equal(5, m.m.Len())
 
-		pbas, err := m.Resolve(log, Extent{7, 20})
+		pbas, err := m.Resolve(log, Extent{7, 20}, nil)
 		r.NoError(err)
 
 		r.Len(pbas, 3)
@@ -498,7 +498,7 @@ func TestExtentMap(t *testing.T) {
 
 		t.Log(m.Render())
 
-		pbas, err := m.Resolve(log, Extent{0, 5})
+		pbas, err := m.Resolve(log, Extent{0, 5}, nil)
 		r.NoError(err)
 
 		r.Len(pbas, 1)
@@ -522,7 +522,7 @@ func TestExtentMap(t *testing.T) {
 
 		t.Log(m.Render())
 
-		pbas, err := m.Resolve(log, Extent{0, 5})
+		pbas, err := m.Resolve(log, Extent{0, 5}, nil)
 		r.NoError(err)
 
 		r.Len(pbas, 1)
@@ -597,7 +597,7 @@ func TestExtentMap(t *testing.T) {
 		t.Log(m.Render())
 
 		h := Extent{7234460, 31}
-		pes, err := m.Resolve(log, h)
+		pes, err := m.Resolve(log, h, nil)
 		r.NoError(err)
 
 		r.Len(pes, 2)

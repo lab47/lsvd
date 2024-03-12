@@ -1186,7 +1186,7 @@ func TestLSVD(t *testing.T) {
 		)
 		r.NoError(err)
 
-		pes, err := d2.lba2pba.Resolve(log, Extent{LBA: 0, Blocks: 1})
+		pes, err := d2.lba2pba.Resolve(log, Extent{LBA: 0, Blocks: 1}, nil)
 		r.NoError(err)
 
 		r.Len(pes, 1)

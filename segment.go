@@ -25,6 +25,8 @@ type SegmentCreator struct {
 	buf []byte
 
 	em *ExtentMap
+
+	peScratch []PartialExtent
 }
 
 type SegmentBuilder struct {
@@ -293,7 +295,7 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 	rng := data.Extent
 
-	ranges, err := o.em.Resolve(o.log, rng)
+	ranges, err := o.em.Resolve(o.log, rng, o.peScratch[:0])
 	if err != nil {
 		return nil, err
 	}
@@ -415,6 +417,8 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 	readProcessing.Add(e.Seconds())
 	compressionOverhead.Add(compTime.Seconds())
+
+	o.peScratch = ranges[:0]
 
 	return ret, nil
 }
