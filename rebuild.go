@@ -137,7 +137,9 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 
 	defer f.Close()
 
-	return saveLBAMap(d.lba2pba, f)
+	return d.lba2pba.LockToPatch(func() error {
+		return saveLBAMap(d.lba2pba, f)
+	})
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {

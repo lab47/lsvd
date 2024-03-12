@@ -254,8 +254,11 @@ func (c *CopyIterator) updateDisk(ctx context.Context) error {
 
 	return c.d.lba2pba.LockToPatch(func() error {
 		for i, pe := range c.extents {
+			// it's possible that the extent has been deleted and reused by the time
+			// we're returning here. So if the segment is different, then we know it's been
+			// reused. It's not possible to reuse an extent in the same segment because of how
+			// we manage extents in segments.
 			if pe.CE.segIdx != idx {
-				c.d.log.Error("wrong segment in partial-extent while patching", "expected", pe.CE.segIdx, "actual-idx", idx)
 				continue
 			}
 
