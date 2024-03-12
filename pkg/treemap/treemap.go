@@ -36,6 +36,9 @@ type TreeMap[Key, Value any] struct {
 	beginNode  *node[Key, Value]
 	count      int
 	keyCompare func(a Key, b Key) bool
+
+	freelist []*node[Key, Value]
+	nodes    []node[Key, Value]
 }
 
 type node[Key, Value any] struct {
@@ -86,7 +89,20 @@ func (t *TreeMap[Key, Value]) Set(key Key, value Value) {
 			return
 		}
 	}
-	x := &node[Key, Value]{parent: parent, value: value, key: key}
+
+	var x *node[Key, Value]
+
+	if len(t.freelist) > 0 {
+		x = t.freelist[len(t.freelist)-1]
+		t.freelist = t.freelist[:len(t.freelist)-1]
+		*x = node[Key, Value]{parent: parent, value: value, key: key}
+	} else {
+		idx := len(t.nodes)
+		t.nodes = append(t.nodes, node[Key, Value]{parent: parent, value: value, key: key})
+		x = &t.nodes[idx]
+	}
+
+	//x := &node[Key, Value]{parent: parent, value: value, key: key}
 	if less {
 		parent.left = x
 	} else {
@@ -115,6 +131,7 @@ func (t *TreeMap[Key, Value]) Del(key Key) {
 	}
 	t.count--
 	removeNode(t.endNode.left, z)
+	t.freelist = append(t.freelist, z)
 }
 
 // Clear clears the map.
