@@ -262,6 +262,11 @@ func (c *CopyIterator) updateDisk(ctx context.Context) error {
 				continue
 			}
 
+			// Double check that we're patching for the same live extent. Otherwise bail!
+			if pe.CE.Live() != pe.Live {
+				continue
+			}
+
 			eh := c.results[i]
 			if eh.Size != 0 {
 				eh.Offset += stats.DataOffset

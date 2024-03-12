@@ -11,12 +11,8 @@ import (
 type (
 	RawBlocks []byte
 
-	blockData struct {
-		data RawBlocks
-	}
-
 	RangeData struct {
-		*blockData
+		data RawBlocks
 		Extent
 	}
 )
@@ -33,9 +29,7 @@ func (e RawBlocks) Blocks() uint32 {
 func (e RawBlocks) MapTo(lba LBA) RangeData {
 	return RangeData{
 		Extent: Extent{lba, uint32(e.Blocks())},
-		blockData: &blockData{
-			data: e,
-		},
+		data:   e,
 	}
 }
 
@@ -75,7 +69,7 @@ var smallDB = sync.Pool{
 	},
 }
 
-func (r *blockData) Discard() {
+func (r *RangeData) Discard() {
 	if cap(r.data) >= smallRange {
 		smallDB.Put(r.data[:cap(r.data)])
 	}
@@ -83,7 +77,7 @@ func (r *blockData) Discard() {
 	r.data = nil
 }
 
-func (b *blockData) allocate(ext Extent) []byte {
+func (b *RangeData) allocate(ext Extent) []byte {
 	var data []byte
 
 	if ext.Blocks <= smallRangeBlocks {
@@ -100,16 +94,7 @@ func (b *blockData) allocate(ext Extent) []byte {
 
 func NewRangeData(ext Extent) RangeData {
 	return RangeData{
-		blockData: &blockData{
-			data: nil,
-		},
 		Extent: ext,
-	}
-}
-
-func (r *RangeData) Discard() {
-	if r.data != nil {
-		r.blockData.Discard()
 	}
 }
 
@@ -133,9 +118,7 @@ func MapRangeData(ext Extent, srcData []byte) RangeData {
 
 	return RangeData{
 		Extent: ext,
-		blockData: &blockData{
-			data: srcData,
-		},
+		data:   srcData,
 	}
 }
 
@@ -169,7 +152,7 @@ type RangeDataView struct {
 	start, end int
 }
 
-func (r RangeData) SubRange(ext Extent) (RangeDataView, bool) {
+func (r *RangeData) SubRange(ext Extent) (RangeDataView, bool) {
 	ext, ok := r.Clamp(ext)
 	if !ok {
 		return RangeDataView{}, false
@@ -180,16 +163,16 @@ func (r RangeData) SubRange(ext Extent) (RangeDataView, bool) {
 
 	return RangeDataView{
 		Extent: ext,
-		r:      &r,
+		r:      r,
 		start:  int(byteOffset),
 		end:    int(byteEnd),
 	}, true
 }
 
-func (r RangeData) View() RangeDataView {
+func (r *RangeData) View() RangeDataView {
 	return RangeDataView{
 		Extent: r.Extent,
-		r:      &r,
+		r:      r,
 		start:  0,
 		end:    r.ByteSize(),
 	}

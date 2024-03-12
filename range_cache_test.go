@@ -154,7 +154,7 @@ func TestRangeCache(t *testing.T) {
 
 		defer rc.Close()
 
-		p, err := rc.CachePositions(ctx, nullSeg, 4, 9)
+		p, err := rc.CachePositions(ctx, nullSeg, 4, 9, nil)
 		r.NoError(err)
 
 		r.Equal(2, fetchCalls)

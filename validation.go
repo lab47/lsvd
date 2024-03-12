@@ -34,7 +34,7 @@ func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreato
 		e.sums[ent.Extent] = sum
 		d.log.Trace("sum of extent", "extent", ent.Extent, "sum", sum)
 
-		ranges, err := d.lba2pba.Resolve(log, ent.Extent)
+		ranges, err := d.lba2pba.Resolve(log, ent.Extent, nil)
 		if err != nil {
 			d.log.Error("error performing resolution for block read check")
 		} else {
@@ -64,7 +64,7 @@ func (e *extentValidator) validate(ctx context.Context, log logger.Logger, d *Di
 		if sum != e.sums[ent.Extent] {
 			d.log.Error("block read validation failed", "extent", ent.Extent,
 				"sum", sum, "expected", e.sums[ent.Extent])
-			ranges, err := d.lba2pba.Resolve(log, ent.Extent)
+			ranges, err := d.lba2pba.Resolve(log, ent.Extent, nil)
 			if err != nil {
 				d.log.Error("unable to resolve for check", "error", err)
 			} else {

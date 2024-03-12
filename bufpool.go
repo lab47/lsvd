@@ -6,7 +6,7 @@ type bufPool struct {
 	small sync.Pool
 }
 
-const smallBuffer = 20 * BlockSize
+const smallBuffer = 50 * BlockSize
 
 func (p *bufPool) Get(sz int) []byte {
 	if sz <= smallBuffer {

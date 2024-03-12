@@ -3,6 +3,7 @@ package lsvd
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"sync"
 	"syscall"
 	"time"
@@ -121,17 +122,21 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 }
 
 func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (bool, error) {
+	defer n.buf.Reset()
+
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
 
 	ext := Extent{LBA: blk, Blocks: blocks}
 
-	n.log.Debug("nbd read-at",
-		"size", len(b), "offset", off,
-		"extent", ext,
-	)
+	var isDebug = n.log.Is(logger.Debug)
 
-	defer n.buf.Reset()
+	if isDebug {
+		n.log.Debug("nbd read-at",
+			"size", len(b), "offset", off,
+			"extent", ext,
+		)
+	}
 
 	err := n.flushPendingWrite()
 	if err != nil {
@@ -155,7 +160,6 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 	var written int
 
 	sc.Write(func(wfd uintptr) (done bool) {
-		n.log.Debug("beginning write back procedure")
 		left := len(b)
 
 		if cps.fd == nil {
@@ -167,7 +171,11 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 				left -= written
 				off += written
 
-				n.log.Debug("wrote data back data to nbd directly", "request", cps.size, "written", written)
+				n.log.LogAttrs(n.ctx, logger.Debug,
+					"wrote data back data to nbd directly",
+					slog.Int64("request", cps.size),
+					slog.Int64("written", int64(written)),
+				)
 			}
 			return true
 		}
@@ -344,9 +352,12 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 
 	numBlocks := uint32(size / BlockSize)
 
-	n.log.Debug("nbd zero-at",
-		"size", size, "offset", off,
-		"extent", Extent{blk, uint32(numBlocks)},
+	n.log.LogAttrs(n.ctx, logger.Debug,
+		"nbd zero-at",
+		slog.Int64("size", size),
+		slog.Int64("offset", off),
+		slog.Int64("lba", int64(blk)),
+		slog.Int64("blocks", int64(numBlocks)),
 	)
 
 	ext := Extent{LBA: blk, Blocks: numBlocks}

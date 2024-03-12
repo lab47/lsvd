@@ -50,6 +50,11 @@ type Disk struct {
 	readDisks []*Disk
 
 	bgmu sync.Mutex
+
+	cpsScratch     []CachePosition
+	readReqScratch []readRequest
+	extentsScratch []Extent
+	peScratch      []PartialExtent
 }
 
 func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
@@ -102,19 +107,23 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		return nil, err
 	}
 	d := &Disk{
-		log:       log,
-		path:      path,
-		size:      sz,
-		lba2pba:   NewExtentMap(),
-		sa:        o.sa,
-		volName:   o.volName,
-		SeqGen:    o.seqGen,
-		afterNS:   o.afterNS,
-		readOnly:  o.ro,
-		useZstd:   o.useZstd,
-		er:        er,
-		prevCache: NewPreviousCache(),
-		s:         NewSegments(),
+		log:            log,
+		path:           path,
+		size:           sz,
+		lba2pba:        NewExtentMap(),
+		sa:             o.sa,
+		volName:        o.volName,
+		SeqGen:         o.seqGen,
+		afterNS:        o.afterNS,
+		readOnly:       o.ro,
+		useZstd:        o.useZstd,
+		er:             er,
+		prevCache:      NewPreviousCache(),
+		s:              NewSegments(),
+		cpsScratch:     make([]CachePosition, 0, 1),
+		readReqScratch: make([]readRequest, 0, 10),
+		extentsScratch: make([]Extent, 0, 10),
+		peScratch:      make([]PartialExtent, 0, 10),
 	}
 
 	d.readDisks = append(d.readDisks, d)
@@ -207,7 +216,7 @@ func (d *Disk) newSegmentCreator() (*SegmentCreator, error) {
 
 // Used to test things are setup the way we expect
 func (d *Disk) resolveSegmentAccess(ext Extent) ([]PartialExtent, error) {
-	return d.lba2pba.Resolve(d.log, ext)
+	return d.lba2pba.Resolve(d.log, ext, nil)
 }
 
 func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
@@ -226,6 +235,12 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	return data, err
 }
 
+type readRequest struct {
+	pe     PartialExtent
+	extent Extent
+	extra  []Extent
+}
+
 func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePosition, error) {
 	start := time.Now()
 
@@ -241,7 +256,9 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	log := d.log
 
-	log.Debug("attempting to fill request from write cache", "extent", rng)
+	if log.IsDebug() {
+		log.Debug("attempting to fill request from write cache", "extent", rng)
+	}
 
 	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
@@ -256,14 +273,10 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	log.Trace("remaining extents needed", "total", len(remaining))
 
-	type readRequest struct {
-		pe      PartialExtent
-		extents []Extent
-	}
-
 	var (
-		reqs []*readRequest
-		last *readRequest
+		reqs      = d.readReqScratch[:0]
+		peScratch = d.peScratch[:0]
+		last      *readRequest
 	)
 
 	// remaining is the extents that we still need to fill.
@@ -273,7 +286,7 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 		// information about which segment the partials are in.
 		//
 		// Invariant: each of the pes.Partial extents must be a part of +h+.
-		pes, err := d.lba2pba.Resolve(log, h)
+		pes, err := d.lba2pba.Resolve(log, h, peScratch)
 		if err != nil {
 			log.Error("error computing opbas", "error", err, "rng", h)
 			return CachePosition{}, err
@@ -321,15 +334,14 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 				// 2 or more holes in sequence might be served by the same
 				// segment range.
 				if last != nil && last.pe == pe {
-					last.extents = append(last.extents, h)
+					last.extra = append(last.extra, h)
 				} else {
-					r := &readRequest{
-						pe:      pe,
-						extents: []Extent{h},
-					}
-
-					reqs = append(reqs, r)
-					last = r
+					idx := len(reqs)
+					reqs = append(reqs, readRequest{
+						pe:     pe,
+						extent: h,
+					})
+					last = &reqs[idx]
 				}
 			}
 		}
@@ -352,11 +364,20 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 	// range of data.
 	for _, o := range reqs {
 		ld := d.readDisks[o.pe.Disk]
-		err := ld.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
+		extents := d.extentsScratch[:1]
+		extents[0] = o.extent
+
+		if o.extra != nil {
+			extents = append(extents, o.extra...)
+		}
+
+		err := ld.readPartialExtent(ctx, &o.pe, extents, rng, data)
 		if err != nil {
 			return CachePosition{}, err
 		}
 	}
+
+	d.readReqScratch = reqs[:0]
 
 	return CachePosition{}, nil
 }
@@ -366,7 +387,6 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		return []Extent{data.Extent}, nil
 	}
 
-	log.Trace("consulting oc for extent", "oc", fmt.Sprintf("%p", d.curOC))
 	used, err := d.curOC.FillExtent(data.View())
 	if err != nil {
 		return nil, err
@@ -374,7 +394,9 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 
 	var remaining []Extent
 
-	log.Trace("write cache used", "request", data.Extent, "used", used)
+	if log.IsTrace() {
+		log.Trace("write cache used", "request", data.Extent, "used", used)
+	}
 
 	if len(used) == 0 {
 		remaining = []Extent{data.Extent}
@@ -386,7 +408,9 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 		}
 	}
 
-	log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	if log.IsTrace() {
+		log.Trace("requesting reads from prev cache", "used", used, "remaining", remaining)
+	}
 
 	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }
@@ -435,7 +459,7 @@ func (d *Disk) readOneExtent(
 	x Extent,
 	dest RangeData,
 ) (CachePosition, error) {
-	src, cps, err := d.er.fetchExtent(ctx, d.log, pe, true)
+	src, cps, err := d.er.fetchExtent(ctx, d.log, pe, d.cpsScratch[:0])
 	if err != nil {
 		return CachePosition{}, err
 	}
@@ -460,6 +484,8 @@ func (d *Disk) readOneExtent(
 		return adjusted, nil
 	}
 
+	d.cpsScratch = cps[:0]
+
 	d.log.Trace("single extent not found in cache", "cps", len(cps))
 
 	inflateCache.Inc()
@@ -471,8 +497,9 @@ func (d *Disk) readOneExtent(
 		return CachePosition{}, err
 	}
 
+	defer buffers.Return(rawData)
+
 	src = MapRangeData(pe.Extent, rawData)
-	defer d.er.returnData(src)
 
 	// the bytes at the beginning of data are for LBA dataBegin.LBA.
 	// the bytes at the beginning of rawData are for LBA full.LBA.
@@ -506,11 +533,14 @@ func (d *Disk) readOneExtent(
 		return CachePosition{}, fmt.Errorf("error calculate source subrange")
 	}
 
-	d.log.Debug("copying segment data",
-		"src", src.Extent,
-		"dest", dest.Extent,
-		"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
-	)
+	if d.log.Is(logger.Debug) {
+		d.log.Debug("copying segment data",
+			"src", src.Extent,
+			"dest", dest.Extent,
+			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
+		)
+	}
+
 	n := subDest.Copy(subSrc)
 	if n != subDest.ByteSize() {
 		d.log.Error("error copying data from partial extent", "expected", subDest.ByteSize(), "was", n)
@@ -526,12 +556,14 @@ func (d *Disk) readPartialExtent(
 	dataRange Extent,
 	dest RangeData,
 ) error {
-	src, _, err := d.er.fetchExtent(ctx, d.log, pe, false)
+	src, _, err := d.er.fetchExtent(ctx, d.log, pe, nil)
 	if err != nil {
 		return err
 	}
 
 	defer d.er.returnData(src)
+
+	isDebug := d.log.IsDebug()
 
 	// the bytes at the beginning of data are for LBA dataBegin.LBA.
 	// the bytes at the beginning of rawData are for LBA full.LBA.
@@ -546,7 +578,9 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error clamping range")
 		}
 
-		d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
+		if isDebug {
+			d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
+		}
 
 		// Compute our source range and destination range against overlap
 
@@ -566,11 +600,14 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error calculate source subrange")
 		}
 
-		d.log.Debug("copying segment data",
-			"src", src.Extent,
-			"dest", dest.Extent,
-			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
-		)
+		if isDebug {
+			d.log.Debug("copying segment data",
+				"src", src.Extent,
+				"dest", dest.Extent,
+				"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
+			)
+		}
+
 		n := subDest.Copy(subSrc)
 		if n != subDest.ByteSize() {
 			d.log.Error("error copying data from partial extent", "expected", subDest.ByteSize(), "was", n)
