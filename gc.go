@@ -80,7 +80,7 @@ func (d *Disk) GCInBackground(ctx context.Context, min float64) (SegmentId, bool
 }
 
 type gcExtent struct {
-	*PartialExtent
+	CE   *compactPE
 	Live Extent
 }
 
@@ -112,12 +112,17 @@ func (c *CopyIterator) gatherExtents() {
 	c.segmentsProcessed = append(c.segmentsProcessed, c.seg)
 	c.extents = c.extents[:0]
 
+	idx := c.d.lba2pba.segmentIdx(ExtentLocation{
+		Segment: c.seg,
+		Disk:    0,
+	})
+
 	for i := c.d.lba2pba.Iterator(); i.Valid(); i.Next() {
-		pe := i.ValuePtr()
-		if pe.Segment == c.seg {
+		pe := i.CompactValuePtr()
+		if pe.segIdx == idx {
 			c.extents = append(c.extents, gcExtent{
-				PartialExtent: pe,
-				Live:          pe.Live,
+				CE:   pe,
+				Live: pe.Live(),
 			})
 			c.d.log.Trace("captured extent to update", "addr", spew.Sdump(pe))
 		}
@@ -176,7 +181,9 @@ func (d *CopyIterator) fetchExtent(
 func (c *CopyIterator) ProcessFromExtents(ctx context.Context, log logger.Logger) error {
 	log.Debug("copying extents for segment", "extents", len(c.extents), "segment", c.seg, "new-segment", c.newSegment)
 
-	for _, rng := range c.extents {
+	for _, ce := range c.extents {
+		rng := c.d.lba2pba.ToPE(*ce.CE)
+
 		if rng.Size == 0 {
 			c.builder.ZeroBlocks(rng.Live)
 			c.results = append(c.results, rng.ExtentHeader)
@@ -219,7 +226,7 @@ func (ci *CopyIterator) extentsByteSize() int {
 	var bs int
 
 	for _, e := range ci.extents {
-		bs += e.ByteSize()
+		bs += int(e.CE.byteSize)
 	}
 
 	return bs
@@ -235,10 +242,20 @@ func (c *CopyIterator) updateDisk(ctx context.Context) error {
 	c.d.log.Trace("patching block map from post-gc segment", "segment", c.newSegment)
 	c.d.s.Create(c.newSegment, stats)
 
+	idx := c.d.lba2pba.segmentIdx(ExtentLocation{
+		Segment: c.seg,
+		Disk:    0,
+	})
+
+	newIdx := c.d.lba2pba.segmentIdx(ExtentLocation{
+		Segment: c.newSegment,
+		Disk:    0,
+	})
+
 	return c.d.lba2pba.LockToPatch(func() error {
 		for i, pe := range c.extents {
-			if pe.Segment != c.seg {
-				c.d.log.Error("wrong segment in partial-extent while patching", "expected", c.seg, "actual", pe.Segment)
+			if pe.CE.segIdx != idx {
+				c.d.log.Error("wrong segment in partial-extent while patching", "expected", pe.CE.segIdx, "actual-idx", idx)
 				continue
 			}
 
@@ -247,11 +264,7 @@ func (c *CopyIterator) updateDisk(ctx context.Context) error {
 				eh.Offset += stats.DataOffset
 			}
 
-			pe.ExtentLocation = ExtentLocation{
-				ExtentHeader: eh,
-				Segment:      c.newSegment,
-				Disk:         pe.Disk,
-			}
+			pe.CE.SetFromHeader(eh, newIdx)
 		}
 
 		return nil

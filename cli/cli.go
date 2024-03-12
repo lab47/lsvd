@@ -531,7 +531,7 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 
 	bs := opts.BS
 	if bs == 0 {
-		bs = 20
+		bs = 32 // 128k
 	}
 
 	h := sha256.New()
@@ -544,13 +544,14 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 
 	input := io.TeeReader(br, h)
 
-	var total int
+	var total, extents int
 	for {
 		n, err := io.ReadFull(input, buf)
 		if n == 0 && err != nil {
 			break
 		}
 
+		extents++
 		total += n
 
 		data := buf
@@ -569,7 +570,9 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 
 	if len(verify) > 0 {
 		if bytes.Equal(verify, sum) {
-			log.Info("data imported and verified", "size", total, "sha256", hex.EncodeToString(sum))
+			log.Info("data imported and verified",
+				"extents-sent", extents, "extents-live", d.Extents(),
+				"size", total, "sha256", hex.EncodeToString(sum))
 
 		} else {
 			log.Error("data imported and failed verification", "size", total,
@@ -580,7 +583,9 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 			return nil
 		}
 	} else {
-		log.Info("data imported", "size", total, "sha256", hex.EncodeToString(sum))
+		log.Info("data imported",
+			"extents-sent", extents, "extents-live", d.Extents(),
+			"size", total, "sha256", hex.EncodeToString(sum))
 	}
 
 	if opts.Readback {

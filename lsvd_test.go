@@ -1186,6 +1186,13 @@ func TestLSVD(t *testing.T) {
 		)
 		r.NoError(err)
 
+		pes, err := d2.lba2pba.Resolve(log, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		r.Len(pes, 1)
+
+		r.Equal(uint16(1), pes[0].Disk)
+
 		data, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 

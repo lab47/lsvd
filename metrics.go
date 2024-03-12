@@ -102,6 +102,16 @@ var (
 		Name: "lsvd_cache_inflate",
 		Help: "How often values from the cache are inflated to memory",
 	})
+
+	extents = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "lsvd_active_extents",
+		Help: "How many entries are in the extent map",
+	})
+
+	extentUpdates = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_extent_updates",
+		Help: "How many times the extent map has been updated",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {

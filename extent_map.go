@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -10,16 +11,94 @@ import (
 	"github.com/lab47/mode"
 )
 
+type segLocations struct {
+	seg  SegmentId
+	disk uint16
+}
+
+type compactPE struct {
+	physLBA       LBA
+	physBlocks    uint32
+	liveLBADiff   uint32
+	liveBlockDiff uint32
+
+	segIdx   uint32
+	byteSize uint32
+	offset   uint32
+	rawSize  uint32
+}
+
+func (c compactPE) Extent() Extent {
+	return Extent{
+		LBA:    c.physLBA,
+		Blocks: c.physBlocks,
+	}
+}
+
+func (c compactPE) Live() Extent {
+	return Extent{
+		LBA:    LBA(c.physLBA) + LBA(c.liveLBADiff),
+		Blocks: uint32(c.physBlocks) - uint32(c.liveBlockDiff),
+	}
+}
+
+func (c compactPE) LiveLBA() LBA {
+	return LBA(c.physLBA) + LBA(c.liveLBADiff)
+}
+
+func (c compactPE) LiveLast() LBA {
+	return LBA(c.physLBA) + LBA(c.liveLBADiff) + LBA(c.LiveBlocks()) - 1
+}
+
+func (c compactPE) LiveBlocks() uint32 {
+	return uint32(c.physBlocks) - uint32(c.liveBlockDiff)
+}
+
+func (c *compactPE) SetLive(ext Extent) {
+	ld := ext.LBA - c.physLBA
+	if ld > math.MaxUint32 {
+		panic(fmt.Sprintf("compact PE failure, live diff too large: %d - %d = %d", ext.LBA, c.physLBA, ld))
+	}
+	c.liveLBADiff = uint32(ld)
+
+	bd := c.physBlocks - ext.Blocks
+
+	c.liveBlockDiff = uint32(bd)
+}
+
+func (m *ExtentMap) ToPE(c compactPE) PartialExtent {
+	sl := m.segmentByIdx[c.segIdx]
+
+	return PartialExtent{
+		Live: c.Live(),
+		ExtentLocation: ExtentLocation{
+			ExtentHeader: ExtentHeader{
+				Extent:  c.Extent(),
+				Size:    c.byteSize,
+				Offset:  c.offset,
+				RawSize: c.rawSize,
+			},
+			Segment: sl.seg,
+			Disk:    sl.disk,
+		},
+	}
+}
+
 type ExtentMap struct {
 	mu sync.Mutex
-	m  *treemap.TreeMap[LBA, PartialExtent]
+	m  *treemap.TreeMap[LBA, compactPE]
 
 	coverBlocks int
+
+	segmentByDesc map[segLocations]uint32
+	segmentByIdx  map[uint32]segLocations
 }
 
 func NewExtentMap() *ExtentMap {
 	return &ExtentMap{
-		m: treemap.New[LBA, PartialExtent](),
+		m:             treemap.New[LBA, compactPE](),
+		segmentByDesc: make(map[segLocations]uint32),
+		segmentByIdx:  make(map[uint32]segLocations),
 	}
 }
 
@@ -28,15 +107,31 @@ func (e *ExtentMap) Len() int {
 }
 
 type Iterator struct {
-	treemap.ForwardIterator[LBA, PartialExtent]
+	e *ExtentMap
+	treemap.ForwardIterator[LBA, compactPE]
 }
 
-func (e *ExtentMap) Iterator() Iterator {
-	return Iterator{ForwardIterator: e.m.Iterator()}
+func (e *ExtentMap) Iterator() *Iterator {
+	return &Iterator{
+		e:               e,
+		ForwardIterator: e.m.Iterator(),
+	}
+}
+
+func (e *Iterator) Value() PartialExtent {
+	return e.e.ToPE(e.ForwardIterator.Value())
+}
+
+func (e *Iterator) CompactValue() compactPE {
+	return e.ForwardIterator.Value()
+}
+
+func (e *Iterator) CompactValuePtr() *compactPE {
+	return e.ForwardIterator.ValuePtr()
 }
 
 func (e *ExtentMap) Populate(log logger.Logger, o *ExtentMap, diskId uint16) error {
-	for i := e.m.Iterator(); i.Valid(); i.Next() {
+	for i := e.Iterator(); i.Valid(); i.Next() {
 		loc := i.Value().ExtentLocation
 		loc.Disk = diskId
 
@@ -45,10 +140,10 @@ func (e *ExtentMap) Populate(log logger.Logger, o *ExtentMap, diskId uint16) err
 			return err
 		}
 	}
-
 	return nil
 }
 
+/*
 func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, PartialExtent] {
 	i := e.m.Floor(lba)
 	if i.Valid() {
@@ -57,6 +152,7 @@ func (e *ExtentMap) find(lba LBA) treemap.ForwardIterator[LBA, PartialExtent] {
 
 	return e.m.LowerBound(lba)
 }
+*/
 
 func (m *ExtentMap) checkExtent(e Extent) Extent {
 	if mode.Debug() {
@@ -106,10 +202,14 @@ func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation) ([]PartialExte
 }
 
 func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
+	defer func() {
+		extentUpdates.Inc()
+	}()
+
 	var (
 		toDelete []LBA
-		toAdd    []PartialExtent
-		affected []PartialExtent
+		toAdd    []compactPE
+		affected []compactPE
 
 		rng = pba.Extent
 	)
@@ -131,14 +231,14 @@ loop:
 		}
 
 		if isTrace {
-			log.Trace("found bound", "key", i.Key(), "match", i.Value().Live, "from", rng.LBA)
+			log.Trace("found bound", "key", i.Key(), "match", i.Value().Live(), "from", rng.LBA)
 		}
 
 		cur := i.ValuePtr()
 
 		orig := cur.Live
 
-		coverage := cur.Live.Cover(rng)
+		coverage := cur.Live().Cover(rng)
 
 		if isTrace {
 			log.Trace("considering",
@@ -162,55 +262,55 @@ loop:
 			// into the existing range, so we need to adjust
 			// and add a new range before and after the hole.
 
-			suffix, ok := ExtentFrom(rng.Last()+1, cur.Live.Last())
+			suffix, ok := ExtentFrom(rng.Last()+1, cur.Live().Last())
 			if ok {
 				dup := *cur
-				dup.Live = suffix
+				dup.SetLive(suffix)
 				toAdd = append(toAdd, dup)
 			}
 
 			if rng.LBA > 0 {
-				prefix, ok := ExtentFrom(cur.Live.LBA, rng.LBA-1)
+				prefix, ok := ExtentFrom(cur.LiveLBA(), rng.LBA-1)
 				if ok {
-					cur.Live = prefix
+					cur.SetLive(prefix)
 				}
 			}
 
 			rem := *cur
-			rem.Live = rng
+			rem.SetLive(rng)
 			affected = append(affected, rem)
 
-			e.checkExtent(cur.Live)
+			e.checkExtent(cur.Live())
 		case CoverPartly:
 			var masked Extent
 
-			if rng.Cover(cur.Live) == CoverSuperRange {
+			if rng.Cover(cur.Live()) == CoverSuperRange {
 				// The new range completely covers the current one
 				// so we can clobber it.
 				masked = rng
 			} else {
 				// We need to shrink the range of cur down to not overlap
 				// with the new range.
-				update, ok := ExtentFrom(cur.Live.LBA, rng.LBA-1)
+				update, ok := ExtentFrom(cur.LiveLBA(), rng.LBA-1)
 				if !ok {
 					log.Error("error calculate updated range", "orig", cur.Live, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
-				masked, ok = ExtentFrom(rng.LBA, cur.Live.Last())
+				masked, ok = ExtentFrom(rng.LBA, cur.Live().Last())
 				if !ok {
 					log.Error("error calculate masked range", "orig", cur.Live, "target", rng.LBA-1)
 					return nil, fmt.Errorf("error calculating new range")
 				}
 
-				cur.Live = update
+				cur.SetLive(update)
 			}
 
 			rem := *cur
-			rem.Live = masked
+			rem.SetLive(masked)
 			affected = append(affected, rem)
 
-			e.checkExtent(cur.Live)
+			e.checkExtent(cur.Live())
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
@@ -220,7 +320,7 @@ loop2:
 	// Also check for ranges that start higher to be considered
 	for i := e.m.LowerBound(rng.LBA); i.Valid(); i.Next() {
 		cur := i.ValuePtr()
-		coverage := rng.Cover(cur.Live)
+		coverage := rng.Cover(cur.Live())
 
 		orig := cur.Live
 
@@ -240,7 +340,7 @@ loop2:
 			affected = append(affected, *cur)
 			toDelete = append(toDelete, i.Key())
 		case CoverPartly:
-			old := cur.Live
+			old := cur.Live()
 			pivot := rng.Last() + 1
 			update, ok := ExtentFrom(pivot, old.Last())
 			if !ok {
@@ -250,14 +350,15 @@ loop2:
 
 			rem := cur
 
-			rem.Live, ok = ExtentFrom(old.LBA, rng.Last())
+			remLive, ok := ExtentFrom(old.LBA, rng.Last())
 			if !ok {
 				log.Error("error calculating masked extent", "pivot", pivot, "old", old)
 				return nil, fmt.Errorf("error calculating new extent")
 			}
+			rem.SetLive(remLive)
 			affected = append(affected, *rem)
 
-			cur.Live = update
+			cur.SetLive(update)
 
 			toDelete = append(toDelete, i.Key())
 			toAdd = append(toAdd, *cur)
@@ -265,7 +366,7 @@ loop2:
 			if isTrace {
 				log.Trace("pivoting range", "pivot", pivot, "from", old, "to", cur.Live)
 			}
-			e.checkExtent(cur.Live)
+			e.checkExtent(cur.Live())
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}
@@ -279,11 +380,11 @@ loop2:
 	}
 
 	for _, pba := range toAdd {
-		e.checkExtent(pba.Live)
+		e.checkExtent(pba.Live())
 		if isTrace {
 			log.Trace("adding range", "rng", pba.Live)
 		}
-		e.m.Set(pba.Live.LBA, pba)
+		e.m.Set(pba.LiveLBA(), pba)
 	}
 
 	e.checkExtent(rng)
@@ -292,7 +393,7 @@ loop2:
 		log.Trace("adding read range", "range", rng)
 	}
 
-	e.m.Set(rng.LBA, PartialExtent{
+	e.set(PartialExtent{
 		ExtentLocation: pba,
 
 		// This value is updated as the range is shrunk
@@ -306,33 +407,89 @@ loop2:
 		return nil, e.Validate(log)
 	}
 
-	return affected, nil
+	ret := make([]PartialExtent, len(affected))
+
+	for i, ce := range affected {
+		ret[i] = e.ToPE(ce)
+	}
+
+	return ret, nil
+}
+
+func (e *ExtentMap) segmentIdx(loc ExtentLocation) uint32 {
+	key := segLocations{
+		seg:  loc.Segment,
+		disk: loc.Disk,
+	}
+	idx, ok := e.segmentByDesc[key]
+	if !ok {
+		idx = uint32(len(e.segmentByDesc))
+		e.segmentByDesc[key] = idx
+		e.segmentByIdx[idx] = key
+	}
+
+	return idx
+}
+
+func (e *ExtentMap) segment(ce compactPE) SegmentId {
+	return e.segmentByIdx[ce.segIdx].seg
+}
+
+func (ce *compactPE) SetFromHeader(eh ExtentHeader, seg uint32) {
+	curLive := ce.Live()
+	// Read live and reset it later sicne the diffs will change
+
+	*ce = compactPE{
+		physLBA:    eh.LBA,
+		physBlocks: eh.Blocks,
+		segIdx:     seg,
+		byteSize:   eh.Size,
+		offset:     eh.Offset,
+		rawSize:    eh.RawSize,
+	}
+
+	ce.SetLive(curLive)
+}
+
+func (e *ExtentMap) set(pe PartialExtent) {
+	ce := compactPE{
+		physLBA:    pe.LBA,
+		physBlocks: pe.Blocks,
+		segIdx:     e.segmentIdx(pe.ExtentLocation),
+		byteSize:   pe.Size,
+		offset:     pe.Offset,
+		rawSize:    pe.RawSize,
+	}
+
+	ce.SetLive(pe.Live)
+
+	e.m.Set(ce.LiveLBA(), ce)
 }
 
 func (e *ExtentMap) Validate(log logger.Logger) error {
-	var prev PartialExtent
+	var prev compactPE
 
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		lba := i.Key()
 		pba := i.Value()
 
-		if pba.Live.Blocks == 0 || pba.Blocks == 0 {
-			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.Live.LBA)
+		if pba.LiveBlocks() == 0 || pba.physBlocks == 0 {
+			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.LiveLBA())
 		}
 
-		if pba.Live.Blocks >= 1_000_000_000 {
+		if pba.LiveBlocks() >= 1_000_000_000 {
 			log.Error("extremely large block range detected", "range", pba.Live)
-			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Live)
+			return fmt.Errorf("extremly large block range detected: %d: %s", lba, pba.Live())
 		}
 
-		if lba != pba.Live.LBA {
-			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.Live.LBA)
+		if lba != pba.LiveLBA() {
+			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.LiveLBA())
 		}
 
-		if prev.Extent.Blocks != 0 {
-			if prev.Live.Last() >= lba {
+		if prev.physBlocks != 0 {
+			if prev.Live().Last() >= lba {
 				return fmt.Errorf("overlapping ranges detected: %s <=> %s",
-					prev.Live, pba.Live)
+					prev.Live(), pba.Live())
 			}
 		}
 
@@ -347,10 +504,10 @@ func (e *ExtentMap) Render() string {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		pba := i.Value()
 
-		if pba.Live.Blocks == 1 {
-			parts = append(parts, fmt.Sprintf("%d", pba.Live.LBA))
+		if pba.LiveBlocks() == 1 {
+			parts = append(parts, fmt.Sprintf("%d", pba.LiveLBA()))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d-%d", pba.Live.LBA, pba.Live.Last()))
+			parts = append(parts, fmt.Sprintf("%d-%d", pba.LiveLBA(), pba.LiveLast()))
 		}
 	}
 
@@ -362,10 +519,10 @@ func (e *ExtentMap) RenderExpanded() string {
 	for i := e.m.Iterator(); i.Valid(); i.Next() {
 		pba := i.ValuePtr()
 
-		if pba.Live.Blocks == 1 {
-			parts = append(parts, fmt.Sprintf("%p %d => %s [%s]", pba, pba.Live.LBA, pba.Segment.String(), pba.Extent))
+		if pba.LiveBlocks() == 1 {
+			parts = append(parts, fmt.Sprintf("%p %d => %s [%s]", pba, pba.LiveLBA(), e.segment(*pba).String(), pba.Extent()))
 		} else {
-			parts = append(parts, fmt.Sprintf("%p %d-%d => %s [%s]", pba, pba.Live.LBA, pba.Live.Last(), pba.Segment.String(), pba.Extent))
+			parts = append(parts, fmt.Sprintf("%p %d-%d => %s [%s]", pba, pba.LiveLBA(), pba.LiveLast(), e.segment(*pba).String(), pba.Extent()))
 		}
 	}
 
@@ -391,11 +548,11 @@ loop:
 			log.Trace("consider for resolve", "cur", cur.Live, "against", rng)
 		}
 
-		switch cur.Live.Cover(rng) {
+		switch cur.Live().Cover(rng) {
 		case CoverPartly:
-			ret = append(ret, cur)
+			ret = append(ret, e.ToPE(cur))
 		case CoverSuperRange, CoverExact:
-			ret = append(ret, cur)
+			ret = append(ret, e.ToPE(cur))
 			break loop
 		case CoverNone:
 			break loop
@@ -406,7 +563,7 @@ loop2:
 	// Also check for ranges that start higher to be considered
 	for i := e.m.LowerBound(rng.LBA); i.Valid(); i.Next() {
 		cur := i.Value()
-		coverage := cur.Live.Cover(rng)
+		coverage := cur.Live().Cover(rng)
 
 		orig := cur.Live
 
@@ -423,10 +580,10 @@ loop2:
 		case CoverNone:
 			break loop2
 		case CoverSuperRange, CoverExact:
-			ret = append(ret, cur)
+			ret = append(ret, e.ToPE(cur))
 			break loop2
 		case CoverPartly:
-			ret = append(ret, cur)
+			ret = append(ret, e.ToPE(cur))
 		default:
 			return nil, fmt.Errorf("invalid coverage value: %s", coverage)
 		}

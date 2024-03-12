@@ -100,6 +100,8 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			d.log.Error("error updating lba map", "error", err)
 		}
 
+		extents.Set(float64(d.lba2pba.m.Len()))
+
 		d.prevCache.Clear()
 
 		mapDur := time.Since(mapStart)

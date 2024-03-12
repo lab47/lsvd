@@ -43,12 +43,12 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := d.m.Get(0)
 		r.True(ok)
 
-		r.Equal(y, r1.Live)
+		r.Equal(y, r1.Live())
 
 		r2, ok := d.m.Get(47)
 		r.True(ok)
 
-		r.Equal(x, r2.Live)
+		r.Equal(x, r2.Live())
 	})
 
 	t.Run("disjoint updates suffix", func(t *testing.T) {
@@ -75,12 +75,12 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := d.m.Get(0)
 		r.True(ok)
 
-		r.Equal(y, r1.Live)
+		r.Equal(y, r1.Live())
 
 		r2, ok := d.m.Get(47)
 		r.True(ok)
 
-		r.Equal(x, r2.Live)
+		r.Equal(x, r2.Live())
 	})
 
 	t.Run("splits the ranges on update", func(t *testing.T) {
@@ -112,20 +112,20 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := d.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 1}, r1.Live)
-		r.Equal(uint32(1), r1.Offset)
+		r.Equal(Extent{0, 1}, r1.Live())
+		r.Equal(uint32(1), r1.offset)
 
 		r2, ok := d.m.Get(1)
 		r.True(ok)
 
-		r.Equal(Extent{1, 1}, r2.Live)
-		r.Equal(uint32(2), r2.Offset)
+		r.Equal(Extent{1, 1}, r2.Live())
+		r.Equal(uint32(2), r2.offset)
 
 		r3, ok := d.m.Get(2)
 		r.True(ok)
 
-		r.Equal(Extent{2, 8}, r3.Live)
-		r.Equal(uint32(1), r3.Offset)
+		r.Equal(Extent{2, 8}, r3.Live())
+		r.Equal(uint32(1), r3.offset)
 	})
 
 	t.Run("wipes out a smaller range", func(t *testing.T) {
@@ -154,7 +154,7 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 10}, r1.Live)
+		r.Equal(Extent{0, 10}, r1.Live())
 	})
 
 	t.Run("adjusts an earlier overlapping range", func(t *testing.T) {
@@ -181,12 +181,12 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 3}, r1.Live)
+		r.Equal(Extent{0, 3}, r1.Live())
 
 		r2, ok := m.m.Get(3)
 		r.True(ok)
 
-		r.Equal(Extent{3, 10}, r2.Live)
+		r.Equal(Extent{3, 10}, r2.Live())
 	})
 
 	t.Run("adjusts a later overlapping range", func(t *testing.T) {
@@ -213,12 +213,12 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 5}, r1.Live)
+		r.Equal(Extent{0, 5}, r1.Live())
 
 		r2, ok := m.m.Get(5)
 		r.True(ok)
 
-		r.Equal(Extent{5, 8}, r2.Live)
+		r.Equal(Extent{5, 8}, r2.Live())
 	})
 
 	t.Run("adjusts a later boundary range", func(t *testing.T) {
@@ -241,7 +241,7 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 5}, r1.Live)
+		r.Equal(Extent{0, 5}, r1.Live())
 	})
 
 	t.Run("removes a range that starts at the same place and is smaller", func(t *testing.T) {
@@ -270,7 +270,7 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(1)
 		r.True(ok)
 
-		r.Equal(Extent{1, 5}, r1.Live)
+		r.Equal(Extent{1, 5}, r1.Live())
 	})
 
 	t.Run("doesn't removes non overlapping range", func(t *testing.T) {
@@ -302,7 +302,7 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 1}, r1.Live)
+		r.Equal(Extent{0, 1}, r1.Live())
 	})
 
 	t.Run("removes multiple ranges", func(t *testing.T) {
@@ -336,7 +336,7 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(0)
 		r.True(ok)
 
-		r.Equal(Extent{0, 5}, r1.Live)
+		r.Equal(Extent{0, 5}, r1.Live())
 	})
 
 	t.Run("adjusts multiple ranges", func(t *testing.T) {
@@ -379,19 +379,19 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(8)
 		r.True(ok)
 
-		r.Equal(Extent{8, 1}, r1.Live)
+		r.Equal(Extent{8, 1}, r1.Live())
 
 		r2, ok := m.m.Get(10)
 		r.True(ok)
 
-		r.Equal(Extent{10, 5}, r2.Live)
+		r.Equal(Extent{10, 5}, r2.Live())
 
 		r3, ok := m.m.Get(15)
 		r.True(ok)
 
 		t.Log(m.Render())
 
-		r.Equal(Extent{15, 7}, r3.Live)
+		r.Equal(Extent{15, 7}, r3.Live())
 		r.Equal(Extent{12, 10}.Last(), Extent{15, 7}.Last())
 	})
 
@@ -565,12 +565,12 @@ func TestExtentMap(t *testing.T) {
 		r1, ok := m.m.Get(5799969)
 		r.True(ok)
 
-		r.Equal(Extent{5799969, 31}, r1.Live)
+		r.Equal(Extent{5799969, 31}, r1.Live())
 
 		r2, ok := m.m.Get(5799956)
 		r.True(ok)
 
-		r.Equal(Extent{5799956, 13}, r2.Live)
+		r.Equal(Extent{5799956, 13}, r2.Live())
 	})
 
 	t.Run("tc2", func(t *testing.T) {
