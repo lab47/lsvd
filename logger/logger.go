@@ -45,6 +45,10 @@ func (l *LabLogger) IsTrace() bool {
 	return l.Is(Trace)
 }
 
+func (l *LabLogger) IsDebug() bool {
+	return l.Is(Debug)
+}
+
 func New(level slog.Level) Logger {
 	lab := &LabLogger{}
 

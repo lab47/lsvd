@@ -551,7 +551,7 @@ loop:
 		cur := i.Value()
 
 		if log.IsTrace() {
-			log.Trace("consider for resolve", "cur", cur.Live, "against", rng)
+			log.Trace("consider for resolve", "cur", cur.Live(), "against", rng)
 		}
 
 		switch cur.Live().Cover(rng) {
@@ -571,13 +571,11 @@ loop2:
 		cur := i.Value()
 		coverage := cur.Live().Cover(rng)
 
-		orig := cur.Live
-
 		// Guard for performance. Logging any variable data causes allocations as they're
 		// promoted to interfaces.
 		if log.IsTrace() {
 			log.Trace("considering",
-				"a", rng, "b", orig,
+				"a", rng, "b", cur.Live(),
 				"a-sub-b", coverage,
 			)
 		}

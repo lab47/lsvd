@@ -51,7 +51,9 @@ type Disk struct {
 
 	bgmu sync.Mutex
 
-	cpsScratch []CachePosition
+	cpsScratch     []CachePosition
+	readReqScratch []readRequest
+	extentsScratch []Extent
 }
 
 func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Option) (*Disk, error) {
@@ -104,20 +106,22 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		return nil, err
 	}
 	d := &Disk{
-		log:        log,
-		path:       path,
-		size:       sz,
-		lba2pba:    NewExtentMap(),
-		sa:         o.sa,
-		volName:    o.volName,
-		SeqGen:     o.seqGen,
-		afterNS:    o.afterNS,
-		readOnly:   o.ro,
-		useZstd:    o.useZstd,
-		er:         er,
-		prevCache:  NewPreviousCache(),
-		s:          NewSegments(),
-		cpsScratch: make([]CachePosition, 0, 1),
+		log:            log,
+		path:           path,
+		size:           sz,
+		lba2pba:        NewExtentMap(),
+		sa:             o.sa,
+		volName:        o.volName,
+		SeqGen:         o.seqGen,
+		afterNS:        o.afterNS,
+		readOnly:       o.ro,
+		useZstd:        o.useZstd,
+		er:             er,
+		prevCache:      NewPreviousCache(),
+		s:              NewSegments(),
+		cpsScratch:     make([]CachePosition, 0, 1),
+		readReqScratch: make([]readRequest, 0, 10),
+		extentsScratch: make([]Extent, 0, 10),
 	}
 
 	d.readDisks = append(d.readDisks, d)
@@ -229,6 +233,12 @@ func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
 	return data, err
 }
 
+type readRequest struct {
+	pe     PartialExtent
+	extent Extent
+	extra  []Extent
+}
+
 func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePosition, error) {
 	start := time.Now()
 
@@ -244,7 +254,9 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	log := d.log
 
-	log.Debug("attempting to fill request from write cache", "extent", rng)
+	if log.IsDebug() {
+		log.Debug("attempting to fill request from write cache", "extent", rng)
+	}
 
 	remaining, err := d.fillFromWriteCache(ctx, log, data)
 	if err != nil {
@@ -259,13 +271,8 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 
 	log.Trace("remaining extents needed", "total", len(remaining))
 
-	type readRequest struct {
-		pe      PartialExtent
-		extents []Extent
-	}
-
 	var (
-		reqs []*readRequest
+		reqs = d.readReqScratch[:0]
 		last *readRequest
 	)
 
@@ -324,15 +331,14 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 				// 2 or more holes in sequence might be served by the same
 				// segment range.
 				if last != nil && last.pe == pe {
-					last.extents = append(last.extents, h)
+					last.extra = append(last.extra, h)
 				} else {
-					r := &readRequest{
-						pe:      pe,
-						extents: []Extent{h},
-					}
-
-					reqs = append(reqs, r)
-					last = r
+					idx := len(reqs)
+					reqs = append(reqs, readRequest{
+						pe:     pe,
+						extent: h,
+					})
+					last = &reqs[idx]
 				}
 			}
 		}
@@ -355,11 +361,20 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 	// range of data.
 	for _, o := range reqs {
 		ld := d.readDisks[o.pe.Disk]
-		err := ld.readPartialExtent(ctx, &o.pe, o.extents, rng, data)
+		extents := d.extentsScratch[:1]
+		extents[0] = o.extent
+
+		if o.extra != nil {
+			extents = append(extents, o.extra...)
+		}
+
+		err := ld.readPartialExtent(ctx, &o.pe, extents, rng, data)
 		if err != nil {
 			return CachePosition{}, err
 		}
 	}
+
+	d.readReqScratch = reqs[:0]
 
 	return CachePosition{}, nil
 }
