@@ -207,6 +207,7 @@ func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation) ([]PartialExte
 func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
 	defer func() {
 		extents.Set(float64(e.m.Len()))
+		extentUpdates.Inc()
 	}()
 
 	var (
