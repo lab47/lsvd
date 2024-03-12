@@ -3,6 +3,7 @@ package lsvd
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"sync"
 	"syscall"
 	"time"
@@ -126,10 +127,14 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 
 	ext := Extent{LBA: blk, Blocks: blocks}
 
-	n.log.Debug("nbd read-at",
-		"size", len(b), "offset", off,
-		"extent", ext,
-	)
+	var isDebug = n.log.Is(logger.Debug)
+
+	if isDebug {
+		n.log.Debug("nbd read-at",
+			"size", len(b), "offset", off,
+			"extent", ext,
+		)
+	}
 
 	defer n.buf.Reset()
 
@@ -155,7 +160,6 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 	var written int
 
 	sc.Write(func(wfd uintptr) (done bool) {
-		n.log.Debug("beginning write back procedure")
 		left := len(b)
 
 		if cps.fd == nil {
@@ -167,7 +171,11 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 				left -= written
 				off += written
 
-				n.log.Debug("wrote data back data to nbd directly", "request", cps.size, "written", written)
+				n.log.LogAttrs(n.ctx, logger.Debug,
+					"wrote data back data to nbd directly",
+					slog.Int64("request", cps.size),
+					slog.Int64("written", int64(written)),
+				)
 			}
 			return true
 		}
