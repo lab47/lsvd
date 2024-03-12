@@ -118,7 +118,7 @@ func (t *TreeMap[Key, Value]) allocNode() *node[Key, Value] {
 	idx := len(t.nodes)
 
 	if idx >= cap(t.nodes) {
-		t.nodes = make([]node[Key, Value], 0, 1024)
+		t.nodes = make([]node[Key, Value], 0, 2048)
 		idx = 0
 	}
 
