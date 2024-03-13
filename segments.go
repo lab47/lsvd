@@ -57,7 +57,7 @@ func (s *Segments) Usage() float64 {
 		size += s.Size
 	}
 
-	return float64(used) / float64(size)
+	return 100.0 * (float64(used) / float64(size)) // report as a percent
 }
 
 func (s *Segments) Create(segId SegmentId, stats *SegmentStats) {
