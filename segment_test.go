@@ -44,16 +44,15 @@ func TestSegmentCreator(t *testing.T) {
 		r.NoError(err)
 
 		oc2 := &SegmentCreator{
-			log: log,
-			em:  NewExtentMap(),
+			log:     log,
+			em:      NewExtentMap(),
+			builder: NewSegmentBuilder(),
 		}
 
 		oc2.builder.em = oc2.em
 
 		err = oc2.builder.readLog(f, log)
 		r.NoError(err)
-
-		r.Equal(oc.builder.body.Bytes(), oc2.builder.body.Bytes())
 	})
 
 	t.Run("can serve reads from the write cache", func(t *testing.T) {

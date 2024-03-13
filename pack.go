@@ -15,9 +15,7 @@ type Packer struct {
 func (p *Packer) iterateExtents(ctx *Context) error {
 	var live RangeData
 
-	sb := &SegmentBuilder{
-		useZstd: true,
-	}
+	sb := NewSegmentBuilder()
 
 	path := filepath.Join(p.d.path, "writecache."+p.segId.String())
 	err := sb.OpenWrite(path, p.d.log)
@@ -70,9 +68,9 @@ func (p *Packer) iterateExtents(ctx *Context) error {
 				return err
 			}
 
-			sb = &SegmentBuilder{
-				useZstd: true,
-			}
+			sb.Close(p.d.log)
+
+			sb = NewSegmentBuilder()
 		}
 	}
 

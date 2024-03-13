@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/lab47/lsvd/logger"
@@ -18,7 +19,7 @@ import (
 type SegmentCreator struct {
 	log logger.Logger
 
-	builder SegmentBuilder
+	builder *SegmentBuilder
 
 	volName string
 
@@ -42,7 +43,6 @@ type SegmentBuilder struct {
 
 	buf    []byte
 	header bytes.Buffer
-	body   bytes.Buffer
 
 	offset  uint64
 	extents []ExtentHeader
@@ -62,6 +62,35 @@ type SegmentBuilder struct {
 	peScratch []PartialExtent
 }
 
+var segBuilderPool = sync.Pool{
+	New: func() any {
+		return &SegmentBuilder{}
+	},
+}
+
+func NewSegmentBuilder() *SegmentBuilder {
+	seg := segBuilderPool.Get().(*SegmentBuilder)
+	seg.Reset()
+
+	return seg
+}
+
+func ReturnSegmentBuilder(seg *SegmentBuilder) {
+	segBuilderPool.Put(seg)
+}
+
+func (s *SegmentBuilder) Reset() {
+	header := s.header
+	header.Reset()
+
+	*s = SegmentBuilder{
+		peScratch: s.peScratch[:0],
+		extents:   s.extents[:0],
+		buf:       s.buf,
+		header:    header,
+	}
+}
+
 var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
 
 func NewSegmentCreator(log logger.Logger, vol, path string) (*SegmentCreator, error) {
@@ -69,6 +98,7 @@ func NewSegmentCreator(log logger.Logger, vol, path string) (*SegmentCreator, er
 		log:     log,
 		volName: vol,
 		em:      NewExtentMap(),
+		builder: NewSegmentBuilder(),
 	}
 
 	oc.builder.em = oc.em
@@ -162,7 +192,7 @@ func (o *SegmentBuilder) ShouldFlush(sizeThreshold int) bool {
 }
 
 func (o *SegmentBuilder) BodySize() int {
-	return o.body.Len()
+	return int(o.offset)
 }
 
 func (o *SegmentCreator) ShouldFlush(sizeThreshold int) bool {
@@ -470,7 +500,12 @@ func (o *SegmentCreator) Flush(ctx context.Context,
 }
 
 func (o *SegmentCreator) Close() error {
-	return o.builder.Close(o.log)
+	err := o.builder.Close(o.log)
+
+	ReturnSegmentBuilder(o.builder)
+	o.builder = nil
+
+	return err
 }
 
 func (o *SegmentBuilder) Close(log logger.Logger) error {
@@ -574,13 +609,15 @@ func (o *SegmentBuilder) WriteExtent(log logger.Logger, ext RangeDataView) ([]by
 
 	o.offset += uint64(n)
 
-	log.Debug("wrote range",
-		"offset", eh.Offset,
-		"size", eh.Size,
-		"raw-size", eh.RawSize,
-		"blocks", eh.Blocks,
-		"offset", eh.Offset,
-	)
+	if log.IsDebug() {
+		log.Debug("wrote range",
+			"offset", eh.Offset,
+			"size", eh.Size,
+			"raw-size", eh.RawSize,
+			"blocks", eh.Blocks,
+			"offset", eh.Offset,
+		)
+	}
 	o.extents = append(o.extents, eh)
 
 	return data, eh, nil
