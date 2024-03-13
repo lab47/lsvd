@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-const BufferSliceSize = 1024 * 20
+const BufferSliceSize = 1024 * 1024
 
 type Buffers struct {
 	slice []byte
