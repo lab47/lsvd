@@ -2,6 +2,7 @@ package lsvd
 
 import (
 	"context"
+	"sync"
 )
 
 const BufferSliceSize = 1024 * 1024
@@ -12,11 +13,21 @@ type Buffers struct {
 	next int
 }
 
+var buffersPool = sync.Pool{
+	New: func() any {
+		return &Buffers{
+			slice: make([]byte, BufferSliceSize),
+		}
+	},
+}
+
 func NewBuffers() *Buffers {
-	data := make([]byte, BufferSliceSize)
-	return &Buffers{
-		slice: data,
-	}
+	return buffersPool.Get().(*Buffers)
+}
+
+func ReturnBuffers(buf *Buffers) {
+	buf.next = 0
+	buffersPool.Put(buf)
 }
 
 type buffersKey struct{}
