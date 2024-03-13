@@ -19,8 +19,8 @@ type segLocations struct {
 type compactPE struct {
 	physLBA       LBA
 	physBlocks    uint32
-	liveLBADiff   uint16
-	liveBlockDiff uint16
+	liveLBADiff   uint32
+	liveBlockDiff uint32
 
 	segIdx   uint32
 	byteSize uint32
@@ -56,17 +56,14 @@ func (c compactPE) LiveBlocks() uint32 {
 
 func (c *compactPE) SetLive(ext Extent) {
 	ld := ext.LBA - c.physLBA
-	if ld > math.MaxUint16 {
-		panic("compact PE failure, live diff too large")
+	if ld > math.MaxUint32 {
+		panic(fmt.Sprintf("compact PE failure, live diff too large: %d - %d = %d", ext.LBA, c.physLBA, ld))
 	}
-	c.liveLBADiff = uint16(ld)
+	c.liveLBADiff = uint32(ld)
 
 	bd := c.physBlocks - ext.Blocks
-	if bd > math.MaxUint16 {
-		panic("compact PE failure, live block diff too large")
-	}
 
-	c.liveBlockDiff = uint16(bd)
+	c.liveBlockDiff = uint32(bd)
 }
 
 func (m *ExtentMap) ToPE(c compactPE) PartialExtent {
