@@ -58,6 +58,7 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 
 		defer func() {
 			segmentTotalTime.Add(time.Since(s).Seconds())
+			dataDensity.Set(d.s.Usage())
 		}()
 
 		var (

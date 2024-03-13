@@ -112,12 +112,23 @@ var (
 		Name: "lsvd_extent_updates",
 		Help: "How many times the extent map has been updated",
 	})
+
+	dataDensity = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "lsvd_data_density",
+		Help: "What percent of the stored data is used",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {
 	var m dto.Metric
 	c.Write(&m)
 	return int64(m.Counter.GetValue())
+}
+
+func gaugeValue(c prometheus.Gauge) float64 {
+	var m dto.Metric
+	c.Write(&m)
+	return m.Gauge.GetValue()
 }
 
 func counterAsDuration(c prometheus.Counter) time.Duration {
@@ -162,6 +173,7 @@ func LogMetrics(log logger.Logger) {
 		"sendfile-responses", counterValue(sendfileResponses),
 		"write-responses", counterValue(writeResponses),
 		"cache-inflates", counterValue(inflateCache),
+		"data-density", gaugeValue(dataDensity),
 	)
 
 	log.Info("client stats",

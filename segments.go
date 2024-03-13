@@ -46,6 +46,20 @@ func (s *Segments) LiveSegments() []SegmentId {
 
 }
 
+func (s *Segments) Usage() float64 {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	var used, size uint64
+
+	for _, s := range s.segments {
+		used += s.Used
+		size += s.Size
+	}
+
+	return float64(used) / float64(size)
+}
+
 func (s *Segments) Create(segId SegmentId, stats *SegmentStats) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()

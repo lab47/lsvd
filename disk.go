@@ -161,6 +161,8 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		}
 	}
 
+	dataDensity.Set(d.s.Usage())
+
 	return d, nil
 }
 
