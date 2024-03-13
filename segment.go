@@ -60,11 +60,17 @@ type SegmentBuilder struct {
 	em *ExtentMap
 
 	peScratch []PartialExtent
+	affected  []ExtentLocation
 }
+
+const DefaultExtentsSize = 20000
 
 var segBuilderPool = sync.Pool{
 	New: func() any {
-		return &SegmentBuilder{}
+		return &SegmentBuilder{
+			extents:  make([]ExtentHeader, 0, DefaultExtentsSize),
+			affected: make([]ExtentLocation, 0, 1000),
+		}
 	},
 }
 
@@ -636,7 +642,10 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 	for _, blk := range o.extents {
 		stats.Blocks += uint64(blk.Blocks)
 
-		log.Trace("writing extent to header", "extent", blk.Extent, "offset", blk.Offset, "blocks", blk.Blocks)
+		if log.IsTrace() {
+			log.Trace("writing extent to header", "extent", blk.Extent, "offset", blk.Offset, "blocks", blk.Blocks)
+		}
+
 		_, err := blk.Write(&o.header)
 		if err != nil {
 			return nil, nil, err
@@ -645,26 +654,31 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 
 	dataBegin := uint32(o.header.Len() + 8)
 
-	log.Debug("segment constructed",
-		"header-size", o.header.Len(),
-		"body-size", o.offset,
-		"blocks", len(o.extents),
-	)
+	if log.IsDebug() {
+		log.Debug("segment constructed",
+			"header-size", o.header.Len(),
+			"body-size", o.offset,
+			"blocks", len(o.extents),
+		)
+	}
+
+	entries := o.affected[:0]
 
 	stats.DataOffset = dataBegin
 
 	writtenBytes.Add(float64(o.inputBytes))
 	segmentsBytes.Add(float64(o.storageBytes))
 
-	entries := make([]ExtentLocation, len(o.extents))
-
-	for i, eh := range o.extents {
+	for _, eh := range o.extents {
 		eh.Offset += dataBegin
-		entries[i] = ExtentLocation{
+		entries = append(entries, ExtentLocation{
 			ExtentHeader: eh,
 			Segment:      seg,
+		})
+
+		if log.IsTrace() {
+			log.Trace("advertising extent", "extent", eh.Extent, "offset", eh.Offset, "blocks", eh.Blocks)
 		}
-		log.Trace("advertising extent", "extent", eh.Extent, "offset", eh.Offset, "blocks", eh.Blocks)
 	}
 
 	completedPath := o.path + ".complete"
