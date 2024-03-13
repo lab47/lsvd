@@ -92,6 +92,7 @@ func (s *SegmentBuilder) Reset() {
 	*s = SegmentBuilder{
 		peScratch: s.peScratch[:0],
 		extents:   s.extents[:0],
+		affected:  s.affected[:0],
 		buf:       s.buf,
 		header:    header,
 	}
