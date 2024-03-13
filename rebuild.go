@@ -77,7 +77,7 @@ func (d *Disk) rebuildFromSegment(ctx context.Context, seg SegmentId) error {
 		affected, err := d.lba2pba.Update(d.log, ExtentLocation{
 			ExtentHeader: eh,
 			Segment:      seg,
-		})
+		}, nil)
 		if err != nil {
 			return err
 		}

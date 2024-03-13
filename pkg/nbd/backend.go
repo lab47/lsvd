@@ -2,7 +2,7 @@ package nbd
 
 import (
 	"io"
-	"syscall"
+	"os"
 )
 
 type BackendOpen interface {
@@ -14,7 +14,7 @@ type Backend interface {
 	io.ReaderAt
 	io.WriterAt
 
-	ReadIntoConn(optional []byte, off int64, output syscall.Conn) (bool, error)
+	ReadIntoConn(optional []byte, off int64, output *os.File) (bool, error)
 
 	ZeroAt(off, sz int64) error
 	Trim(off, sz int64) error

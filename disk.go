@@ -219,10 +219,8 @@ func (d *Disk) resolveSegmentAccess(ext Extent) ([]PartialExtent, error) {
 	return d.lba2pba.Resolve(d.log, ext, nil)
 }
 
-func (d *Disk) ReadExtent(ctx context.Context, rng Extent) (RangeData, error) {
-	b := B(ctx)
-
-	data := b.NewRangeData(rng)
+func (d *Disk) ReadExtent(ctx *Context, rng Extent) (RangeData, error) {
+	data := NewRangeData(ctx, rng)
 
 	cp, err := d.ReadExtentInto(ctx, data)
 	if cp.fd != nil {
@@ -241,7 +239,7 @@ type readRequest struct {
 	extra  []Extent
 }
 
-func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePosition, error) {
+func (d *Disk) ReadExtentInto(ctx *Context, data RangeData) (CachePosition, error) {
 	start := time.Now()
 
 	defer func() {
@@ -382,12 +380,12 @@ func (d *Disk) ReadExtentInto(ctx context.Context, data RangeData) (CachePositio
 	return CachePosition{}, nil
 }
 
-func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data RangeData) ([]Extent, error) {
+func (d *Disk) fillFromWriteCache(ctx *Context, log logger.Logger, data RangeData) ([]Extent, error) {
 	if d.curOC == nil {
 		return []Extent{data.Extent}, nil
 	}
 
-	used, err := d.curOC.FillExtent(data.View())
+	used, err := d.curOC.FillExtent(ctx, data.View())
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +413,7 @@ func (d *Disk) fillFromWriteCache(ctx context.Context, log logger.Logger, data R
 	return d.fillingFromPrevWriteCache(ctx, log, data, remaining)
 }
 
-func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log logger.Logger, data RangeData, holes []Extent) ([]Extent, error) {
+func (d *Disk) fillingFromPrevWriteCache(ctx *Context, log logger.Logger, data RangeData, holes []Extent) ([]Extent, error) {
 	oc := d.prevCache.Load()
 
 	// If there is no previous cache, bail.
@@ -431,7 +429,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log logger.Logger,
 			return nil, fmt.Errorf("error calculating subrange")
 		}
 
-		used, err := oc.FillExtent(sr)
+		used, err := oc.FillExtent(ctx, sr)
 		if err != nil {
 			return nil, err
 		}
@@ -454,7 +452,7 @@ func (d *Disk) fillingFromPrevWriteCache(ctx context.Context, log logger.Logger,
 }
 
 func (d *Disk) readOneExtent(
-	ctx context.Context,
+	ctx *Context,
 	pe *PartialExtent,
 	x Extent,
 	dest RangeData,
@@ -490,14 +488,12 @@ func (d *Disk) readOneExtent(
 
 	inflateCache.Inc()
 
-	rawData := buffers.Get(int(pe.Size))
+	rawData := ctx.Allocate(int(pe.Size))
 
 	err = FillFromeCache(rawData, cps)
 	if err != nil {
 		return CachePosition{}, err
 	}
-
-	defer buffers.Return(rawData)
 
 	src = MapRangeData(pe.Extent, rawData)
 
@@ -550,7 +546,7 @@ func (d *Disk) readOneExtent(
 }
 
 func (d *Disk) readPartialExtent(
-	ctx context.Context,
+	ctx *Context,
 	pe *PartialExtent,
 	rngs []Extent,
 	dataRange Extent,
@@ -560,8 +556,6 @@ func (d *Disk) readPartialExtent(
 	if err != nil {
 		return err
 	}
-
-	defer d.er.returnData(src)
 
 	isDebug := d.log.IsDebug()
 

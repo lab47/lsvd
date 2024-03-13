@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/lab47/lsvd/logger"
@@ -16,7 +16,7 @@ import (
 
 type nbdWrapper struct {
 	log logger.Logger
-	ctx context.Context
+	ctx *Context
 	d   *Disk
 
 	mu sync.Mutex
@@ -49,12 +49,11 @@ var _ nbd.Backend = &nbdWrapper{}
 func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) *nbdWrapper {
 	w := &nbdWrapper{
 		log: log,
-		ctx: ctx,
 		d:   d,
 		buf: NewBuffers(),
 	}
 
-	w.ctx = w.buf.Inject(w.ctx)
+	w.ctx = NewContext(ctx)
 
 	d.SetAfterNS(w.AfterNS)
 
@@ -72,6 +71,8 @@ func logBlocks(log logger.Logger, msg string, idx LBA, data []byte) {
 func (n *nbdWrapper) Idle() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	defer n.ctx.Reset()
 
 	if time.Since(n.lastCheckpoint) > 1*time.Minute {
 		n.lastCheckpoint = time.Now()
@@ -97,6 +98,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	err := n.flushPendingWrite()
 	if err != nil {
@@ -121,8 +123,9 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	return len(b), nil
 }
 
-func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (bool, error) {
+func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output *os.File) (bool, error) {
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
@@ -151,61 +154,54 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 		return false, err
 	}
 
-	sc, err := output.SyscallConn()
-	if err != nil {
-		n.log.Error("error getting syscall on socket", "error", err)
-		return false, err
-	}
+	wfd := output.Fd()
 
 	var written int
 
-	sc.Write(func(wfd uintptr) (done bool) {
-		left := len(b)
+	left := len(b)
 
-		if cps.fd == nil {
-			writeResponses.Inc()
+	if cps.fd == nil {
+		writeResponses.Inc()
 
-			off := 0
-			for left > 0 {
-				written, err = unix.Write(int(wfd), b[off:])
-				left -= written
-				off += written
+		off := 0
+		for left > 0 {
+			written, err = unix.Write(int(wfd), b[off:])
+			if err != nil {
+				n.log.Error("error sending data via write(2)", "error", err)
+				return true, nil
+			}
 
+			left -= written
+			off += written
+
+			if isDebug {
 				n.log.LogAttrs(n.ctx, logger.Debug,
 					"wrote data back data to nbd directly",
 					slog.Int64("request", cps.size),
 					slog.Int64("written", int64(written)),
 				)
 			}
-			return true
 		}
+		return true, nil
+	}
 
-		sc2, err := cps.fd.SyscallConn()
+	rfd := cps.fd.Fd()
+	sendfileResponses.Inc()
+
+	off = cps.off
+
+	for left > 0 {
+		written, err = unix.Sendfile(int(wfd), int(rfd), &off, left)
 		if err != nil {
-			n.log.Error("error getting syscall on cache", "error", err)
-			return true
+			return true, nil
 		}
 
-		sc2.Read(func(rfd uintptr) (done bool) {
-			sendfileResponses.Inc()
-
-			off := cps.off
-
-			for left > 0 {
-				written, err = unix.Sendfile(int(wfd), int(rfd), &off, left)
-				if err != nil {
-					return true
-				}
-
-				n.log.Debug("sendfile complete", "request", cps.size, "written", written, "left", left)
-				left -= written
-				off += int64(written)
-			}
-
-			return true
-		})
-		return true
-	})
+		if isDebug {
+			n.log.Debug("sendfile complete", "request", cps.size, "written", written, "left", left)
+		}
+		left -= written
+		off += int64(written)
+	}
 
 	return true, nil
 }
@@ -278,6 +274,7 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	n.log.Debug("nbd write-at", "size", len(b), "offset", off)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	blk := LBA(off / BlockSize)
 
@@ -349,6 +346,7 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 	blk := LBA(off / BlockSize)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	numBlocks := uint32(size / BlockSize)
 

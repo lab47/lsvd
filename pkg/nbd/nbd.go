@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/lab47/lsvd/logger"
@@ -41,8 +40,25 @@ type Options struct {
 	SupportsMultiConn  bool
 }
 
+type filer interface {
+	File() (*os.File, error)
+}
+
 func Handle(log logger.Logger, conn net.Conn, exports []*Export, options *Options) error {
-	sc, canSc := conn.(syscall.Conn)
+	var (
+		sc  *os.File
+		err error
+	)
+
+	if filer, ok := conn.(filer); ok {
+		log.Info("enabling use of sendfile(2)")
+		sc, err = filer.File()
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Info("sendfile(2) unavailable based on connection type")
+	}
 
 	if options == nil {
 		options = &Options{
@@ -78,7 +94,7 @@ func Handle(log logger.Logger, conn net.Conn, exports []*Export, options *Option
 
 	var clientFlags uint32
 
-	err := binary.Read(conn, binary.BigEndian, &clientFlags)
+	err = binary.Read(conn, binary.BigEndian, &clientFlags)
 	if err != nil {
 		return err
 	}
@@ -431,7 +447,7 @@ nego:
 				return err
 			}
 
-			if canSc {
+			if sc != nil {
 				backend.ReadIntoConn(b[:length], int64(offset), sc)
 			} else {
 				n, err := backend.ReadAt(b[:length], int64(offset))

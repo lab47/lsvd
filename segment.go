@@ -58,6 +58,8 @@ type SegmentBuilder struct {
 	curOffset int64
 
 	em *ExtentMap
+
+	peScratch []PartialExtent
 }
 
 var histogramBands = []float64{1, 2, 3, 5, 10, 20, 50, 100, 200, 1000}
@@ -127,14 +129,16 @@ func (o *SegmentCreator) TotalBlocks() int {
 
 func (o *SegmentCreator) ZeroBlocks(rng Extent) error {
 	// The empty size will signal that it's empty blocks.
-	_, err := o.em.Update(o.log, ExtentLocation{
+	aff, err := o.em.Update(o.log, ExtentLocation{
 		ExtentHeader: ExtentHeader{
 			Extent: rng,
 		},
-	})
+	}, o.peScratch[:0])
 	if err != nil {
 		return err
 	}
+
+	o.peScratch = aff[:0]
 
 	return o.builder.ZeroBlocks(rng)
 }
@@ -274,12 +278,14 @@ func (o *SegmentBuilder) readLog(f *os.File, log logger.Logger) error {
 
 		o.extents = append(o.extents, eh)
 
-		_, err = o.em.Update(log, ExtentLocation{
+		aff, err := o.em.Update(log, ExtentLocation{
 			ExtentHeader: eh,
-		})
+		}, o.peScratch[:0])
 		if err != nil {
 			return err
 		}
+
+		o.peScratch = aff
 
 		o.offset += (uint64(eh.Size) + uint64(hdrLen))
 	}
@@ -290,7 +296,7 @@ func (o *SegmentBuilder) readLog(f *os.File, log logger.Logger) error {
 // FillExtent attempts to fill as much of +data+ as possible, returning
 // a list of Extents that was unable to fill. That later list is then
 // feed to the system that reads data from segments.
-func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
+func (o *SegmentCreator) FillExtent(ctx *Context, data RangeDataView) ([]Extent, error) {
 	startFill := time.Now()
 
 	rng := data.Extent
@@ -303,7 +309,11 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 	var ret []Extent
 
 	var compTime time.Duration
+	marker := ctx.Marker()
+
 	for _, srcRng := range ranges {
+		ctx.ResetTo(marker)
+
 		subDest, ok := data.SubRange(srcRng.Live)
 		if !ok {
 			o.log.Error("error calculating subrange")
@@ -369,13 +379,9 @@ func (o *SegmentCreator) FillExtent(data RangeDataView) ([]Extent, error) {
 
 			o.log.Debug("compressed range", "offset", srcRng.Offset)
 
-			//rawSize := binary.BigEndian.Uint32(srcData)
-			//srcData = srcData[4:]
-
 			o.log.Debug("original size of compressed extent", "len", srcRng.RawSize, "comp-size", srcRng.Size)
 
-			uncompData := buffers.Get(int(srcRng.RawSize))
-			defer buffers.Return(uncompData)
+			uncompData := ctx.Allocate(int(srcRng.RawSize))
 
 			n, err = lz4.UncompressBlock(srcData, uncompData)
 			if err != nil {
@@ -433,13 +439,15 @@ func (o *SegmentCreator) WriteExtent(ext RangeData) error {
 		o.em = NewExtentMap()
 	}
 
-	_, err = o.em.Update(o.log, ExtentLocation{
+	aff, err := o.em.Update(o.log, ExtentLocation{
 		ExtentHeader: eh,
-	})
+	}, o.peScratch[:0])
 
 	if err != nil {
 		return err
 	}
+
+	o.peScratch = aff[:0]
 
 	return nil
 }

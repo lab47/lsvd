@@ -1,7 +1,6 @@
 package lsvd
 
 import (
-	"context"
 	"strings"
 
 	"github.com/lab47/lsvd/logger"
@@ -13,15 +12,18 @@ type extentValidator struct {
 	entries []ExtentLocation
 }
 
-func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
+func (e *extentValidator) populate(log logger.Logger, ctx *Context, d *Disk, oc *SegmentCreator, entries []ExtentLocation) {
 	e.sums = map[Extent]string{}
 	e.resi = map[Extent][]PartialExtent{}
 	e.entries = entries
 
+	marker := ctx.Marker()
 	for _, ent := range entries {
-		data := NewRangeData(ent.Extent)
+		ctx.ResetTo(marker)
 
-		_, err := oc.FillExtent(data.View())
+		data := NewRangeData(ctx, ent.Extent)
+
+		_, err := oc.FillExtent(ctx, data.View())
 		if err != nil {
 			d.log.Error("error reading extent for validation", "error", err, "extent", ent.Extent, "offset", ent.Offset, "size", ent.Size)
 		}
@@ -40,12 +42,10 @@ func (e *extentValidator) populate(log logger.Logger, d *Disk, oc *SegmentCreato
 		} else {
 			e.resi[ent.Extent] = ranges
 		}
-
-		data.Discard()
 	}
 }
 
-func (e *extentValidator) validate(ctx context.Context, log logger.Logger, d *Disk) {
+func (e *extentValidator) validate(ctx *Context, log logger.Logger, d *Disk) {
 	entries := e.entries
 
 	d.log.Info("performing extent validation")

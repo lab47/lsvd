@@ -139,7 +139,7 @@ func (e *ExtentMap) Populate(log logger.Logger, o *ExtentMap, diskId uint16) err
 		loc := i.Value().ExtentLocation
 		loc.Disk = diskId
 
-		_, err := o.Update(log, loc)
+		_, err := o.Update(log, loc, nil)
 		if err != nil {
 			return err
 		}
@@ -206,11 +206,11 @@ func (e *ExtentMap) UpdateBatch(log logger.Logger, entries []ExtentLocation, seg
 	return nil
 }
 
-func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation) ([]PartialExtent, error) {
+func (e *ExtentMap) Update(log logger.Logger, pba ExtentLocation, affected []PartialExtent) ([]PartialExtent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.update(log, pba, nil)
+	return e.update(log, pba, affected)
 }
 
 func (e *ExtentMap) update(log logger.Logger, pba ExtentLocation, affected []PartialExtent) ([]PartialExtent, error) {
