@@ -67,6 +67,7 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 		)
 
 		ctx := NewContext(gctx)
+		defer ctx.Close()
 
 		// We retry because flush does network calls and we want to just keep trying
 		// forever.

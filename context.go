@@ -19,6 +19,12 @@ func (c *Context) Reset() {
 	c.buffers.Reset()
 }
 
+func (c *Context) Close() {
+	buf := c.buffers
+	c.buffers = nil
+	ReturnBuffers(buf)
+}
+
 func (c *Context) Allocate(sz int) []byte {
 	data := c.buffers.alloc(sz)
 	return data
