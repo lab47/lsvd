@@ -13,7 +13,9 @@ import (
 )
 
 func TestGC(t *testing.T) {
-	ctx := context.Background()
+	gctx := context.Background()
+	ctx := NewContext(gctx)
+
 	log := logger.Test()
 
 	pat := func(id, count int) RawBlocks {

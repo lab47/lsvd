@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/lab47/lsvd/logger"
 	"github.com/lab47/lz4decode"
 	"github.com/oklog/ulid/v2"
@@ -82,7 +81,7 @@ func extentEqual(t *testing.T, actual RawBlocks, expected RangeData) {
 
 	require.Equal(t, actual.Blocks(), expected.Blocks)
 
-	if !bytes.Equal(actual, expected.data) {
+	if !bytes.Equal(actual, expected.ReadData()) {
 		t.Error("blocks are not the same")
 	}
 }
@@ -90,8 +89,10 @@ func extentEqual(t *testing.T, actual RawBlocks, expected RangeData) {
 func TestLSVD(t *testing.T) {
 	log := logger.New(logger.Trace)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	gctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	ctx := NewContext(gctx)
 
 	t.Run("reads with no data return zeros", func(t *testing.T) {
 		r := require.New(t)
@@ -106,9 +107,9 @@ func TestLSVD(t *testing.T) {
 		data, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
 
-		//r.Nil(data.data, "data shouldn't be allocated")
+		//r.Nil(data.ReadData(), "data shouldn't be allocated")
 
-		r.True(isEmpty(data.data))
+		r.True(isEmpty(data.ReadData()))
 	})
 
 	t.Run("writes are returned by next read", func(t *testing.T) {
@@ -123,6 +124,13 @@ func TestLSVD(t *testing.T) {
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
+
+		aff, err := d.curOC.em.Resolve(log, Extent{0, 1}, nil)
+		r.NoError(err)
+
+		r.Len(aff, 1)
+
+		r.Equal(uint32(4096), aff[0].Size)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -140,7 +148,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		data := NewRangeData(Extent{0, 10})
+		data := NewRangeData(ctx, Extent{0, 10})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
 		r.NoError(err)
 
@@ -153,12 +161,12 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
 		r.NoError(err)
 
-		n := d2.data
-		blockEqual(t, data.data[:BlockSize], n[:BlockSize])
+		n := d2.ReadData()
+		blockEqual(t, data.ReadData()[:BlockSize], n[:BlockSize])
 		n = n[BlockSize:]
 		blockEqual(t, testRandX, n[:BlockSize])
 		n = n[BlockSize:]
-		blockEqual(t, data.data[BlockSize*2:BlockSize*4], n)
+		blockEqual(t, data.ReadData()[BlockSize*2:BlockSize*4], n)
 	})
 
 	t.Run("can read the middle of an write cache range", func(t *testing.T) {
@@ -171,7 +179,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		data := NewRangeData(Extent{1, 19})
+		data := NewRangeData(ctx, Extent{1, 19})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
 		r.NoError(err)
 
@@ -181,7 +189,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 4, Blocks: 8})
 		r.NoError(err)
 
-		blockEqual(t, data.data[BlockSize*3:BlockSize*11], d2.data)
+		blockEqual(t, data.ReadData()[BlockSize*3:BlockSize*11], d2.ReadData())
 	})
 
 	t.Run("can read from segments", func(t *testing.T) {
@@ -249,7 +257,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
 
-		blockEqual(t, d2.data, big[BlockSize:BlockSize+BlockSize])
+		blockEqual(t, d2.ReadData(), big[BlockSize:BlockSize+BlockSize])
 
 		t.Run("and from the read cache", func(t *testing.T) {
 			r := require.New(t)
@@ -257,7 +265,7 @@ func TestLSVD(t *testing.T) {
 			d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 			r.NoError(err)
 
-			blockEqual(t, d2.data, big[BlockSize:BlockSize+BlockSize])
+			blockEqual(t, d2.ReadData(), big[BlockSize:BlockSize+BlockSize])
 		})
 	})
 
@@ -733,7 +741,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := disk2.ReadExtent(ctx, Extent{48, 1})
 		r.NoError(err)
 
-		blockEqual(t, testExtent2, d2.data)
+		blockEqual(t, testExtent2, d2.ReadData())
 	})
 
 	t.Run("with multiple blocks", func(t *testing.T) {
@@ -747,7 +755,7 @@ func TestLSVD(t *testing.T) {
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			data := NewRangeData(Extent{0, 2})
+			data := NewRangeData(ctx, Extent{0, 2})
 			ds := data.WriteData()
 			copy(ds, testData)
 			copy(ds[BlockSize:], testData)
@@ -776,7 +784,7 @@ func TestLSVD(t *testing.T) {
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
 
-			data := NewRangeData(Extent{0, 2})
+			data := NewRangeData(ctx, Extent{0, 2})
 			copy(data.RawBlocks().BlockView(0), testData)
 			copy(data.RawBlocks().BlockView(1), testData)
 
@@ -838,10 +846,6 @@ func TestLSVD(t *testing.T) {
 			r.NoError(err)
 
 			r.NoError(d.Close(ctx))
-
-			ents, err := os.ReadDir(tmpdir)
-			r.NoError(err)
-			spew.Dump(ents)
 
 			t.Log("reopening disk")
 
@@ -1036,7 +1040,7 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
 
-		//r.Nil(d2.data, "data shouldn't be allocated")
+		//r.Nil(d2.ReadData(), "data shouldn't be allocated")
 		//r.True(d2.EmptyP())
 
 		data := d2.RawBlocks().BlockView(0)
@@ -1089,7 +1093,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir, WithSegmentAccess(&sa))
 		r.NoError(err)
 
-		data := NewRangeData(Extent{0, 10})
+		data := NewRangeData(ctx, Extent{0, 10})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
 		r.NoError(err)
 
@@ -1118,11 +1122,11 @@ func TestLSVD(t *testing.T) {
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
 		r.NoError(err)
 
-		blockEqual(t, testRandX, d2.data[:BlockSize])
-		blockEqual(t, testExtent, d2.data[BlockSize:BlockSize*2])
+		blockEqual(t, testRandX, d2.ReadData()[:BlockSize])
+		blockEqual(t, testExtent, d2.ReadData()[BlockSize:BlockSize*2])
 		blockEqual(t,
-			data.data[BlockSize*2:BlockSize*4],
-			d2.data[BlockSize*2:BlockSize*4],
+			data.ReadData()[BlockSize*2:BlockSize*4],
+			d2.ReadData()[BlockSize*2:BlockSize*4],
 		)
 	})
 
@@ -1264,7 +1268,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		bd := NewRangeData(Extent{0, 4})
+		bd := NewRangeData(ctx, Extent{0, 4})
 		_, err = io.ReadFull(rand.Reader, bd.WriteData())
 		r.NoError(err)
 
@@ -1323,7 +1327,7 @@ func TestLSVD(t *testing.T) {
 		data2, err := d2.ReadExtent(ctx, Extent{LBA: 3, Blocks: 1})
 		r.NoError(err)
 
-		blockEqual(t, bd.data[BlockSize*3:], data2.data)
+		blockEqual(t, bd.ReadData()[BlockSize*3:], data2.ReadData())
 	})
 
 	t.Run("can pack all segments together", func(t *testing.T) {
@@ -1337,7 +1341,7 @@ func TestLSVD(t *testing.T) {
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
 
-		bd := NewRangeData(Extent{0, 4})
+		bd := NewRangeData(ctx, Extent{0, 4})
 		_, err = io.ReadFull(rand.Reader, bd.WriteData())
 		r.NoError(err)
 
@@ -1347,12 +1351,20 @@ func TestLSVD(t *testing.T) {
 		err = d.WriteExtent(ctx, bd)
 		r.NoError(err)
 
+		data, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
+		r.NoError(err)
+		blockEqual(t, bd.ReadData(), data.ReadData())
+
 		t.Log("closing segment")
 		r.NoError(d.CloseSegment(ctx))
 
 		t.Log("writing into new segment")
 		err = d.WriteExtent(ctx, testExtent.MapTo(100))
 		r.NoError(err)
+
+		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
+		r.NoError(err)
+		blockEqual(t, bd.ReadData(), data.ReadData())
 
 		t.Log("packing")
 		r.NoError(d.Pack(ctx))
@@ -1367,10 +1379,10 @@ func TestLSVD(t *testing.T) {
 
 		r.Len(d.s.LiveSegments(), 1)
 
-		data, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
+		data, err = d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 4})
 		r.NoError(err)
 
-		blockEqual(t, bd.data, data.data)
+		blockEqual(t, bd.ReadData(), data.ReadData())
 
 		// Make sure that the region of d that we created is still correct
 		data2, err := d.ReadExtent(ctx, Extent{LBA: 100, Blocks: 1})

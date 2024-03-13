@@ -28,7 +28,7 @@ func TestExtentMap(t *testing.T) {
 				Extent: x,
 				Offset: 47},
 			Segment: s1,
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 0)
 
@@ -36,7 +36,7 @@ func TestExtentMap(t *testing.T) {
 		a, err = d.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 0, Extent: y},
 			Segment:      s1,
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 0)
 
@@ -60,7 +60,7 @@ func TestExtentMap(t *testing.T) {
 		a, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 0, Extent: y},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 0)
 
@@ -68,7 +68,7 @@ func TestExtentMap(t *testing.T) {
 		a, err = d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 47, Extent: x},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 0)
 
@@ -93,14 +93,14 @@ func TestExtentMap(t *testing.T) {
 		_, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: x},
-		})
+		}, nil)
 		r.NoError(err)
 
 		y := Extent{1, 1}
 		a, err := d.Update(log, ExtentLocation{
 			Segment:      s1,
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: y},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 1)
 
@@ -135,12 +135,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{2, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 10}},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 1)
 		r.Equal(Extent{2, 1}, a[0].Live)
@@ -164,12 +164,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{3, 10}},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 1)
 
@@ -196,12 +196,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{3, 10}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 1)
 
@@ -228,12 +228,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{3, 2}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(1, m.m.Len())
@@ -251,12 +251,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{1, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 1)
 
@@ -280,12 +280,12 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		t.Log(m.Render())
@@ -294,7 +294,7 @@ func TestExtentMap(t *testing.T) {
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{1, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(2, m.m.Len())
@@ -312,17 +312,17 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{1, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{2, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{0, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 		r.Len(a, 2)
 
@@ -346,26 +346,26 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{8, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{11, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 0)
 
 		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{12, 10}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 0)
 
 		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{10, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 2)
@@ -402,26 +402,26 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{8, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		a, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{11, 1}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 0)
 
 		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{12, 10}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 0)
 
 		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{10, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 2)
@@ -432,7 +432,7 @@ func TestExtentMap(t *testing.T) {
 
 		a, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 5, Extent: Extent{10, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Len(a, 1)
@@ -447,27 +447,27 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 1, Extent: Extent{0, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{5, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 3, Extent: Extent{10, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{15, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		_, err = m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 4, Extent: Extent{100, 5}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(5, m.m.Len())
@@ -491,7 +491,7 @@ func TestExtentMap(t *testing.T) {
 			ExtentHeader: ExtentHeader{
 				Extent: Extent{0, 5},
 				Offset: 1},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(1, m.m.Len())
@@ -515,7 +515,7 @@ func TestExtentMap(t *testing.T) {
 			ExtentHeader: ExtentHeader{
 				Extent: Extent{1, 1},
 				Offset: 1},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(1, m.m.Len())
@@ -544,7 +544,7 @@ func TestExtentMap(t *testing.T) {
 		for i, e := range inject {
 			_, err := m.Update(log, ExtentLocation{
 				ExtentHeader: ExtentHeader{Offset: uint32(i), Extent: e},
-			})
+			}, nil)
 			r.NoError(err)
 		}
 
@@ -554,7 +554,7 @@ func TestExtentMap(t *testing.T) {
 
 		_, err := m.Update(log, ExtentLocation{
 			ExtentHeader: ExtentHeader{Offset: 2, Extent: Extent{5799956, 13}},
-		})
+		}, nil)
 		r.NoError(err)
 
 		r.Equal(3, m.m.Len())
@@ -588,7 +588,7 @@ func TestExtentMap(t *testing.T) {
 		for i, e := range inject {
 			_, err := m.Update(log, ExtentLocation{
 				ExtentHeader: ExtentHeader{Offset: uint32(i), Extent: e},
-			})
+			}, nil)
 			r.NoError(err)
 		}
 

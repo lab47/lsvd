@@ -1,16 +1,19 @@
 package lsvd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestRangeData(t *testing.T) {
+	ctx := NewContext(context.Background())
+
 	t.Run("slice for subrange", func(t *testing.T) {
 		r := require.New(t)
 
-		rd := NewRangeData(Extent{0, 20})
+		rd := NewRangeData(ctx, Extent{0, 20})
 
 		sub, ok := rd.SubRange(Extent{10, 10})
 		r.True(ok)
@@ -29,7 +32,7 @@ func TestRangeData(t *testing.T) {
 	t.Run("clamps the requested range", func(t *testing.T) {
 		r := require.New(t)
 
-		rd := NewRangeData(Extent{5, 200})
+		rd := NewRangeData(ctx, Extent{5, 200})
 
 		sub, ok := rd.SubRange(Extent{0, 10})
 		r.True(ok)
@@ -50,7 +53,7 @@ func TestRangeData(t *testing.T) {
 	t.Run("can copy from an empty range", func(t *testing.T) {
 		r := require.New(t)
 
-		x := NewRangeData(Extent{0, 10})
+		x := NewRangeData(ctx, Extent{0, 10})
 
 		out := make([]byte, BlockSize*10)
 
@@ -58,7 +61,6 @@ func TestRangeData(t *testing.T) {
 			out[i] = 8
 		}
 
-		r.Nil(x.data)
 		err := x.CopyTo(out)
 		r.NoError(err)
 
@@ -67,7 +69,9 @@ func TestRangeData(t *testing.T) {
 }
 
 func BenchmarkCopyEmpty(b *testing.B) {
-	x := NewRangeData(Extent{0, 10})
+	ctx := NewContext(context.Background())
+
+	x := NewRangeData(ctx, Extent{0, 10})
 
 	out := make([]byte, BlockSize*10)
 	for i := range out {

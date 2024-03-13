@@ -32,7 +32,7 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
-func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
+func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 	segId := d.curSeq
 
 	s := time.Now()
@@ -66,11 +66,13 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 			err     error
 		)
 
+		ctx := NewContext(gctx)
+
 		// We retry because flush does network calls and we want to just keep trying
 		// forever.
 		start := time.Now()
 		for {
-			entries, stats, err = oc.Flush(ctx, d.sa, segId)
+			entries, stats, err = oc.Flush(gctx, d.sa, segId)
 			if err != nil {
 				d.log.Error("error flushing data to segment, retrying", "error", err)
 				time.Sleep(5 * time.Second)
@@ -88,7 +90,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		if mode.Debug() {
 			validator = &extentValidator{}
-			validator.populate(d.log, d, oc, entries)
+			validator.populate(d.log, ctx, d, oc, entries)
 		}
 
 		mapStart := time.Now()
@@ -118,7 +120,7 @@ func (d *Disk) closeSegmentAsync(ctx context.Context) (chan struct{}, error) {
 
 		d.log.Info("uploaded new segment", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
 
-		err = d.cleanupDeletedSegments(ctx)
+		err = d.cleanupDeletedSegments(gctx)
 		if err != nil {
 			d.log.Error("error cleaning up deleted segments", "error", err)
 		}

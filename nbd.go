@@ -16,7 +16,7 @@ import (
 
 type nbdWrapper struct {
 	log logger.Logger
-	ctx context.Context
+	ctx *Context
 	d   *Disk
 
 	mu sync.Mutex
@@ -49,12 +49,11 @@ var _ nbd.Backend = &nbdWrapper{}
 func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) *nbdWrapper {
 	w := &nbdWrapper{
 		log: log,
-		ctx: ctx,
 		d:   d,
 		buf: NewBuffers(),
 	}
 
-	w.ctx = w.buf.Inject(w.ctx)
+	w.ctx = NewContext(ctx)
 
 	d.SetAfterNS(w.AfterNS)
 

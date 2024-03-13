@@ -1,6 +1,7 @@
 package lsvd
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 func TestSegmentCreator(t *testing.T) {
 	log := logger.New(logger.Trace)
+
+	ctx := NewContext(context.Background())
 
 	t.Run("logs writes to disk", func(t *testing.T) {
 		r := require.New(t)
@@ -26,10 +29,10 @@ func TestSegmentCreator(t *testing.T) {
 		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
 
-		data := NewRangeData(Extent{47, 5})
+		data := NewRangeData(ctx, Extent{47, 5})
 
-		for i := range data.data {
-			data.data[i] = byte(i)
+		for i := range data.WriteData() {
+			data.WriteData()[i] = byte(i)
 		}
 
 		err = oc.WriteExtent(data)
@@ -66,7 +69,7 @@ func TestSegmentCreator(t *testing.T) {
 		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
 
-		data := NewRangeData(Extent{47, 5})
+		data := NewRangeData(ctx, Extent{47, 5})
 
 		d := data.WriteData()
 		for i := range d {
@@ -76,12 +79,12 @@ func TestSegmentCreator(t *testing.T) {
 		err = oc.WriteExtent(data)
 		r.NoError(err)
 
-		readRequest := NewRangeData(Extent{48, 1})
+		readRequest := NewRangeData(ctx, Extent{48, 1})
 
-		ret, err := oc.FillExtent(readRequest.View())
+		ret, err := oc.FillExtent(ctx, readRequest.View())
 		r.NoError(err)
 
-		r.Equal(data.data[BlockSize:BlockSize*2], readRequest.data)
+		r.Equal(data.ReadData()[BlockSize:BlockSize*2], readRequest.ReadData())
 
 		r.Len(ret, 1)
 
@@ -101,7 +104,7 @@ func TestSegmentCreator(t *testing.T) {
 		oc, err := NewSegmentCreator(log, "", path)
 		r.NoError(err)
 
-		data := NewRangeData(Extent{47, 5})
+		data := NewRangeData(ctx, Extent{47, 5})
 
 		d := data.WriteData()
 		for i := range d {
@@ -111,7 +114,7 @@ func TestSegmentCreator(t *testing.T) {
 		err = oc.WriteExtent(data)
 		r.NoError(err)
 
-		d2 := NewRangeData(Extent{48, 1})
+		d2 := NewRangeData(ctx, Extent{48, 1})
 
 		d = d2.WriteData()
 		for i := range d {
@@ -121,13 +124,13 @@ func TestSegmentCreator(t *testing.T) {
 		err = oc.WriteExtent(d2)
 		r.NoError(err)
 
-		req := NewRangeData(Extent{48, 2})
+		req := NewRangeData(ctx, Extent{48, 2})
 
-		ret, err := oc.FillExtent(req.View())
+		ret, err := oc.FillExtent(ctx, req.View())
 		r.NoError(err)
 
-		r.Equal(d2.data[:BlockSize], req.data[:BlockSize])
-		r.Equal(data.data[BlockSize*3:BlockSize*4], req.data[BlockSize:])
+		r.Equal(d2.ReadData()[:BlockSize], req.ReadData()[:BlockSize])
+		r.Equal(data.ReadData()[BlockSize*3:BlockSize*4], req.ReadData()[BlockSize:])
 
 		r.Len(ret, 2)
 

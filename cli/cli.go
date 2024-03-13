@@ -603,8 +603,14 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 
 		left := total
 
+		ctx := lsvd.NewContext(ctx)
+
 		start := time.Now()
+		marker := ctx.Marker()
+
 		for left > 0 {
+			ctx.ResetTo(marker)
+
 			data, err := d.ReadExtent(ctx, extent)
 			if err != nil {
 				log.Error("error reading data", "error", err)
@@ -648,7 +654,7 @@ func (c *CLI) dd(ctx context.Context, opts struct {
 	return nil
 }
 
-func (c *CLI) sha256(ctx context.Context, opts struct {
+func (c *CLI) sha256(gctx context.Context, opts struct {
 	Global
 	Name  string   `short:"n" long:"name" description:"name of volume access" required:"true"`
 	Path  string   `short:"p" long:"path" description:"path for cached data" required:"true"`
@@ -657,7 +663,7 @@ func (c *CLI) sha256(ctx context.Context, opts struct {
 	Seek  lsvd.LBA `long:"seek" description:"start at the given LBA"`
 	BS    int      `long:"bs" description:"how many blocks to read at a time (default 20)"`
 }) error {
-	sa, err := c.loadSegmentAccess(ctx, opts.Config)
+	sa, err := c.loadSegmentAccess(gctx, opts.Config)
 	if err != nil {
 		return err
 	}
@@ -670,7 +676,7 @@ func (c *CLI) sha256(ctx context.Context, opts struct {
 		log.SetLevel(slog.LevelDebug)
 	}
 
-	d, err := lsvd.NewDisk(ctx, log, path,
+	d, err := lsvd.NewDisk(gctx, log, path,
 		lsvd.WithSegmentAccess(sa),
 		lsvd.WithVolumeName(name),
 		lsvd.ReadOnly(),
@@ -680,7 +686,7 @@ func (c *CLI) sha256(ctx context.Context, opts struct {
 		os.Exit(1)
 	}
 
-	defer d.Close(ctx)
+	defer d.Close(gctx)
 
 	bs := opts.BS
 	if bs == 0 {
@@ -705,6 +711,8 @@ func (c *CLI) sha256(ctx context.Context, opts struct {
 	}
 
 	log.Warn("reading total", "total", left)
+
+	ctx := lsvd.NewContext(gctx)
 
 	start := time.Now()
 	for left > 0 {

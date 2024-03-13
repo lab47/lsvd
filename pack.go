@@ -12,7 +12,7 @@ type Packer struct {
 	segId SegmentId
 }
 
-func (p *Packer) iterateExtents(ctx context.Context) error {
+func (p *Packer) iterateExtents(ctx *Context) error {
 	var live RangeData
 
 	sb := &SegmentBuilder{
@@ -26,7 +26,10 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 	}
 
 	d := p.d
+	marker := ctx.Marker()
+
 	for i := p.m.Iterator(); i.Valid(); i.Next() {
+
 		d.log.Debug("packing extent", "extent", i.Value().Live)
 		data, err := d.ReadExtent(ctx, i.Value().Live)
 		if err != nil {
@@ -49,6 +52,7 @@ func (p *Packer) iterateExtents(ctx context.Context) error {
 					return err
 				}
 				live = RangeData{}
+				ctx.ResetTo(marker)
 			}
 		} else {
 			d.log.Debug("writing packed extent (disjoint)", "extent", live.Extent)
@@ -107,7 +111,7 @@ func (p *Packer) flushSegment(ctx context.Context, sb *SegmentBuilder) error {
 	return nil
 }
 
-func (p *Packer) Pack(ctx context.Context) error {
+func (p *Packer) Pack(gctx context.Context) error {
 	seg, err := p.d.nextSeq()
 	if err != nil {
 		return err
@@ -119,12 +123,14 @@ func (p *Packer) Pack(ctx context.Context) error {
 		p.d.log.Trace("pre-pack segment", "segment", seg, "used", stats.Used)
 	}
 
+	ctx := NewContext(gctx)
+
 	err = p.iterateExtents(ctx)
 	if err != nil {
 		return err
 	}
 
-	err = p.removeOldSegments(ctx)
+	err = p.removeOldSegments(gctx)
 	for seg, stats := range p.d.s.segments {
 		p.d.log.Trace("post-pack segment", "segment", seg, "used", stats.Used)
 	}

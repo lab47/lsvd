@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sync"
 )
 
 type (
 	RawBlocks []byte
 
 	RangeData struct {
-		data RawBlocks
 		Extent
+		data  RawBlocks
+		dirty bool
 	}
 )
 
@@ -48,13 +48,18 @@ func (e *RangeData) CopyTo(data []byte) error {
 	} else {
 		copy(data, e.data)
 	}
+
+	e.dirty = true
+
 	return nil
 }
 
 func (e *RangeData) RawBlocks() RawBlocks {
 	if e.data == nil {
-		e.allocate(e.Extent)
+		panic("accessing unallocated range data")
 	}
+
+	e.dirty = true
 
 	return e.data
 }
@@ -63,38 +68,10 @@ func (e RawBlocks) BlockView(cnt int) []byte {
 	return e[BlockSize*cnt : (BlockSize*cnt)+BlockSize]
 }
 
-var smallDB = sync.Pool{
-	New: func() any {
-		return make(RawBlocks, smallRange)
-	},
-}
-
-func (r *RangeData) Discard() {
-	if cap(r.data) >= smallRange {
-		smallDB.Put(r.data[:cap(r.data)])
-	}
-
-	r.data = nil
-}
-
-func (b *RangeData) allocate(ext Extent) []byte {
-	var data []byte
-
-	if ext.Blocks <= smallRangeBlocks {
-		data = smallDB.Get().(RawBlocks)[:BlockSize*ext.Blocks]
-		clear(data)
-	} else {
-		data = make(RawBlocks, BlockSize*ext.Blocks)
-	}
-
-	b.data = data
-
-	return data
-}
-
-func NewRangeData(ext Extent) RangeData {
+func NewRangeData(ctx *Context, ext Extent) RangeData {
 	return RangeData{
 		Extent: ext,
+		data:   ctx.Allocate(ext.ByteSize()),
 	}
 }
 
@@ -119,13 +96,16 @@ func MapRangeData(ext Extent, srcData []byte) RangeData {
 	return RangeData{
 		Extent: ext,
 		data:   srcData,
+		dirty:  true,
 	}
 }
 
 func (r *RangeData) WriteData() []byte {
 	if r.data == nil {
-		return r.allocate(r.Extent)
+		panic("writing to unallocated range data")
 	}
+
+	r.dirty = true
 
 	return r.data
 }
@@ -134,12 +114,13 @@ func (r *RangeData) ReadData() []byte {
 	if r.data == nil {
 		panic("attempting to inflate empty range data")
 	}
+
 	return r.data
 }
 
 func (r *RangeData) EmptyP() bool {
-	if r.data == nil {
-		return true
+	if r.dirty {
+		return false
 	}
 
 	return emptyBytes(r.data)
@@ -228,6 +209,8 @@ func (r RangeData) Append(o RangeData) RangeData {
 	if r.Blocks == 0 {
 		return o
 	}
+
+	r.dirty = true
 
 	r.data = append(r.data, o.data...)
 	r.Blocks += o.Blocks

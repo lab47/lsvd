@@ -8,12 +8,14 @@ const BufferSliceSize = 1024 * 1024
 
 type Buffers struct {
 	slice []byte
-	rest  []byte
+
+	next int
 }
 
 func NewBuffers() *Buffers {
+	data := make([]byte, BufferSliceSize)
 	return &Buffers{
-		slice: make([]byte, BufferSliceSize),
+		slice: data,
 	}
 }
 
@@ -33,16 +35,30 @@ func (b *Buffers) Inject(ctx context.Context) context.Context {
 }
 
 func (b *Buffers) Reset() {
-	b.rest = b.slice
+	b.next = 0
+}
+
+func (b *Buffers) Marker() int {
+	return b.next
+}
+
+func (b *Buffers) ResetTo(marker int) {
+	b.next = marker
 }
 
 func (b *Buffers) alloc(sz int) []byte {
-	if len(b.rest) < sz || sz > len(b.slice) {
-		return make([]byte, sz)
+	if len(b.slice)-b.next < sz {
+		if sz > BufferSliceSize {
+			return make([]byte, sz)
+		}
+
+		dup := make([]byte, len(b.slice)+BufferSliceSize)
+		copy(dup, b.slice)
+		b.slice = dup
 	}
 
-	data := b.rest[:sz]
-	b.rest = b.rest[sz:]
+	data := b.slice[b.next : b.next+sz]
+	b.next += sz
 
 	return data
 }

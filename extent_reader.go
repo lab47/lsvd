@@ -56,10 +56,6 @@ func (d *ExtentReader) Close() error {
 	return nil
 }
 
-func (d *ExtentReader) returnData(data RangeData) {
-	buffers.Return(data.data)
-}
-
 func (d *ExtentReader) fetchData(ctx context.Context, seg SegmentId, data []byte, off int64) error {
 	ci, ok := d.openSegments.Get(seg)
 	if !ok {
@@ -123,7 +119,7 @@ func (d *ExtentReader) fetchUncompressedExtent(
 }
 
 func (d *ExtentReader) fetchExtent(
-	ctx context.Context,
+	ctx *Context,
 	log logger.Logger,
 	pe *PartialExtent,
 	cps []CachePosition,
@@ -136,7 +132,7 @@ func (d *ExtentReader) fetchExtent(
 
 	addr := pe.ExtentLocation
 
-	rawData := buffers.Get(int(addr.Size))
+	rawData := ctx.Allocate(int(addr.Size))
 
 	n, err := d.rangeCache.ReadAt(ctx, addr.Segment, rawData, int64(addr.Offset))
 	if err != nil {
@@ -157,7 +153,7 @@ func (d *ExtentReader) fetchExtent(
 		startDecomp := time.Now()
 		sz := pe.RawSize
 
-		uncomp := buffers.Get(int(sz))
+		uncomp := ctx.Allocate(int(sz))
 
 		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
@@ -167,9 +163,6 @@ func (d *ExtentReader) fetchExtent(
 		if n != int(sz) {
 			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
@@ -184,7 +177,7 @@ func (d *ExtentReader) fetchExtent(
 }
 
 func (d *ExtentReader) fetchExtentUncached(
-	ctx context.Context,
+	ctx *Context,
 	log logger.Logger,
 	pe *PartialExtent,
 	cps []CachePosition,
@@ -197,7 +190,7 @@ func (d *ExtentReader) fetchExtentUncached(
 
 	addr := pe.ExtentLocation
 
-	rawData := buffers.Get(int(addr.Size))
+	rawData := ctx.Allocate(int(addr.Size))
 
 	err := d.fetchData(ctx, addr.Segment, rawData, int64(addr.Offset))
 	if err != nil {
@@ -213,7 +206,7 @@ func (d *ExtentReader) fetchExtentUncached(
 		startDecomp := time.Now()
 		sz := pe.RawSize
 
-		uncomp := buffers.Get(int(sz))
+		uncomp := ctx.Allocate(int(sz))
 
 		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
@@ -223,9 +216,6 @@ func (d *ExtentReader) fetchExtentUncached(
 		if n != int(sz) {
 			return RangeData{}, nil, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())

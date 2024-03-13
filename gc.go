@@ -16,7 +16,7 @@ import (
 
 const defaultGCRatio = 0.3
 
-func (d *Disk) GCOnce(ctx context.Context) (SegmentId, error) {
+func (d *Disk) GCOnce(ctx *Context) (SegmentId, error) {
 	segId, ci, err := d.StartGC(ctx, 1.0)
 	if err != nil {
 		return SegmentId{}, err
@@ -56,8 +56,8 @@ func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterat
 	return toGC, ci, nil
 }
 
-func (d *Disk) GCInBackground(ctx context.Context, min float64) (SegmentId, bool, error) {
-	toGC, ci, err := d.StartGC(ctx, min)
+func (d *Disk) GCInBackground(gctx context.Context, min float64) (SegmentId, bool, error) {
+	toGC, ci, err := d.StartGC(gctx, min)
 	if err != nil {
 		return SegmentId{}, false, err
 	}
@@ -67,6 +67,8 @@ func (d *Disk) GCInBackground(ctx context.Context, min float64) (SegmentId, bool
 	}
 
 	go func() {
+		ctx := NewContext(gctx)
+
 		err := ci.ProcessFromExtents(ctx, d.log)
 		if err != nil {
 			ci.err = err
@@ -130,13 +132,13 @@ func (c *CopyIterator) gatherExtents() {
 }
 
 func (d *CopyIterator) fetchExtent(
-	_ context.Context,
+	ctx *Context,
 	_ logger.Logger,
 	addr ExtentLocation,
 ) (RangeData, error) {
 	startFetch := time.Now()
 
-	rawData := buffers.Get(int(addr.Size))
+	rawData := ctx.Allocate(int(addr.Size))
 
 	_, err := d.or.ReadAt(rawData, int64(addr.Offset))
 	if err != nil {
@@ -152,7 +154,7 @@ func (d *CopyIterator) fetchExtent(
 		startDecomp := time.Now()
 		sz := addr.RawSize
 
-		uncomp := buffers.Get(int(sz))
+		uncomp := ctx.Allocate(int(sz))
 
 		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
@@ -162,9 +164,6 @@ func (d *CopyIterator) fetchExtent(
 		if n != int(sz) {
 			return RangeData{}, fmt.Errorf("failed to uncompress correctly, %d != %d", n, sz)
 		}
-
-		// We're finished with the raw extent data.
-		buffers.Return(rawData)
 
 		rangeData = uncomp
 		compressionOverhead.Add(time.Since(startDecomp).Seconds())
@@ -178,10 +177,14 @@ func (d *CopyIterator) fetchExtent(
 	return src, nil
 }
 
-func (c *CopyIterator) ProcessFromExtents(ctx context.Context, log logger.Logger) error {
+func (c *CopyIterator) ProcessFromExtents(ctx *Context, log logger.Logger) error {
 	log.Debug("copying extents for segment", "extents", len(c.extents), "segment", c.seg, "new-segment", c.newSegment)
 
+	marker := ctx.Marker()
+
 	for _, ce := range c.extents {
+		ctx.ResetTo(marker)
+
 		rng := c.d.lba2pba.ToPE(*ce.CE)
 
 		if rng.Size == 0 {
@@ -211,8 +214,6 @@ func (c *CopyIterator) ProcessFromExtents(ctx context.Context, log logger.Logger
 		c.copiedExtents++
 
 		c.results = append(c.results, eh)
-
-		buffers.Return(data.data)
 	}
 
 	return nil
