@@ -62,10 +62,3 @@ func (b *Buffers) alloc(sz int) []byte {
 
 	return data
 }
-
-func (b *Buffers) NewRangeData(rng Extent) RangeData {
-	return RangeData{
-		data:   b.alloc(rng.ByteSize()),
-		Extent: rng,
-	}
-}

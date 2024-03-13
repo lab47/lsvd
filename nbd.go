@@ -72,6 +72,8 @@ func (n *nbdWrapper) Idle() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	defer n.ctx.Reset()
+
 	if time.Since(n.lastCheckpoint) > 1*time.Minute {
 		n.lastCheckpoint = time.Now()
 
@@ -96,6 +98,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	err := n.flushPendingWrite()
 	if err != nil {
@@ -122,6 +125,7 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 
 func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output *os.File) (bool, error) {
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
@@ -270,6 +274,7 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	n.log.Debug("nbd write-at", "size", len(b), "offset", off)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	blk := LBA(off / BlockSize)
 
@@ -341,6 +346,7 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 	blk := LBA(off / BlockSize)
 
 	defer n.buf.Reset()
+	defer n.ctx.Reset()
 
 	numBlocks := uint32(size / BlockSize)
 
