@@ -58,7 +58,6 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 
 		defer func() {
 			segmentTotalTime.Add(time.Since(s).Seconds())
-			dataDensity.Set(d.s.Usage())
 		}()
 
 		var (
@@ -128,10 +127,24 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 		}
 
 		d.log.Debug("finished background segment flush")
+
+		density := d.s.Usage()
+		dataDensity.Set(density)
+
+		if density < GCDensityThreshold {
+			d.log.Info("data density dropped below GC threshold, starting GC",
+				"density", density,
+				"theshold", GCDensityThreshold,
+			)
+
+			d.TriggerGC(ctx, NormalGC)
+		}
 	}()
 
 	return done, nil
 }
+
+const GCDensityThreshold = 0.70
 
 func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
 	for _, i := range d.s.FindDeleted() {

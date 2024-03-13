@@ -117,12 +117,7 @@ func TestGC(t *testing.T) {
 		r.NoError(err)
 
 		t.Log("starting gc in bg")
-		gcSeg, more, err := d.GCInBackground(ctx, 1.0)
-		r.NoError(err)
-
-		r.True(more)
-
-		r.Equal(SegmentId(origSeq), gcSeg)
+		d.TriggerGC(ctx, NormalGC)
 
 		time.Sleep(200 * time.Millisecond)
 

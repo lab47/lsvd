@@ -210,6 +210,37 @@ func (d *Segments) sortedSegments() []SegmentId {
 	return ret
 }
 
+func (d *Segments) LeastDenseSegment(log logger.Logger) (SegmentId, bool, error) {
+	d.segmentsMu.Lock()
+	defer d.segmentsMu.Unlock()
+
+	var (
+		smallestId    SegmentId
+		smallestStats *Segment
+	)
+
+	for _, segId := range d.sortedSegments() {
+		stats := d.segments[segId]
+
+		if stats.deleted {
+			continue
+		}
+
+		d := stats.Density()
+
+		if smallestStats == nil || d < smallestStats.Density() {
+			smallestStats = stats
+			smallestId = segId
+		}
+	}
+
+	if smallestStats == nil {
+		return SegmentId{}, false, nil
+	}
+
+	return smallestId, true, nil
+}
+
 func (d *Segments) PickSegmentToGC(log logger.Logger, min float64, skip []SegmentId) (SegmentId, bool, error) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()

@@ -51,6 +51,8 @@ type Disk struct {
 
 	bgmu sync.Mutex
 
+	gcTrigger chan GCRequest
+
 	cpsScratch     []CachePosition
 	readReqScratch []readRequest
 	extentsScratch []Extent
@@ -124,6 +126,7 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		readReqScratch: make([]readRequest, 0, 10),
 		extentsScratch: make([]Extent, 0, 10),
 		peScratch:      make([]PartialExtent, 0, 10),
+		gcTrigger:      make(chan GCRequest, 20), // 20 to mostly non-block, but it's a guess
 	}
 
 	d.readDisks = append(d.readDisks, d)
@@ -162,6 +165,8 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	}
 
 	dataDensity.Set(d.s.Usage())
+
+	go d.startGCRoutine(ctx, d.gcTrigger)
 
 	return d, nil
 }

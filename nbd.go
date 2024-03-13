@@ -55,8 +55,6 @@ func NBDWrapper(ctx context.Context, log logger.Logger, d *Disk) *nbdWrapper {
 
 	w.ctx = NewContext(ctx)
 
-	d.SetAfterNS(w.AfterNS)
-
 	return w
 }
 
@@ -68,23 +66,7 @@ func logBlocks(log logger.Logger, msg string, idx LBA, data []byte) {
 	}
 }
 
-func (n *nbdWrapper) Idle() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	defer n.ctx.Reset()
-
-	if time.Since(n.lastCheckpoint) > 1*time.Minute {
-		n.lastCheckpoint = time.Now()
-
-		ctx := context.Background()
-
-		err := n.d.CheckpointGC(ctx)
-		if err != nil {
-			n.log.Error("error checkpointing gc", "error", err)
-		}
-	}
-}
+func (n *nbdWrapper) Idle() {}
 
 func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 	blk := LBA(off / BlockSize)
@@ -305,41 +287,6 @@ func (n *nbdWrapper) WriteAt(b []byte, off int64) (int, error) {
 	}
 
 	return len(b), nil
-}
-
-func (n *nbdWrapper) BeginGC() {
-	ctx := context.Background()
-
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	n.beginGC(ctx)
-}
-
-func (n *nbdWrapper) beginGC(ctx context.Context) {
-	if n.gcRunning {
-		n.log.Debug("currently mid-GC, not starting a new one")
-		return
-	}
-
-	seg, running, err := n.d.GCInBackground(ctx, 0.30)
-	if err != nil {
-		n.log.Error("error starting GC", "error", err)
-		return
-	}
-
-	if !running {
-		return
-	}
-
-	n.log.Info("starting GC", "segment", seg)
-
-	n.lastCheckpoint = time.Now()
-	n.gcRunning = true
-}
-
-func (n *nbdWrapper) AfterNS(_ SegmentId) {
-	n.BeginGC()
 }
 
 func (n *nbdWrapper) ZeroAt(off, size int64) error {

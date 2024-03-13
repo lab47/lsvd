@@ -398,8 +398,6 @@ nego:
 	}
 
 	for {
-		backend.Idle()
-
 		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 
 		//var requestHeader TransmissionRequestHeader
@@ -407,7 +405,6 @@ nego:
 		for {
 			if _, err := io.ReadFull(conn, request); err != nil {
 				if errors.Is(err, os.ErrDeadlineExceeded) {
-					backend.Idle()
 					conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 					continue
 				}

@@ -14,6 +14,74 @@ import (
 	"github.com/pkg/errors"
 )
 
+type GCRequest int
+
+const (
+	NormalGC GCRequest = iota
+)
+
+func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
+	ctx := NewContext(gctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req, ok := <-trigger:
+			if !ok {
+				return
+			}
+
+			ctx.Reset()
+
+			if req == NormalGC {
+				toGC, ok, err := d.s.LeastDenseSegment(d.log)
+				if !ok {
+					d.log.Warn("GC was requested, but no least dense segment available")
+					continue
+				}
+
+				if err != nil {
+					d.log.Error("error picking segment to GC", "error", err)
+					continue
+				}
+
+				ci, err := d.CopyIterator(ctx, toGC)
+				if err != nil {
+					d.log.Error("error creating copy iterator segment to GC",
+						"error", err,
+						"segment", toGC,
+					)
+					continue
+				}
+
+				err = ci.ProcessFromExtents(ctx, d.log)
+				if err != nil {
+					d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
+				}
+
+				err = ci.Close(ctx)
+				if err != nil {
+					d.log.Error("error closing segment after gc", "error", err, "segment", toGC)
+				}
+
+				continue
+			}
+
+			d.log.Error("unknown GC request", "request", req)
+		}
+	}
+}
+
+func (d *Disk) TriggerGC(ctx context.Context, req GCRequest) {
+	select {
+	case <-ctx.Done():
+		return
+	case d.gcTrigger <- req:
+		// ok
+	}
+}
+
 const defaultGCRatio = 0.3
 
 func (d *Disk) GCOnce(ctx *Context) (SegmentId, error) {
