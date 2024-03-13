@@ -10,7 +10,7 @@ func TestRangeData(t *testing.T) {
 	t.Run("slice for subrange", func(t *testing.T) {
 		r := require.New(t)
 
-		rd := NewRangeData(Extent{0, 200})
+		rd := NewRangeData(Extent{0, 20})
 
 		sub, ok := rd.SubRange(Extent{10, 10})
 		r.True(ok)

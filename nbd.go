@@ -122,6 +122,8 @@ func (n *nbdWrapper) ReadAt(b []byte, off int64) (int, error) {
 }
 
 func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (bool, error) {
+	defer n.buf.Reset()
+
 	blk := LBA(off / BlockSize)
 	blocks := uint32(len(b) / BlockSize)
 
@@ -135,8 +137,6 @@ func (n *nbdWrapper) ReadIntoConn(b []byte, off int64, output syscall.Conn) (boo
 			"extent", ext,
 		)
 	}
-
-	defer n.buf.Reset()
 
 	err := n.flushPendingWrite()
 	if err != nil {
@@ -352,9 +352,12 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 
 	numBlocks := uint32(size / BlockSize)
 
-	n.log.Debug("nbd zero-at",
-		"size", size, "offset", off,
-		"extent", Extent{blk, uint32(numBlocks)},
+	n.log.LogAttrs(n.ctx, logger.Debug,
+		"nbd zero-at",
+		slog.Int64("size", size),
+		slog.Int64("offset", off),
+		slog.Int64("lba", int64(blk)),
+		slog.Int64("blocks", int64(numBlocks)),
 	)
 
 	ext := Extent{LBA: blk, Blocks: numBlocks}

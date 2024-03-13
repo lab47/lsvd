@@ -563,6 +563,8 @@ func (d *Disk) readPartialExtent(
 
 	defer d.er.returnData(src)
 
+	isDebug := d.log.IsDebug()
+
 	// the bytes at the beginning of data are for LBA dataBegin.LBA.
 	// the bytes at the beginning of rawData are for LBA full.LBA.
 	// we want to compute the 2 byte ranges:
@@ -576,7 +578,9 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error clamping range")
 		}
 
-		d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
+		if isDebug {
+			d.log.Debug("preparing to copy data from segment", "request", x, "clamped", overlap)
+		}
 
 		// Compute our source range and destination range against overlap
 
@@ -596,11 +600,14 @@ func (d *Disk) readPartialExtent(
 			return fmt.Errorf("error calculate source subrange")
 		}
 
-		d.log.Debug("copying segment data",
-			"src", src.Extent,
-			"dest", dest.Extent,
-			"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
-		)
+		if isDebug {
+			d.log.Debug("copying segment data",
+				"src", src.Extent,
+				"dest", dest.Extent,
+				"sub-source", subSrc.Extent, "sub-dest", subDest.Extent,
+			)
+		}
+
 		n := subDest.Copy(subSrc)
 		if n != subDest.ByteSize() {
 			d.log.Error("error copying data from partial extent", "expected", subDest.ByteSize(), "was", n)

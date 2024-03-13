@@ -49,9 +49,7 @@ func (b *Buffers) alloc(sz int) []byte {
 
 func (b *Buffers) NewRangeData(rng Extent) RangeData {
 	return RangeData{
-		blockData: &blockData{
-			data: b.alloc(rng.ByteSize()),
-		},
+		data:   b.alloc(rng.ByteSize()),
 		Extent: rng,
 	}
 }
