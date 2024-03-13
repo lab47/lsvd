@@ -69,7 +69,7 @@ var segBuilderPool = sync.Pool{
 	New: func() any {
 		return &SegmentBuilder{
 			extents:  make([]ExtentHeader, 0, DefaultExtentsSize),
-			affected: make([]ExtentLocation, 0, 1000),
+			affected: make([]ExtentLocation, 0, DefaultExtentsSize),
 		}
 	},
 }
@@ -680,6 +680,8 @@ func (o *SegmentBuilder) Flush(ctx context.Context, log logger.Logger,
 			log.Trace("advertising extent", "extent", eh.Extent, "offset", eh.Offset, "blocks", eh.Blocks)
 		}
 	}
+
+	o.affected = entries[:0]
 
 	completedPath := o.path + ".complete"
 
