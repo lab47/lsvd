@@ -162,7 +162,7 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 
 	go func() {
 		defer d.wg.Done()
-		cont.Run(ctx)
+		cont.Run(context.Background())
 	}()
 
 	d.controller = cont

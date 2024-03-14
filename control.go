@@ -77,9 +77,11 @@ func (c *Controller) handleControl(gctx context.Context) {
 		ctx.Reset()
 		select {
 		case <-ctx.Done():
+			c.log.Debug("controller loop exitting, context done")
 			return
 		case ev, ok := <-c.events:
 			if !ok {
+				c.log.Debug("controller loop exitting, closed")
 				return
 			}
 
