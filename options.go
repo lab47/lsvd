@@ -11,6 +11,8 @@ type opts struct {
 	lowers     []*Disk
 	ro         bool
 	useZstd    bool
+
+	autoGC bool
 }
 
 type Option func(o *opts)
@@ -61,4 +63,8 @@ func WithZstd() Option {
 	return func(o *opts) {
 		o.useZstd = true
 	}
+}
+
+var EnableAutoGC = func(o *opts) {
+	o.autoGC = true
 }

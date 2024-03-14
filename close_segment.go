@@ -131,7 +131,7 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 
 		d.log.Debug("finished background segment flush", "total-density", density)
 
-		if density < GCDensityThreshold {
+		if d.autoGC && d.s.TotalBytes() > GCTotalThreshold && density < GCDensityThreshold {
 			d.log.Info("data density dropped below GC threshold, starting GC",
 				"density", density,
 				"theshold", GCDensityThreshold,
@@ -144,7 +144,10 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 	return done, nil
 }
 
-const GCDensityThreshold = 70.0
+const (
+	GCDensityThreshold = 70.0
+	GCTotalThreshold   = 1024 * 1024 // 1MB
+)
 
 func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
 	for _, i := range d.s.FindDeleted() {

@@ -46,6 +46,31 @@ func (s *Segments) LiveSegments() []SegmentId {
 
 }
 
+func (s *Segments) SegmentTotalBlocks(seg SegmentId) uint64 {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	stats, ok := s.segments[seg]
+	if !ok {
+		return 0
+	}
+
+	return stats.Size
+}
+
+func (s *Segments) TotalBytes() uint64 {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	var size uint64
+
+	for _, s := range s.segments {
+		size += s.Size
+	}
+
+	return size * BlockSize
+}
+
 func (s *Segments) Usage() float64 {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
@@ -151,11 +176,16 @@ func (s *Segments) LogSegmentInfo(log hclog.Logger) {
 	}
 }
 
-func (s *Segments) SetDeleted(segId SegmentId) {
+func (s *Segments) SetDeleted(segId SegmentId, log logger.Logger) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
 
-	s.segments[segId].deleted = true
+	seg, ok := s.segments[segId]
+	if ok {
+		seg.deleted = true
+	} else {
+		log.Warn("missing segment to set deleted", "seg", segId)
+	}
 }
 
 func (s *Segments) FindDeleted() []SegmentId {

@@ -51,6 +51,7 @@ type Disk struct {
 
 	bgmu sync.Mutex
 
+	autoGC    bool
 	gcTrigger chan GCRequest
 
 	cpsScratch     []CachePosition
@@ -165,6 +166,8 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	}
 
 	dataDensity.Set(d.s.Usage())
+
+	d.autoGC = o.autoGC
 
 	go d.startGCRoutine(ctx, d.gcTrigger)
 

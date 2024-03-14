@@ -55,6 +55,8 @@ func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
 					continue
 				}
 
+				d.log.Info("beginning GC of segment", "segment", toGC)
+
 				err = ci.ProcessFromExtents(ctx, d.log)
 				if err != nil {
 					d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
@@ -74,6 +76,11 @@ func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
 }
 
 func (d *Disk) TriggerGC(ctx context.Context, req GCRequest) {
+	// Means that auto GC is diisabled
+	if d.gcTrigger == nil {
+		return
+	}
+
 	select {
 	case <-ctx.Done():
 		return
@@ -166,9 +173,10 @@ type CopyIterator struct {
 
 	left uint32
 
-	totalBlocks   uint64
-	copiedExtents int
-	copiedBlocks  uint64
+	expectedBlocks uint64
+	totalBlocks    uint64
+	copiedExtents  int
+	copiedBlocks   uint64
 
 	newSegment SegmentId
 	builder    SegmentBuilder
@@ -179,6 +187,8 @@ type CopyIterator struct {
 }
 
 func (c *CopyIterator) gatherExtents() {
+	c.expectedBlocks = c.d.s.SegmentTotalBlocks(c.seg)
+
 	c.segmentsProcessed = append(c.segmentsProcessed, c.seg)
 	c.extents = c.extents[:0]
 
@@ -187,7 +197,7 @@ func (c *CopyIterator) gatherExtents() {
 		Disk:    0,
 	})
 
-	for i := c.d.lba2pba.Iterator(); i.Valid(); i.Next() {
+	for i := c.d.lba2pba.LockedIterator(); i.Valid(); i.Next() {
 		pe := i.CompactValuePtr()
 		if pe.segIdx == idx {
 			c.extents = append(c.extents, gcExtent{
@@ -258,6 +268,9 @@ func (c *CopyIterator) ProcessFromExtents(ctx *Context, log logger.Logger) error
 		if rng.Size == 0 {
 			c.builder.ZeroBlocks(rng.Live)
 			c.results = append(c.results, rng.ExtentHeader)
+
+			c.copiedBlocks += uint64(rng.Blocks)
+			c.copiedExtents++
 			continue
 		}
 
@@ -354,12 +367,13 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 		return err
 	}
 
-	c.d.s.SetDeleted(c.seg)
+	c.d.s.SetDeleted(c.seg, c.d.log)
 
 	c.d.log.Info("gc cycle complete",
 		"segment", c.seg.String(),
 		"extents", c.copiedExtents,
 		"blocks", c.copiedBlocks,
+		"expected-blocks", c.expectedBlocks,
 		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
 	)
 

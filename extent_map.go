@@ -67,6 +67,9 @@ func (c *compactPE) SetLive(ext Extent) {
 }
 
 func (m *ExtentMap) ToPE(c compactPE) PartialExtent {
+	m.segmentsMu.Lock()
+	defer m.segmentsMu.Unlock()
+
 	sl := m.segmentByIdx[c.segIdx]
 
 	return PartialExtent{
@@ -90,6 +93,7 @@ type ExtentMap struct {
 
 	coverBlocks int
 
+	segmentsMu    sync.Mutex
 	segmentByDesc map[segLocations]uint32
 	segmentByIdx  map[uint32]segLocations
 
@@ -111,7 +115,8 @@ func (e *ExtentMap) Len() int {
 }
 
 type Iterator struct {
-	e *ExtentMap
+	e  *ExtentMap
+	mu *sync.Mutex
 	treemap.ForwardIterator[LBA, compactPE]
 }
 
@@ -120,6 +125,27 @@ func (e *ExtentMap) Iterator() *Iterator {
 		e:               e,
 		ForwardIterator: e.m.Iterator(),
 	}
+}
+
+func (m *ExtentMap) LockedIterator() *Iterator {
+	i := &Iterator{
+		e:               m,
+		mu:              &m.mu,
+		ForwardIterator: m.m.Iterator(),
+	}
+
+	i.mu.Lock()
+
+	return i
+}
+
+func (e *Iterator) Valid() bool {
+	x := e.ForwardIterator.Valid()
+	if !x && e.mu != nil {
+		e.mu.Unlock()
+	}
+
+	return x
 }
 
 func (e *Iterator) Value() PartialExtent {
@@ -420,6 +446,9 @@ loop2:
 }
 
 func (e *ExtentMap) segmentIdx(loc ExtentLocation) uint32 {
+	e.segmentsMu.Lock()
+	defer e.segmentsMu.Unlock()
+
 	key := segLocations{
 		seg:  loc.Segment,
 		disk: loc.Disk,
@@ -435,6 +464,9 @@ func (e *ExtentMap) segmentIdx(loc ExtentLocation) uint32 {
 }
 
 func (e *ExtentMap) segment(ce compactPE) SegmentId {
+	e.segmentsMu.Lock()
+	defer e.segmentsMu.Unlock()
+
 	return e.segmentByIdx[ce.segIdx].seg
 }
 

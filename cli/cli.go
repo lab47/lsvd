@@ -368,6 +368,7 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 	d, err := lsvd.NewDisk(ctx, log, path,
 		lsvd.WithSegmentAccess(sa),
 		lsvd.WithVolumeName(name),
+		lsvd.EnableAutoGC,
 	)
 	if err != nil {
 		log.Error("error creating new disk", "error", err)

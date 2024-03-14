@@ -149,7 +149,7 @@ func (p *Packer) removeOldSegments(ctx context.Context) error {
 			return err
 		}
 
-		p.d.s.SetDeleted(seg)
+		p.d.s.SetDeleted(seg, p.d.log)
 	}
 
 	p.d.log.Debug("removed dead segments", "count", len(segments))
