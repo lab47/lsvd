@@ -697,6 +697,9 @@ func TestLSVD(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
+		sh, err := d.segmentsHash(ctx)
+		r.NoError(err)
+
 		r.NoError(d.saveLBAMap(ctx))
 
 		f, err := os.Open(filepath.Join(tmpdir, "head.map"))
@@ -704,11 +707,13 @@ func TestLSVD(t *testing.T) {
 
 		defer f.Close()
 
-		m, err := processLBAMap(log, f)
+		m, hdr, err := processLBAMap(log, f)
 		r.NoError(err)
 
 		_, ok := m.m.Get(47)
 		r.True(ok)
+
+		r.Equal(sh, hdr.SegmentsHash)
 	})
 
 	t.Run("reuses serialized lba to pba map on start", func(t *testing.T) {

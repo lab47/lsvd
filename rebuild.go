@@ -3,11 +3,14 @@ package lsvd
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/lab47/lsvd/logger"
 	"github.com/pkg/errors"
 )
@@ -137,9 +140,31 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 
 	defer f.Close()
 
-	return d.lba2pba.LockToPatch(func() error {
-		return saveLBAMap(d.lba2pba, f)
-	})
+	sh, err := d.segmentsHash(ctx)
+	if err != nil {
+		return errors.Wrapf(err, "calculating segments hash")
+	}
+
+	hdr := &lbaCacheMapHeader{
+		CreatedAt:    time.Now(),
+		SegmentsHash: sh,
+	}
+
+	return saveLBAMap(d.lba2pba, f, hdr)
+}
+
+func (d *Disk) segmentsHash(ctx context.Context) (string, error) {
+	segments, err := d.sa.ListSegments(ctx, d.volName)
+	if err != nil {
+		return "", err
+	}
+
+	h := sha256.New()
+	for _, s := range segments {
+		h.Write(s[:])
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
@@ -156,10 +181,27 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 
 	d.log.Debug("reloading lba map from head.map")
 
-	m, err := processLBAMap(d.log, f)
+	sh, err := d.segmentsHash(ctx)
+	if err != nil {
+		return false, errors.Wrapf(err, "calculating segments hash")
+	}
+
+	m, hdr, err := processLBAMap(d.log, f)
 	if err != nil {
 		return false, err
 	}
+
+	if hdr.SegmentsHash != sh {
+		d.log.Warn("ignoring out of date head.map",
+			"created-at", hdr.CreatedAt,
+			"expected", sh,
+			"actual", hdr.SegmentsHash,
+		)
+
+		return false, nil
+	}
+
+	d.log.Info("validated cached lba map", "created-at", hdr.CreatedAt, "hash", sh)
 
 	for i := m.Iterator(); i.Valid(); i.Next() {
 		ro := i.Value()
@@ -172,11 +214,25 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func saveLBAMap(m *ExtentMap, f io.Writer) error {
-	for it := m.Iterator(); it.Valid(); it.Next() {
+type lbaCacheMapHeader struct {
+	CreatedAt    time.Time `json:"created_at" cbor:"created_at"`
+	SegmentsHash string    `json:"segments_hash" cbor:"segments_hash"`
+}
+
+func saveLBAMap(m *ExtentMap, f io.Writer, hdr *lbaCacheMapHeader) error {
+	bw := bufio.NewWriter(f)
+	defer bw.Flush()
+
+	enc := cbor.NewEncoder(f)
+	err := enc.Encode(hdr)
+	if err != nil {
+		return err
+	}
+
+	for it := m.LockedIterator(); it.Valid(); it.Next() {
 		cur := it.Value()
 
-		err := binary.Write(f, binary.BigEndian, cur)
+		err := enc.Encode(cur)
 		if err != nil {
 			return err
 		}
@@ -185,21 +241,31 @@ func saveLBAMap(m *ExtentMap, f io.Writer) error {
 	return nil
 }
 
-func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, error) {
+func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, *lbaCacheMapHeader, error) {
 	m := NewExtentMap()
+
+	br := bufio.NewReader(f)
+	dec := cbor.NewDecoder(br)
+
+	var hdr lbaCacheMapHeader
+
+	err := dec.Decode(&hdr)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	for {
 		var (
 			pba PartialExtent
 		)
 
-		err := binary.Read(f, binary.BigEndian, &pba)
+		err := dec.Decode(&pba)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 
-			return nil, err
+			return nil, nil, err
 		}
 
 		// log.Trace("read from lba map", "extent", pba.Live, "flag", pba.Flags)
@@ -207,5 +273,5 @@ func processLBAMap(log logger.Logger, f io.Reader) (*ExtentMap, error) {
 		m.set(pba)
 	}
 
-	return m, nil
+	return m, &hdr, nil
 }

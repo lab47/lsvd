@@ -171,14 +171,12 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	d.cancel = cancel
 	d.controller = cont
 
-	/*
-		goodMap, err := d.loadLBAMap(ctx)
-		if err != nil {
-			return nil, err
-		}
-	*/
+	goodMap, err := d.loadLBAMap(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	if false {
+	if goodMap {
 		log.Info("reusing serialized LBA map", "blocks", d.lba2pba.Len())
 	} else {
 		err = d.rebuildFromSegments(ctx)
@@ -199,14 +197,14 @@ func (r *Disk) SetAfterNS(f func(SegmentId)) {
 }
 
 type ExtentLocation struct {
-	ExtentHeader
-	Segment SegmentId
-	Disk    uint16
+	ExtentHeader `json:"header" cbor:"1,keyasint"`
+	Segment      SegmentId `json:"segment" cbor:"2,keyasint"`
+	Disk         uint16    `json:"disk" cbor:"3,keyasint"`
 }
 
 type PartialExtent struct {
-	Live Extent
-	ExtentLocation
+	Live           Extent `json:"live" cbor:"1,keyasint"`
+	ExtentLocation `json:"location" cbor:"2,keyasint"`
 }
 
 func (r *PartialExtent) String() string {

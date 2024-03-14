@@ -81,10 +81,12 @@ const (
 )
 
 type ExtentHeader struct {
-	Extent
-	Size    uint32
-	Offset  uint32
-	RawSize uint32 // used when the extent is compressed
+	Extent `json:"extent" cbor:"1,keyasint"`
+	Size   uint32 `json:"size" cbor:"2,keyasint"`
+	Offset uint32 `json:"offset" cbor:"3,keyasint"`
+
+	// used when the extent is compressed
+	RawSize uint32 `json:"raw_size,omitempty" cbor:"4,keyasint,omitempty"`
 }
 
 func (e *ExtentHeader) Flags() byte {
