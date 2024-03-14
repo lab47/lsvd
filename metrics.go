@@ -117,6 +117,16 @@ var (
 		Name: "lsvd_data_density",
 		Help: "What percent of the stored data is used",
 	})
+
+	gcCount = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_gc_cycles",
+		Help: "How many times the GC has run",
+	})
+
+	gcTime = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lsvd_gc_time",
+		Help: "How many seconds the GC has run for",
+	})
 )
 
 func counterValue(c prometheus.Counter) int64 {

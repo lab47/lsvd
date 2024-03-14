@@ -224,6 +224,13 @@ func (c *Controller) returnError(ev Event, err error) error {
 }
 
 func (c *Controller) startGC(ctx *Context, ev Event) error {
+	gcCount.Inc()
+	s := time.Now()
+
+	defer func() {
+		gcTime.Add(time.Since(s).Seconds())
+	}()
+
 	d := c.d
 
 	dead, newDensity := c.d.s.PruneDeadSegments()
