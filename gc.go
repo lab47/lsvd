@@ -54,16 +54,20 @@ func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
 					continue
 				}
 
-				d.log.Info("beginning GC of segment", "segment", toGC)
+				if ci == nil {
+					d.log.Info("copied found a dead segment and deleted it directly, gc skipped")
+				} else {
+					d.log.Info("beginning GC of segment", "segment", toGC)
 
-				err = ci.ProcessFromExtents(ctx, d.log)
-				if err != nil {
-					d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
-				}
+					err = ci.ProcessFromExtents(ctx, d.log)
+					if err != nil {
+						d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
+					}
 
-				err = ci.Close(ctx)
-				if err != nil {
-					d.log.Error("error closing segment after gc", "error", err, "segment", toGC)
+					err = ci.Close(ctx)
+					if err != nil {
+						d.log.Error("error closing segment after gc", "error", err, "segment", toGC)
+					}
 				}
 
 			} else {
