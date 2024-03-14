@@ -129,7 +129,7 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 		density := d.s.Usage()
 		dataDensity.Set(density)
 
-		d.log.Debug("finished background segment flush", "total-density", density)
+		d.log.Info("finished background segment flush", "total-density", density)
 
 		if d.autoGC && d.s.TotalBytes() > GCTotalThreshold && density < GCDensityThreshold {
 			d.log.Info("data density dropped below GC threshold, starting GC",

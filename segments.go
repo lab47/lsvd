@@ -46,16 +46,16 @@ func (s *Segments) LiveSegments() []SegmentId {
 
 }
 
-func (s *Segments) SegmentTotalBlocks(seg SegmentId) uint64 {
+func (s *Segments) SegmentBlocks(seg SegmentId) (uint64, uint64) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
 
 	stats, ok := s.segments[seg]
 	if !ok {
-		return 0
+		return 0, 0
 	}
 
-	return stats.Size
+	return stats.Size, stats.Used
 }
 
 func (s *Segments) TotalBytes() uint64 {

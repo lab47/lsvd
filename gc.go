@@ -174,6 +174,7 @@ type CopyIterator struct {
 	left uint32
 
 	expectedBlocks uint64
+	originalTotal  uint64
 	totalBlocks    uint64
 	copiedExtents  int
 	copiedBlocks   uint64
@@ -187,7 +188,9 @@ type CopyIterator struct {
 }
 
 func (c *CopyIterator) gatherExtents() {
-	c.expectedBlocks = c.d.s.SegmentTotalBlocks(c.seg)
+	total, used := c.d.s.SegmentBlocks(c.seg)
+	c.expectedBlocks = used
+	c.originalTotal = total
 
 	c.segmentsProcessed = append(c.segmentsProcessed, c.seg)
 	c.extents = c.extents[:0]
@@ -316,9 +319,19 @@ func (ci *CopyIterator) extentsByteSize() int {
 
 func (c *CopyIterator) updateDisk(ctx context.Context) error {
 	c.d.log.Trace("uploading post-gc segment", "segment", c.newSegment)
-	_, stats, err := c.builder.Flush(ctx, c.d.log, c.d.sa, c.newSegment, c.d.volName)
-	if err != nil {
-		return err
+	var (
+		stats *SegmentStats
+		err   error
+	)
+
+	for {
+		_, stats, err = c.builder.Flush(ctx, c.d.log, c.d.sa, c.newSegment, c.d.volName)
+		if err != nil {
+			c.d.log.Error("error flushing data to segment, retrying", "error", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		break
 	}
 
 	c.d.log.Trace("patching block map from post-gc segment", "segment", c.newSegment)
@@ -374,6 +387,7 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 		"extents", c.copiedExtents,
 		"blocks", c.copiedBlocks,
 		"expected-blocks", c.expectedBlocks,
+		"original-blocks", c.originalTotal,
 		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
 	)
 
