@@ -218,6 +218,8 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 
 	d.lba2pba = m
 
+	var total, used uint64
+
 	for seg, stats := range hdr.Stats {
 		id, err := ulid.Parse(seg)
 		if err != nil {
@@ -231,9 +233,16 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 			Blocks: stats.Size,
 		})
 
-		d.log.Info("initialized segment", "segment", seg, "size", stats.Size, "used", stats.Used)
+		d.log.Trace("initialized segment", "segment", seg, "size", stats.Size, "used", stats.Used)
 		d.s.SetSegment(seg, stats.Size, stats.Used)
 	}
+
+	d.log.Info("initialized segments from LBA cache",
+		"segments", len(hdr.Stats),
+		"total", total,
+		"used", used,
+		"density", 100*(float64(used)/float64(total)),
+	)
 
 	d.lba2pba = m
 
