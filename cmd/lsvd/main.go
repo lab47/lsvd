@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/lab47/lsvd"
@@ -23,6 +24,7 @@ var (
 )
 
 func main() {
+	debug.SetGCPercent(50)
 	level := slog.LevelInfo
 
 	if os.Getenv("LSVD_DEBUG") != "" {
