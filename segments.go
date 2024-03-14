@@ -102,19 +102,27 @@ func (s *Segments) Create(segId SegmentId, stats *SegmentStats) {
 	}
 }
 
-func (s *Segments) CreateOrUpdate(segId SegmentId, usedBytes, usedBlocks uint64) {
+func (s *Segments) SetSegment(segId SegmentId, total, used uint64) {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	s.segments[segId] = &Segment{
+		Size: total,
+		Used: used,
+	}
+}
+
+func (s *Segments) CreateOrUpdate(segId SegmentId, usedBlocks uint64) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()
 
 	// TODO where is the Size coming from in the create case??
 	seg, ok := s.segments[segId]
 	if ok {
-		seg.UsedBytes += usedBytes
 		seg.Used += usedBlocks
 	} else {
 		s.segments[segId] = &Segment{
-			UsedBytes: usedBytes,
-			Used:      usedBlocks,
+			Used: usedBlocks,
 		}
 	}
 }

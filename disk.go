@@ -57,7 +57,7 @@ type Disk struct {
 
 	controller *Controller
 	wg         sync.WaitGroup
-	cancel     func()
+	closed     bool
 
 	cpsScratch     []CachePosition
 	readReqScratch []readRequest
@@ -153,11 +153,8 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		log.Info("starting sequence", "seq", d.curSeq)
 	}
 
-	cctx, cancel := context.WithCancel(ctx)
-
-	cont, err := NewController(cctx, d)
+	cont, err := NewController(ctx, d)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
@@ -165,10 +162,9 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 
 	go func() {
 		defer d.wg.Done()
-		cont.Run(cctx)
+		cont.Run(ctx)
 	}()
 
-	d.cancel = cancel
 	d.controller = cont
 
 	goodMap, err := d.loadLBAMap(ctx)
@@ -752,10 +748,27 @@ func (d *Disk) SyncWriteCache() error {
 }
 
 func (d *Disk) Close(ctx context.Context) error {
+	if d.closed {
+		return nil
+	}
+
 	err := d.finalizeSegment(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "error closing segment")
 	}
+
+	done := make(chan EventResult)
+
+	d.controller.EventsCh() <- Event{
+		Kind: CleanupSegments,
+		Done: done,
+	}
+
+	close(d.controller.EventsCh())
+
+	<-done
+
+	d.wg.Wait()
 
 	err = d.saveLBAMap(ctx)
 	if err != nil {
@@ -765,9 +778,7 @@ func (d *Disk) Close(ctx context.Context) error {
 
 	d.er.Close()
 
-	d.cancel()
-
-	d.wg.Wait()
+	d.closed = true
 
 	return err
 }

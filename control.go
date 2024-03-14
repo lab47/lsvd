@@ -96,7 +96,7 @@ func (c *Controller) handleEvent(ctx *Context, ev Event) error {
 	case CloseSegment:
 		return c.closeSegment(ctx, ev)
 	case CleanupSegments:
-		return c.d.cleanupDeletedSegments(ctx)
+		return c.returnError(ev, c.d.cleanupDeletedSegments(ctx))
 	case StartGC:
 		return c.startGC(ctx, ev)
 	default:

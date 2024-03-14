@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/lab47/lsvd/logger"
+	"github.com/oklog/ulid/v2"
 	"github.com/pkg/errors"
 )
 
@@ -148,6 +149,18 @@ func (d *Disk) saveLBAMap(ctx context.Context) error {
 	hdr := &lbaCacheMapHeader{
 		CreatedAt:    time.Now(),
 		SegmentsHash: sh,
+		Stats:        make(map[string]segmentStats),
+	}
+
+	for seg, stats := range d.s.segments {
+		if stats.deleted {
+			continue
+		}
+
+		hdr.Stats[seg.String()] = segmentStats{
+			Size: stats.Size,
+			Used: stats.Used,
+		}
 	}
 
 	return saveLBAMap(d.lba2pba, f, hdr)
@@ -203,10 +216,23 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 
 	d.log.Info("validated cached lba map", "created-at", hdr.CreatedAt, "hash", sh)
 
-	for i := m.Iterator(); i.Valid(); i.Next() {
-		ro := i.Value()
+	d.lba2pba = m
 
-		d.s.CreateOrUpdate(ro.Segment, uint64(ro.Size), uint64(ro.Live.Blocks))
+	for seg, stats := range hdr.Stats {
+		id, err := ulid.Parse(seg)
+		if err != nil {
+			d.log.Error("invalid segment id in segment stats", "segment", seg)
+			continue
+		}
+
+		seg := SegmentId(id)
+
+		d.s.Create(seg, &SegmentStats{
+			Blocks: stats.Size,
+		})
+
+		d.log.Info("initialized segment", "segment", seg, "size", stats.Size, "used", stats.Used)
+		d.s.SetSegment(seg, stats.Size, stats.Used)
 	}
 
 	d.lba2pba = m
@@ -214,9 +240,15 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+type segmentStats struct {
+	Size uint64 `json:"used" cbor:"1,keyasint"`
+	Used uint64 `json:"size" cbor:"2,keyasint"`
+}
+
 type lbaCacheMapHeader struct {
-	CreatedAt    time.Time `json:"created_at" cbor:"created_at"`
-	SegmentsHash string    `json:"segments_hash" cbor:"segments_hash"`
+	CreatedAt    time.Time               `json:"created_at" cbor:"created_at"`
+	SegmentsHash string                  `json:"segments_hash" cbor:"segments_hash"`
+	Stats        map[string]segmentStats `json:"segment_stats" cbor:"segment_stats"`
 }
 
 func saveLBAMap(m *ExtentMap, f io.Writer, hdr *lbaCacheMapHeader) error {

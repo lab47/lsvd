@@ -12,9 +12,6 @@ type Segment struct {
 	Size uint64
 	Used uint64
 
-	TotalBytes uint64
-	UsedBytes  uint64
-
 	deleted bool
 	cleared []Extent
 }
