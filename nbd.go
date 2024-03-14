@@ -305,6 +305,39 @@ func (n *nbdWrapper) ZeroAt(off, size int64) error {
 		slog.Int64("blocks", int64(numBlocks)),
 	)
 
+	// We're sent trim sizes FAR larger than the write sizes, which
+	// can create extents that have more than 2^16 blocks in one extent.
+	// For optimization, we want to keep the max blocks in an extent under
+	// 2^16, so we'll break this up.
+
+	if numBlocks > MaxBlocks {
+		n.log.Debug("detected very large trim request, breaking up into smaller extents")
+
+		err := n.flushPendingWrite()
+		if err != nil {
+			return err
+		}
+
+		for numBlocks > MaxBlocks {
+			err := n.d.ZeroBlocks(n.ctx, Extent{blk, MaxBlocks})
+			if err != nil {
+				n.log.Error("nbd write-at error", "error", err, "block", blk)
+				return err
+			}
+
+			blk += MaxBlocks
+			numBlocks -= MaxBlocks
+		}
+
+		err = n.d.ZeroBlocks(n.ctx, Extent{blk, numBlocks})
+		if err != nil {
+			n.log.Error("nbd write-at error", "error", err, "block", blk)
+			return err
+		}
+
+		return nil
+	}
+
 	ext := Extent{LBA: blk, Blocks: numBlocks}
 
 	if n.queueTrim(ext) {

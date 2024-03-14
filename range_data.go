@@ -93,6 +93,14 @@ func MapRangeData(ext Extent, srcData []byte) RangeData {
 		panic(fmt.Sprintf("invalid input byte array, not block sized, %d", len(srcData)))
 	}
 
+	if ext.LBA > MaxLBA {
+		panic("extent LBA larger than max")
+	}
+
+	if ext.Blocks > MaxBlocks {
+		panic("extent blocks larger than max")
+	}
+
 	return RangeData{
 		Extent: ext,
 		data:   srcData,

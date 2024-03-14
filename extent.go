@@ -2,7 +2,13 @@ package lsvd
 
 import (
 	"fmt"
+	"math"
 	"sort"
+)
+
+const (
+	MaxBlocks = math.MaxUint16
+	MaxLBA    = (1 << 48) - 1
 )
 
 type LBA uint64

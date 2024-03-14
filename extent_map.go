@@ -16,11 +16,16 @@ type segLocations struct {
 	disk uint16
 }
 
+const (
+	physLBAMask   = (1 << 48) - 1
+	physLBAShift  = 16
+	physBlockMask = (1 << 16) - 1
+)
+
 type compactPE struct {
-	physLBA       LBA
-	physBlocks    uint32
-	liveLBADiff   uint32
-	liveBlockDiff uint32
+	physX         uint64
+	liveLBADiff   uint16
+	liveBlockDiff uint16
 
 	segIdx   uint32
 	byteSize uint32
@@ -30,40 +35,53 @@ type compactPE struct {
 
 func (c compactPE) Extent() Extent {
 	return Extent{
-		LBA:    c.physLBA,
-		Blocks: c.physBlocks,
+		LBA:    c.PhysLBA(),
+		Blocks: c.PhysBlocks(),
 	}
 }
 
 func (c compactPE) Live() Extent {
 	return Extent{
-		LBA:    LBA(c.physLBA) + LBA(c.liveLBADiff),
-		Blocks: uint32(c.physBlocks) - uint32(c.liveBlockDiff),
+		LBA:    c.LiveLBA(),
+		Blocks: c.LiveBlocks(),
 	}
+}
+
+func (c compactPE) PhysLBA() LBA {
+	return LBA((c.physX & physLBAMask) >> physLBAShift)
+	//return LBA(c.physLBA) + LBA(c.liveLBADiff)
 }
 
 func (c compactPE) LiveLBA() LBA {
-	return LBA(c.physLBA) + LBA(c.liveLBADiff)
-}
-
-func (c compactPE) LiveLast() LBA {
-	return LBA(c.physLBA) + LBA(c.liveLBADiff) + LBA(c.LiveBlocks()) - 1
+	return c.PhysLBA() + LBA(c.liveLBADiff)
 }
 
 func (c compactPE) LiveBlocks() uint32 {
-	return uint32(c.physBlocks) - uint32(c.liveBlockDiff)
+	return c.PhysBlocks() - uint32(c.liveBlockDiff)
+}
+
+func (c compactPE) PhysBlocks() uint32 {
+	return uint32(c.physX & physBlockMask)
+}
+
+func (c compactPE) LiveLast() LBA {
+	return c.LiveLBA() + LBA(c.LiveBlocks()-1)
 }
 
 func (c *compactPE) SetLive(ext Extent) {
-	ld := ext.LBA - c.physLBA
-	if ld > math.MaxUint32 {
-		panic(fmt.Sprintf("compact PE failure, live diff too large: %d - %d = %d", ext.LBA, c.physLBA, ld))
+	ld := ext.LBA - c.PhysLBA()
+	if ld > math.MaxUint16 {
+		panic(fmt.Sprintf("compact PE failure, live diff too large: %d - %d = %d", ext.LBA, c.PhysLBA(), ld))
 	}
-	c.liveLBADiff = uint32(ld)
+	c.liveLBADiff = uint16(ld)
 
-	bd := c.physBlocks - ext.Blocks
+	bd := c.PhysBlocks() - ext.Blocks
 
-	c.liveBlockDiff = uint32(bd)
+	if bd > math.MaxUint16 {
+		panic("compact PE failure, live block diff too large")
+	}
+
+	c.liveBlockDiff = uint16(bd)
 }
 
 func (m *ExtentMap) ToPE(c compactPE) PartialExtent {
@@ -475,12 +493,11 @@ func (ce *compactPE) SetFromHeader(eh ExtentHeader, seg uint32) {
 	// Read live and reset it later sicne the diffs will change
 
 	*ce = compactPE{
-		physLBA:    eh.LBA,
-		physBlocks: eh.Blocks,
-		segIdx:     seg,
-		byteSize:   eh.Size,
-		offset:     eh.Offset,
-		rawSize:    eh.RawSize,
+		physX:    uint64(eh.LBA<<physLBAShift) | uint64(eh.Blocks),
+		segIdx:   seg,
+		byteSize: eh.Size,
+		offset:   eh.Offset,
+		rawSize:  eh.RawSize,
 	}
 
 	ce.SetLive(curLive)
@@ -488,12 +505,11 @@ func (ce *compactPE) SetFromHeader(eh ExtentHeader, seg uint32) {
 
 func (e *ExtentMap) set(pe PartialExtent) {
 	ce := compactPE{
-		physLBA:    pe.LBA,
-		physBlocks: pe.Blocks,
-		segIdx:     e.segmentIdx(pe.ExtentLocation),
-		byteSize:   pe.Size,
-		offset:     pe.Offset,
-		rawSize:    pe.RawSize,
+		physX:    uint64(pe.LBA<<physLBAShift) | uint64(pe.Blocks),
+		segIdx:   e.segmentIdx(pe.ExtentLocation),
+		byteSize: pe.Size,
+		offset:   pe.Offset,
+		rawSize:  pe.RawSize,
 	}
 
 	ce.SetLive(pe.Live)
@@ -508,7 +524,7 @@ func (e *ExtentMap) Validate(log logger.Logger) error {
 		lba := i.Key()
 		pba := i.Value()
 
-		if pba.LiveBlocks() == 0 || pba.physBlocks == 0 {
+		if pba.LiveBlocks() == 0 || pba.PhysBlocks() == 0 {
 			return fmt.Errorf("invalid zero length range at %v: %v", lba, pba.LiveLBA())
 		}
 
@@ -521,7 +537,7 @@ func (e *ExtentMap) Validate(log logger.Logger) error {
 			return fmt.Errorf("key didn't match pba: %d != %d", lba, pba.LiveLBA())
 		}
 
-		if prev.physBlocks != 0 {
+		if prev.PhysBlocks() != 0 {
 			if prev.Live().Last() >= lba {
 				return fmt.Errorf("overlapping ranges detected: %s <=> %s",
 					prev.Live(), pba.Live())
