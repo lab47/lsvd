@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/lab47/lsvd/logger"
 	"github.com/oklog/ulid/v2"
@@ -40,6 +39,7 @@ func TestGC(t *testing.T) {
 			return origSeq
 		}))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
@@ -73,6 +73,7 @@ func TestGC(t *testing.T) {
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -98,6 +99,7 @@ func TestGC(t *testing.T) {
 			return origSeq
 		}))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
@@ -116,10 +118,15 @@ func TestGC(t *testing.T) {
 		err = d.CloseSegment(ctx)
 		r.NoError(err)
 
-		t.Log("starting gc in bg")
-		d.TriggerGC(ctx, NormalGC)
+		done := make(chan EventResult)
 
-		time.Sleep(200 * time.Millisecond)
+		t.Log("starting gc in bg")
+		d.controller.EventsCh() <- Event{
+			Kind: StartGC,
+			Done: done,
+		}
+
+		<-done
 
 		t.Log("closing disk")
 		d.Close(ctx)
@@ -132,6 +139,7 @@ func TestGC(t *testing.T) {
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -157,6 +165,7 @@ func TestGC(t *testing.T) {
 			return origSeq
 		}))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		e1 := make(RawBlocks, BlockSize*4)
 		for i := range e1 {
@@ -208,6 +217,7 @@ func TestGC(t *testing.T) {
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		pes, err = d2.resolveSegmentAccess(Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -241,6 +251,7 @@ func TestGC(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		e1 := pat(1, 4)
 
@@ -281,17 +292,15 @@ func TestGC(t *testing.T) {
 
 		t.Log("gc start")
 
-		_, _, err = d.GCInBackground(ctx, 1.0)
-		r.NoError(err)
+		done := make(chan EventResult)
 
-		time.Sleep(100 * time.Millisecond)
+		t.Log("starting gc in bg")
+		d.controller.EventsCh() <- Event{
+			Kind: StartGC,
+			Done: done,
+		}
 
-		t.Log("checkpointing")
-
-		err = d.CheckpointGC(ctx)
-		r.NoError(err)
-
-		time.Sleep(100 * time.Millisecond)
+		<-done
 
 		t.Log("closing disk")
 
@@ -302,6 +311,7 @@ func TestGC(t *testing.T) {
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		pes, err = d2.resolveSegmentAccess(Extent{LBA: 0, Blocks: 3})
 		r.NoError(err)
@@ -312,4 +322,114 @@ func TestGC(t *testing.T) {
 		r.Equal(Extent{LBA: 1, Blocks: 4}, pes[1].Extent)
 		r.Equal(Extent{LBA: 2, Blocks: 4}, pes[2].Extent)
 	})
+
+	t.Run("drops the density after a GC", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		origSeq := ulid.MustNew(ulid.Now(), ulid.DefaultEntropy())
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
+			return origSeq
+		}))
+		r.NoError(err)
+		defer d.Close(ctx)
+
+		err = d.WriteExtent(ctx, testExtent.MapTo(0))
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent2.MapTo(1))
+		r.NoError(err)
+
+		d.SeqGen = nil
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
+		r.NoError(err)
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		density := d.s.Usage()
+		t.Logf("pre gc density: %f", density)
+
+		done := make(chan EventResult)
+
+		t.Log("starting gc in bg")
+		d.controller.EventsCh() <- Event{
+			Kind: StartGC,
+			Done: done,
+		}
+
+		<-done
+
+		d2 := d.s.Usage()
+		t.Logf("post gc density: %f", d2)
+		r.Greater(d2, density)
+	})
+
+	t.Run("handles a totally dead segment", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		origSeq := ulid.MustNew(ulid.Now(), ulid.DefaultEntropy())
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
+			return origSeq
+		}))
+		r.NoError(err)
+		defer d.Close(ctx)
+
+		err = d.WriteExtent(ctx, testExtent.MapTo(0))
+		r.NoError(err)
+
+		d.SeqGen = nil
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
+		r.NoError(err)
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		segments, err := d.sa.ListSegments(ctx, d.volName)
+		r.NoError(err)
+		r.Len(segments, 2)
+
+		density := d.s.Usage()
+		t.Logf("pre gc density: %f", density)
+
+		done := make(chan EventResult)
+
+		t.Log("starting gc in bg")
+		d.controller.EventsCh() <- Event{
+			Kind: StartGC,
+			Done: done,
+		}
+
+		<-done
+
+		// Closing the disk lets the controller finish, which we need to let it do
+		// so it runs the cleanup segments event.
+		d.Close(ctx)
+
+		d2 := d.s.Usage()
+		t.Logf("post gc density: %f", d2)
+		r.Greater(d2, density)
+
+		segments, err = d.sa.ListSegments(ctx, d.volName)
+		r.NoError(err)
+		r.Len(segments, 1)
+	})
+
 }

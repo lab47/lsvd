@@ -13,154 +13,20 @@ import (
 	"github.com/pkg/errors"
 )
 
-type GCRequest int
+func (d *Disk) GCOnce(ctx *Context) (SegmentId, error) {
+	done := make(chan EventResult)
 
-const (
-	NormalGC GCRequest = iota
-)
-
-func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
-	ctx := NewContext(gctx)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case req, ok := <-trigger:
-			if !ok {
-				return
-			}
-
-			ctx.Reset()
-
-			if req == NormalGC {
-				toGC, ok, err := d.s.LeastDenseSegment(d.log)
-				if !ok {
-					d.log.Warn("GC was requested, but no least dense segment available")
-					continue
-				}
-
-				if err != nil {
-					d.log.Error("error picking segment to GC", "error", err)
-					continue
-				}
-
-				ci, err := d.CopyIterator(ctx, toGC)
-				if err != nil {
-					d.log.Error("error creating copy iterator segment to GC",
-						"error", err,
-						"segment", toGC,
-					)
-					continue
-				}
-
-				if ci == nil {
-					d.log.Info("copied found a dead segment and deleted it directly, gc skipped")
-				} else {
-					d.log.Info("beginning GC of segment", "segment", toGC)
-
-					err = ci.ProcessFromExtents(ctx, d.log)
-					if err != nil {
-						d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
-					}
-
-					err = ci.Close(ctx)
-					if err != nil {
-						d.log.Error("error closing segment after gc", "error", err, "segment", toGC)
-					}
-				}
-
-			} else {
-				d.log.Error("unknown GC request", "request", req)
-			}
-
-			err := d.cleanupDeletedSegments(gctx)
-			if err != nil {
-				d.log.Error("error cleaning up deleted segments", "error", err)
-			}
-		}
-	}
-}
-
-func (d *Disk) TriggerGC(ctx context.Context, req GCRequest) {
-	// Means that auto GC is diisabled
-	if d.gcTrigger == nil {
-		return
+	d.controller.EventsCh() <- Event{
+		Kind: StartGC,
+		Done: done,
 	}
 
 	select {
 	case <-ctx.Done():
-		return
-	case d.gcTrigger <- req:
-		// ok
+		return SegmentId{}, ctx.Err()
+	case er := <-done:
+		return er.Segment, nil
 	}
-}
-
-const defaultGCRatio = 0.3
-
-func (d *Disk) GCOnce(ctx *Context) (SegmentId, error) {
-	segId, ci, err := d.StartGC(ctx, 1.0)
-	if err != nil {
-		return SegmentId{}, err
-	}
-
-	if ci == nil {
-		return segId, nil
-	}
-
-	defer ci.Close(ctx)
-
-	err = ci.ProcessFromExtents(ctx, d.log)
-	if err != nil {
-		return segId, err
-	}
-
-	return segId, nil
-}
-
-func (d *Disk) StartGC(ctx context.Context, min float64) (SegmentId, *CopyIterator, error) {
-	toGC, ok, err := d.s.PickSegmentToGC(d.log, min, nil)
-	if !ok {
-		return SegmentId{}, nil, nil
-	}
-
-	if err != nil {
-		return SegmentId{}, nil, err
-	}
-
-	d.log.Debug("copying live data from segment", "seg", toGC)
-
-	ci, err := d.CopyIterator(ctx, toGC)
-	if err != nil {
-		return SegmentId{}, nil, err
-	}
-
-	return toGC, ci, nil
-}
-
-func (d *Disk) GCInBackground(gctx context.Context, min float64) (SegmentId, bool, error) {
-	toGC, ci, err := d.StartGC(gctx, min)
-	if err != nil {
-		return SegmentId{}, false, err
-	}
-
-	if ci == nil {
-		return SegmentId{}, false, nil
-	}
-
-	go func() {
-		ctx := NewContext(gctx)
-
-		err := ci.ProcessFromExtents(ctx, d.log)
-		if err != nil {
-			ci.err = err
-			return
-		}
-
-		ci.err = ci.Close(ctx)
-	}()
-
-	return toGC, true, nil
 }
 
 type gcExtent struct {
@@ -307,10 +173,6 @@ func (c *CopyIterator) ProcessFromExtents(ctx *Context, log logger.Logger) error
 	}
 
 	return nil
-}
-
-func (d *Disk) CheckpointGC(ctx context.Context) error {
-	return d.cleanupDeletedSegments(ctx)
 }
 
 func (ci *CopyIterator) extentsByteSize() int {
@@ -472,5 +334,10 @@ func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error
 
 	d.log.Info("removing segment", "segment", seg)
 	// ok, no volume has it, we can remove it.
-	return d.sa.RemoveSegment(ctx, seg)
+	err = d.sa.RemoveSegment(ctx, seg)
+	if err != nil {
+		return errors.Wrapf(err, "removing segment: %s", seg)
+	}
+
+	return nil
 }

@@ -51,10 +51,13 @@ type Disk struct {
 
 	bgmu sync.Mutex
 
-	autoGC    bool
-	gcTrigger chan GCRequest
+	autoGC bool
 
 	deleteMu sync.Mutex
+
+	controller *Controller
+	wg         sync.WaitGroup
+	cancel     func()
 
 	cpsScratch     []CachePosition
 	readReqScratch []readRequest
@@ -129,7 +132,6 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		readReqScratch: make([]readRequest, 0, 10),
 		extentsScratch: make([]Extent, 0, 10),
 		peScratch:      make([]PartialExtent, 0, 10),
-		gcTrigger:      make(chan GCRequest, 20), // 20 to mostly non-block, but it's a guess
 	}
 
 	d.readDisks = append(d.readDisks, d)
@@ -151,6 +153,24 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 		log.Info("starting sequence", "seq", d.curSeq)
 	}
 
+	cctx, cancel := context.WithCancel(ctx)
+
+	cont, err := NewController(cctx, d)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	d.wg.Add(1)
+
+	go func() {
+		defer d.wg.Done()
+		cont.Run(cctx)
+	}()
+
+	d.cancel = cancel
+	d.controller = cont
+
 	/*
 		goodMap, err := d.loadLBAMap(ctx)
 		if err != nil {
@@ -170,8 +190,6 @@ func NewDisk(ctx context.Context, log logger.Logger, path string, options ...Opt
 	dataDensity.Set(d.s.Usage())
 
 	d.autoGC = o.autoGC
-
-	go d.startGCRoutine(ctx, d.gcTrigger)
 
 	return d, nil
 }
@@ -736,8 +754,6 @@ func (d *Disk) SyncWriteCache() error {
 }
 
 func (d *Disk) Close(ctx context.Context) error {
-	d.CheckpointGC(ctx)
-
 	err := d.CloseSegment(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "error closing segment")
@@ -750,6 +766,10 @@ func (d *Disk) Close(ctx context.Context) error {
 	}
 
 	d.er.Close()
+
+	d.cancel()
+
+	d.wg.Wait()
 
 	return err
 }

@@ -2,9 +2,6 @@ package lsvd
 
 import (
 	"context"
-	"time"
-
-	"github.com/lab47/mode"
 )
 
 // CloseSegment synchronously closes the current segment, as well as giving
@@ -31,10 +28,10 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
-func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
+func (d *Disk) closeSegmentAsync(gctx context.Context) (chan EventResult, error) {
 	segId := d.curSeq
 
-	s := time.Now()
+	//s := time.Now()
 	oc := d.curOC
 
 	var err error
@@ -47,98 +44,19 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 
 	d.prevCache.SetWhenClear(oc)
 
-	done := make(chan struct{})
+	done := make(chan EventResult, 1)
 
-	go func() {
-		defer d.log.Debug("finished goroutine to close segment")
-		defer close(done)
-		defer segmentsWritten.Inc()
-		defer oc.Close()
-
-		defer func() {
-			segmentTotalTime.Add(time.Since(s).Seconds())
-		}()
-
-		var (
-			entries []ExtentLocation
-			stats   *SegmentStats
-			err     error
-		)
-
-		ctx := NewContext(gctx)
-		defer ctx.Close()
-
-		// We retry because flush does network calls and we want to just keep trying
-		// forever.
-		start := time.Now()
-		for {
-			entries, stats, err = oc.Flush(gctx, d.sa, segId)
-			if err != nil {
-				d.log.Error("error flushing data to segment, retrying", "error", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			break
-		}
-
-		flushDur := time.Since(start)
-
-		d.log.Debug("segment published, resetting write cache")
-
-		var validator *extentValidator
-
-		if mode.Debug() {
-			validator = &extentValidator{}
-			validator.populate(d.log, ctx, d, oc, entries)
-		}
-
-		mapStart := time.Now()
-
-		d.s.Create(segId, stats)
-
-		err = d.lba2pba.UpdateBatch(d.log, entries, segId, d.s)
-		if err != nil {
-			d.log.Error("error updating lba map", "error", err)
-		}
-
-		extents.Set(float64(d.lba2pba.m.Len()))
-
-		d.prevCache.Clear()
-
-		mapDur := time.Since(mapStart)
-
-		if validator != nil {
-			validator.validate(ctx, d.log, d)
-		}
-
-		if d.afterNS != nil {
-			d.afterNS(segId)
-		}
-
-		finDur := time.Since(start)
-
-		d.log.Info("uploaded new segment", "segment", segId, "flush-dur", flushDur, "map-dur", mapDur, "dur", finDur)
-
-		err = d.cleanupDeletedSegments(gctx)
-		if err != nil {
-			d.log.Error("error cleaning up deleted segments", "error", err)
-		}
-
-		density := d.s.Usage()
-		dataDensity.Set(density)
-
-		d.log.Info("finished background segment flush", "total-density", density)
-
-		if d.autoGC && d.s.TotalBytes() > GCTotalThreshold && density < GCDensityThreshold {
-			d.log.Info("data density dropped below GC threshold, starting GC",
-				"density", density,
-				"theshold", GCDensityThreshold,
-			)
-
-			d.TriggerGC(ctx, NormalGC)
-		}
-	}()
+	select {
+	case <-gctx.Done():
+		return nil, gctx.Err()
+	case d.controller.EventsCh() <- Event{
+		Kind:      CloseSegment,
+		Value:     oc,
+		SegmentId: segId,
+		Done:      done,
+	}:
+		// ok
+	}
 
 	return done, nil
 }

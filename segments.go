@@ -183,6 +183,31 @@ func (s *Segments) LogSegmentInfo(log hclog.Logger) {
 	}
 }
 
+func (s *Segments) PruneDeadSegments() (int, float64) {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	var used, size uint64
+	var dead int
+
+	for _, s := range s.segments {
+		if s.deleted {
+			continue
+		}
+
+		if s.Used == 0 {
+			dead++
+			s.deleted = true
+			continue
+		}
+
+		used += s.Used
+		size += s.Size
+	}
+
+	return dead, 100.0 * (float64(used) / float64(size)) // report as a percent
+}
+
 func (s *Segments) SetDeleted(segId SegmentId, log logger.Logger) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()

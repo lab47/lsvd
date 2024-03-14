@@ -103,6 +103,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		data, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
@@ -121,6 +122,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
@@ -147,6 +149,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		data := NewRangeData(ctx, Extent{0, 10})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
@@ -178,6 +181,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		data := NewRangeData(ctx, Extent{1, 19})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
@@ -201,6 +205,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		t.Logf("data sum: %s", rangeSum(testRandX))
 
@@ -213,6 +218,7 @@ func TestLSVD(t *testing.T) {
 		t.Log("reopening disk")
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -238,6 +244,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		const blocks = 4
 
@@ -253,6 +260,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
@@ -278,6 +286,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		r.NoError(d.WriteExtent(ctx, testEmptyX.MapTo(47)))
 
@@ -299,6 +308,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
@@ -309,6 +319,7 @@ func TestLSVD(t *testing.T) {
 		t.Log("reopening disk")
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		d2, err := d.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -335,6 +346,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -430,6 +442,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(47))
 		r.NoError(err)
@@ -487,6 +500,7 @@ func TestLSVD(t *testing.T) {
 
 		d2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		x1, err := d2.ReadExtent(ctx, Extent{LBA: 47, Blocks: 1})
 		r.NoError(err)
@@ -505,6 +519,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(ur.Gen))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testEmptyX.MapTo(47))
 		r.NoError(err)
@@ -560,6 +575,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testEmptyX.MapTo(0))
 		r.NoError(err)
@@ -578,6 +594,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		copy(data.RawBlocks().BlockView(0), testRand)
 
@@ -596,6 +613,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -615,6 +633,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -637,6 +656,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -669,6 +689,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -699,6 +720,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -720,6 +742,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(47))
 		r.NoError(err)
@@ -737,6 +760,7 @@ func TestLSVD(t *testing.T) {
 
 		disk2, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer disk2.Close(ctx)
 
 		d2, err := disk2.ReadExtent(ctx, Extent{48, 1})
 		r.NoError(err)
@@ -754,6 +778,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			data := NewRangeData(ctx, Extent{0, 2})
 			ds := data.WriteData()
@@ -783,6 +808,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			data := NewRangeData(ctx, Extent{0, 2})
 			copy(data.RawBlocks().BlockView(0), testData)
@@ -816,6 +842,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			err = d.WriteExtent(ctx, testExtent.MapTo(0))
 			r.NoError(err)
@@ -838,6 +865,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			err = d.WriteExtent(ctx, testExtent.MapTo(0))
 			r.NoError(err)
@@ -851,6 +879,7 @@ func TestLSVD(t *testing.T) {
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d2.Close(ctx)
 
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
@@ -878,6 +907,7 @@ func TestLSVD(t *testing.T) {
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d2.Close(ctx)
 
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
@@ -894,6 +924,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			err = d.WriteExtent(ctx, testExtent.MapTo(0))
 			r.NoError(err)
@@ -908,6 +939,7 @@ func TestLSVD(t *testing.T) {
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d2.Close(ctx)
 
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
@@ -924,6 +956,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			err = d.WriteExtent(ctx, testExtent.MapTo(0))
 			r.NoError(err)
@@ -940,6 +973,7 @@ func TestLSVD(t *testing.T) {
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d2.Close(ctx)
 
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
@@ -956,6 +990,7 @@ func TestLSVD(t *testing.T) {
 
 			d, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d.Close(ctx)
 
 			err = d.WriteExtent(ctx, testExtent.MapTo(0))
 			r.NoError(err)
@@ -975,6 +1010,7 @@ func TestLSVD(t *testing.T) {
 
 			d2, err := NewDisk(ctx, log, tmpdir)
 			r.NoError(err)
+			defer d2.Close(ctx)
 
 			x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 			r.NoError(err)
@@ -992,6 +1028,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
@@ -1030,6 +1067,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
@@ -1058,10 +1096,13 @@ func TestLSVD(t *testing.T) {
 		var sa slowLocal
 
 		sa.Dir = tmpdir
-		sa.wait = make(chan struct{})
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSegmentAccess(&sa))
 		r.NoError(err)
+		defer d.Close(ctx)
+
+		sa.wait = make(chan struct{})
+		defer close(sa.wait)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
@@ -1092,6 +1133,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir, WithSegmentAccess(&sa))
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		data := NewRangeData(ctx, Extent{0, 10})
 		_, err = io.ReadFull(rand.Reader, data.WriteData())
@@ -1107,6 +1149,7 @@ func TestLSVD(t *testing.T) {
 		r.NoError(err)
 
 		sa.wait = make(chan struct{})
+		defer close(sa.wait)
 
 		_, err = d.closeSegmentAsync(ctx)
 		r.NoError(err)
@@ -1139,6 +1182,7 @@ func TestLSVD(t *testing.T) {
 
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtents(ctx, []RangeData{
 			testRandX.MapTo(0),
@@ -1169,6 +1213,7 @@ func TestLSVD(t *testing.T) {
 		// First, make the first layer
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
@@ -1178,6 +1223,7 @@ func TestLSVD(t *testing.T) {
 		// Reopen it to reinitialize it without any write caching bits.
 		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		tmpdir2, err := os.MkdirTemp("", "lsvd")
 		r.NoError(err)
@@ -1189,6 +1235,7 @@ func TestLSVD(t *testing.T) {
 			WithLowerLayer(d),
 		)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		pes, err := d2.lba2pba.Resolve(log, Extent{LBA: 0, Blocks: 1}, nil)
 		r.NoError(err)
@@ -1213,6 +1260,7 @@ func TestLSVD(t *testing.T) {
 		// First, make the first layer
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		err = d.WriteExtent(ctx, testRandX.MapTo(0))
 		r.NoError(err)
@@ -1226,6 +1274,7 @@ func TestLSVD(t *testing.T) {
 		// Second, make the second layer
 		s, err := NewDisk(ctx, log, tmpdir3)
 		r.NoError(err)
+		defer s.Close(ctx)
 
 		err = s.WriteExtent(ctx, testExtent.MapTo(0))
 		r.NoError(err)
@@ -1235,9 +1284,11 @@ func TestLSVD(t *testing.T) {
 		// Reopen it to reinitialize it without any write caching bits.
 		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		s, err = NewDisk(ctx, log, tmpdir3, ReadOnly())
 		r.NoError(err)
+		defer s.Close(ctx)
 
 		tmpdir2, err := os.MkdirTemp("", "lsvd")
 		r.NoError(err)
@@ -1250,6 +1301,7 @@ func TestLSVD(t *testing.T) {
 			WithLowerLayer(s),
 		)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		data, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
 		r.NoError(err)
@@ -1267,6 +1319,7 @@ func TestLSVD(t *testing.T) {
 		// First, make the first layer
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		bd := NewRangeData(ctx, Extent{0, 4})
 		_, err = io.ReadFull(rand.Reader, bd.WriteData())
@@ -1287,6 +1340,7 @@ func TestLSVD(t *testing.T) {
 			WithVolumeName("s"),
 		)
 		r.NoError(err)
+		defer s.Close(ctx)
 
 		// We'll write a replacement inside the range of d to be sure that
 		// we observe the range splitting.
@@ -1298,6 +1352,7 @@ func TestLSVD(t *testing.T) {
 		// Reopen it to reinitialize it without any write caching bits.
 		d, err = NewDisk(ctx, log, tmpdir, ReadOnly())
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		s, err = NewDisk(ctx, log, tmpdir3,
 			WithSegmentAccess(&LocalFileAccess{Dir: tmpdir}),
@@ -1305,6 +1360,7 @@ func TestLSVD(t *testing.T) {
 			ReadOnly(),
 		)
 		r.NoError(err)
+		defer s.Close(ctx)
 
 		tmpdir2, err := os.MkdirTemp("", "lsvd")
 		r.NoError(err)
@@ -1317,6 +1373,7 @@ func TestLSVD(t *testing.T) {
 			WithLowerLayer(s),
 		)
 		r.NoError(err)
+		defer d2.Close(ctx)
 
 		data, err := d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
 		r.NoError(err)
@@ -1340,6 +1397,7 @@ func TestLSVD(t *testing.T) {
 		// First, make the first layer
 		d, err := NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		bd := NewRangeData(ctx, Extent{0, 4})
 		_, err = io.ReadFull(rand.Reader, bd.WriteData())
@@ -1376,6 +1434,7 @@ func TestLSVD(t *testing.T) {
 		t.Log("reopening")
 		d, err = NewDisk(ctx, log, tmpdir)
 		r.NoError(err)
+		defer d.Close(ctx)
 
 		r.Len(d.s.LiveSegments(), 1)
 

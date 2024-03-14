@@ -77,8 +77,17 @@ func NewRangeCache(opts RangeCacheOptions) (*RangeCache, error) {
 }
 
 func (r *RangeCache) Close() error {
-	unix.Munmap(r.cacheRegion)
-	return r.f.Close()
+	if r.cacheRegion != nil {
+		unix.Munmap(r.cacheRegion)
+		r.cacheRegion = nil
+	}
+
+	if r.f != nil {
+		r.f.Close()
+		r.f = nil
+	}
+
+	return nil
 }
 
 func (r *RangeCache) ReadAt(ctx context.Context, seg SegmentId, buf []byte, off int64) (int, error) {
