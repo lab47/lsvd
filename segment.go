@@ -191,7 +191,7 @@ func (o *SegmentBuilder) ZeroBlocks(rng Extent) error {
 }
 
 func (o *SegmentCreator) EmptyP() bool {
-	return o.builder.cnt == 0
+	return o.builder == nil || o.builder.cnt == 0
 }
 
 func (o *SegmentBuilder) ShouldFlush(sizeThreshold int) bool {

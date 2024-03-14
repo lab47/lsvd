@@ -752,7 +752,7 @@ func (d *Disk) SyncWriteCache() error {
 }
 
 func (d *Disk) Close(ctx context.Context) error {
-	err := d.CloseSegment(ctx)
+	err := d.finalizeSegment(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "error closing segment")
 	}

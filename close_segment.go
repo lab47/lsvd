@@ -28,6 +28,34 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 	}
 }
 
+func (d *Disk) finalizeSegment(gctx context.Context) error {
+	d.log.Info("flushing last segment to storage", "segment", d.curSeq)
+
+	if d.curOC == nil || d.curOC.EmptyP() {
+		return nil
+	}
+
+	done := make(chan EventResult)
+	select {
+	case <-gctx.Done():
+		return gctx.Err()
+	case d.controller.EventsCh() <- Event{
+		Kind:      CloseSegment,
+		Value:     d.curOC,
+		SegmentId: d.curSeq,
+		Done:      done,
+	}:
+		// ok
+	}
+
+	select {
+	case <-gctx.Done():
+		return gctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
 func (d *Disk) closeSegmentAsync(gctx context.Context) (chan EventResult, error) {
 	segId := d.curSeq
 
