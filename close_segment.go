@@ -2,7 +2,6 @@ package lsvd
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/lab47/mode"
@@ -44,7 +43,7 @@ func (d *Disk) closeSegmentAsync(gctx context.Context) (chan struct{}, error) {
 		return nil, err
 	}
 
-	d.log.Info("flushing segment to storage in background", "segment", segId, "oc", fmt.Sprintf("%p", oc))
+	d.log.Info("flushing segment to storage in background", "segment", segId)
 
 	d.prevCache.SetWhenClear(oc)
 
@@ -150,6 +149,9 @@ const (
 )
 
 func (d *Disk) cleanupDeletedSegments(ctx context.Context) error {
+	d.deleteMu.Lock()
+	defer d.deleteMu.Unlock()
+
 	for _, i := range d.s.FindDeleted() {
 		d.log.Info("removing segment from volume", "volume", d.volName, "segment", i)
 		err := d.sa.RemoveSegmentFromVolume(ctx, d.volName, i)

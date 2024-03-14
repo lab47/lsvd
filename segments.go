@@ -65,6 +65,9 @@ func (s *Segments) TotalBytes() uint64 {
 	var size uint64
 
 	for _, s := range s.segments {
+		if s.deleted {
+			continue
+		}
 		size += s.Size
 	}
 
@@ -78,6 +81,10 @@ func (s *Segments) Usage() float64 {
 	var used, size uint64
 
 	for _, s := range s.segments {
+		if s.deleted {
+			continue
+		}
+
 		used += s.Used
 		size += s.Size
 	}

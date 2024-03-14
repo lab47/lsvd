@@ -54,6 +54,8 @@ type Disk struct {
 	autoGC    bool
 	gcTrigger chan GCRequest
 
+	deleteMu sync.Mutex
+
 	cpsScratch     []CachePosition
 	readReqScratch []readRequest
 	extentsScratch []Extent

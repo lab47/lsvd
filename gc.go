@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/lab47/lsvd/logger"
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
@@ -67,10 +66,14 @@ func (d *Disk) startGCRoutine(gctx context.Context, trigger chan GCRequest) {
 					d.log.Error("error closing segment after gc", "error", err, "segment", toGC)
 				}
 
-				continue
+			} else {
+				d.log.Error("unknown GC request", "request", req)
 			}
 
-			d.log.Error("unknown GC request", "request", req)
+			err := d.cleanupDeletedSegments(gctx)
+			if err != nil {
+				d.log.Error("error cleaning up deleted segments", "error", err)
+			}
 		}
 	}
 }
@@ -207,7 +210,6 @@ func (c *CopyIterator) gatherExtents() {
 				CE:   pe,
 				Live: pe.Live(),
 			})
-			c.d.log.Trace("captured extent to update", "addr", spew.Sdump(pe))
 		}
 	}
 }
@@ -395,26 +397,27 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 }
 
 func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, error) {
-	f, err := d.sa.OpenSegment(ctx, seg)
-	if err != nil {
-		return nil, errors.Wrapf(err, "opening segment %s", seg)
+	ci := &CopyIterator{
+		d:   d,
+		seg: seg,
 	}
 
-	br := bufio.NewReader(ToReader(f))
+	ci.gatherExtents()
+
+	if ci.expectedBlocks == 0 {
+		d.log.Info("detected segment completely unused, deleting without GC", "segment", seg)
+
+		d.s.SetDeleted(seg, d.log)
+
+		return nil, nil
+	}
 
 	newSeg, err := d.nextSeq()
 	if err != nil {
 		return nil, err
 	}
 
-	ci := &CopyIterator{
-		d:   d,
-		or:  f,
-		br:  br,
-		seg: seg,
-
-		newSegment: newSeg,
-	}
+	ci.newSegment = newSeg
 
 	ci.builder.em = NewExtentMap()
 
@@ -424,15 +427,23 @@ func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, 
 		return nil, err
 	}
 
+	f, err := d.sa.OpenSegment(ctx, seg)
+	if err != nil {
+		return nil, errors.Wrapf(err, "opening segment %s", seg)
+	}
+
+	br := bufio.NewReader(ToReader(f))
+
 	err = ci.hdr.Read(br)
 	if err != nil {
 		return nil, err
 	}
 
+	ci.or = f
+	ci.br = br
+
 	ci.totalBlocks = uint64(ci.hdr.ExtentCount)
 	ci.left = ci.hdr.ExtentCount
-
-	ci.gatherExtents()
 
 	return ci, nil
 }
