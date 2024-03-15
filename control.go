@@ -37,7 +37,7 @@ type Controller struct {
 	events   chan Event
 	internal []Event
 
-	lastCloseSegment time.Time
+	lastNewSegment time.Time
 }
 
 func NewController(ctx context.Context, d *Disk) (*Controller, error) {
@@ -104,8 +104,8 @@ func (c *Controller) handleControl(gctx context.Context) {
 }
 
 func (c *Controller) handleTick(ctx *Context) error {
-	if time.Since(c.lastCloseSegment) >= 5*time.Minute {
-		c.lastCloseSegment = time.Now()
+	if time.Since(c.lastNewSegment) >= 5*time.Minute {
+		c.lastNewSegment = time.Now()
 
 		err := c.handleLongIdle(ctx)
 		if err != nil {
@@ -119,12 +119,13 @@ func (c *Controller) handleTick(ctx *Context) error {
 const (
 	MaxBlocksPerSmallPack = 20_000
 	SmallSegmentCutOff    = 200
+	TargetDensity         = 90
 )
 
 func (c *Controller) handleLongIdle(ctx *Context) error {
 	smallSegments := c.d.s.FindSmallSegments(SmallSegmentCutOff, MaxBlocksPerSmallPack)
-	if len(smallSegments) == 0 {
-		return nil
+	if len(smallSegments) < 2 {
+		return c.improveDensity(ctx)
 	}
 
 	c.log.Info("gather small segments for packing cycle", "segments", len(smallSegments))
@@ -132,9 +133,29 @@ func (c *Controller) handleLongIdle(ctx *Context) error {
 	return c.packSegments(ctx, Event{}, smallSegments)
 }
 
+func (c *Controller) improveDensity(ctx *Context) error {
+	toGC, density, ok, err := c.d.s.LeastDenseSegment(c.log)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		c.log.Warn("GC was requested, but no least dense segment available")
+		return nil
+	}
+
+	if TargetDensity >= 90 {
+		return nil
+	}
+
+	c.log.Info("improving density by GC'ing segment", "segment", toGC, "density", density)
+
+	return c.gcSegment(ctx, Event{}, toGC)
+}
+
 func (c *Controller) sweepSmallSegments(ctx *Context, ev Event) error {
 	smallSegments := c.d.s.FindSmallSegments(SmallSegmentCutOff, MaxBlocksPerSmallPack)
-	if len(smallSegments) == 0 {
+	if len(smallSegments) < 2 {
 		return c.returnError(ev, nil)
 	}
 
@@ -165,7 +186,7 @@ func (c *Controller) closeSegment(ctx *Context, ev Event) error {
 
 	s := time.Now()
 
-	c.lastCloseSegment = s
+	c.lastNewSegment = s
 
 	d := c.d
 
@@ -309,7 +330,7 @@ func (c *Controller) startGC(ctx *Context, ev Event) error {
 		return nil
 	}
 
-	toGC, ok, err := d.s.LeastDenseSegment(d.log)
+	toGC, _, ok, err := d.s.LeastDenseSegment(d.log)
 	if !ok {
 		d.log.Warn("GC was requested, but no least dense segment available")
 		return nil
@@ -318,6 +339,12 @@ func (c *Controller) startGC(ctx *Context, ev Event) error {
 	if err != nil {
 		return errors.Wrapf(err, "error picking segment to GC")
 	}
+
+	return c.gcSegment(ctx, ev, toGC)
+}
+
+func (c *Controller) gcSegment(ctx *Context, ev Event, toGC SegmentId) error {
+	d := c.d
 
 	ci, err := d.CopyIterator(ctx, toGC)
 	if err != nil {
@@ -360,6 +387,8 @@ func (c *Controller) startGC(ctx *Context, ev Event) error {
 			}
 		}()
 	}
+
+	c.lastNewSegment = time.Now()
 
 	c.queueInternal(Event{
 		Kind: CleanupSegments,
@@ -416,6 +445,8 @@ func (c *Controller) packSegments(ctx *Context, ev Event, segments []SegmentId) 
 			ev.Done <- EventResult{}
 		}()
 	}
+
+	c.lastNewSegment = time.Now()
 
 	c.queueInternal(Event{
 		Kind: CleanupSegments,

@@ -309,7 +309,7 @@ func (d *Segments) sortedSegments() []SegmentId {
 	return ret
 }
 
-func (d *Segments) LeastDenseSegment(log logger.Logger) (SegmentId, bool, error) {
+func (d *Segments) LeastDenseSegment(log logger.Logger) (SegmentId, uint64, bool, error) {
 	d.segmentsMu.Lock()
 	defer d.segmentsMu.Unlock()
 
@@ -334,10 +334,10 @@ func (d *Segments) LeastDenseSegment(log logger.Logger) (SegmentId, bool, error)
 	}
 
 	if smallestStats == nil {
-		return SegmentId{}, false, nil
+		return SegmentId{}, 0, false, nil
 	}
 
-	return smallestId, true, nil
+	return smallestId, smallestStats.Used, true, nil
 }
 
 func (d *Segments) PickSegmentToGC(log logger.Logger, min float64, skip []SegmentId) (SegmentId, bool, error) {
