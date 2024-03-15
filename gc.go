@@ -270,6 +270,8 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 		"percent", float64(c.copiedBlocks)/float64(c.hdr.ExtentCount),
 	)
 
+	c.builder.Close(c.d.log)
+
 	return c.or.Close()
 }
 
