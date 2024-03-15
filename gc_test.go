@@ -432,4 +432,76 @@ func TestGC(t *testing.T) {
 		r.Len(segments, 1)
 	})
 
+	t.Run("can pack small segments in one pass", func(t *testing.T) {
+		r := require.New(t)
+
+		tmpdir, err := os.MkdirTemp("", "lsvd")
+		r.NoError(err)
+		defer os.RemoveAll(tmpdir)
+
+		origSeq := ulid.MustNew(ulid.Now(), ulid.DefaultEntropy())
+
+		d, err := NewDisk(ctx, log, tmpdir, WithSeqGen(func() ulid.ULID {
+			return origSeq
+		}))
+		r.NoError(err)
+		defer d.Close(ctx)
+
+		err = d.WriteExtent(ctx, testExtent.MapTo(0))
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent2.MapTo(1))
+		r.NoError(err)
+
+		d.SeqGen = nil
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		err = d.WriteExtent(ctx, testExtent3.MapTo(0))
+		r.NoError(err)
+
+		err = d.CloseSegment(ctx)
+		r.NoError(err)
+
+		segments, err := d.sa.ListSegments(ctx, d.volName)
+		r.NoError(err)
+
+		r.Len(segments, 2)
+
+		done := make(chan EventResult, 1)
+
+		d.controller.EventsCh() <- Event{
+			Kind: SweepSmallSegments,
+			Done: done,
+		}
+
+		<-done
+
+		d.Close(ctx)
+
+		newSegments, err := d.sa.ListSegments(ctx, d.volName)
+		r.NoError(err)
+
+		r.Len(newSegments, 1)
+
+		r.NotContains(segments, newSegments[0])
+
+		t.Log("reloading disk")
+
+		d2, err := NewDisk(ctx, log, tmpdir)
+		r.NoError(err)
+		defer d2.Close(ctx)
+
+		x2, err := d2.ReadExtent(ctx, Extent{LBA: 0, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testExtent3, x2)
+
+		x2, err = d2.ReadExtent(ctx, Extent{LBA: 1, Blocks: 1})
+		r.NoError(err)
+
+		extentEqual(t, testExtent2, x2)
+	})
+
 }

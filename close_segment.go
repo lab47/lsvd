@@ -29,11 +29,15 @@ func (d *Disk) CloseSegment(ctx context.Context) error {
 }
 
 func (d *Disk) finalizeSegment(gctx context.Context) error {
-	d.log.Info("flushing last segment to storage", "segment", d.curSeq)
-
-	if d.curOC == nil || d.curOC.EmptyP() {
+	if d.curOC == nil {
 		return nil
 	}
+
+	if d.curOC.EmptyP() {
+		return d.curOC.Close()
+	}
+
+	d.log.Info("flushing last segment to storage", "segment", d.curSeq)
 
 	done := make(chan EventResult)
 	select {

@@ -191,6 +191,35 @@ func (s *Segments) LogSegmentInfo(log hclog.Logger) {
 	}
 }
 
+func (s *Segments) FindSmallSegments(cutoff, max uint64) []SegmentId {
+	s.segmentsMu.Lock()
+	defer s.segmentsMu.Unlock()
+
+	var (
+		used uint64
+		ret  []SegmentId
+	)
+
+	for id, s := range s.segments {
+		if s.deleted {
+			continue
+		}
+
+		if s.Used <= cutoff {
+			used += s.Used
+			if used > max {
+				break
+			}
+
+			max += used
+
+			ret = append(ret, id)
+		}
+	}
+
+	return ret
+}
+
 func (s *Segments) PruneDeadSegments() (int, float64) {
 	s.segmentsMu.Lock()
 	defer s.segmentsMu.Unlock()

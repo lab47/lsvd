@@ -143,6 +143,10 @@ func (o *SegmentBuilder) Sync() error {
 	return nil
 }
 
+func (o *SegmentBuilder) OpenP() bool {
+	return o.logF != nil
+}
+
 func (o *SegmentBuilder) OpenWrite(path string, log logger.Logger) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {

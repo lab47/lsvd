@@ -30,8 +30,9 @@ func (d *Disk) GCOnce(ctx *Context) (SegmentId, error) {
 }
 
 type gcExtent struct {
-	CE   *compactPE
-	Live Extent
+	CE      *compactPE
+	Live    Extent
+	Segment uint32
 }
 
 type CopyIterator struct {
@@ -53,10 +54,13 @@ type CopyIterator struct {
 	copiedBlocks   uint64
 
 	newSegment SegmentId
-	builder    SegmentBuilder
+	builder    *SegmentBuilder
+
+	errorPatching bool
 
 	segmentsProcessed []SegmentId
 	extents           []gcExtent
+	processedExtents  []gcExtent
 	results           []ExtentHeader
 }
 
@@ -77,8 +81,9 @@ func (c *CopyIterator) gatherExtents() {
 		pe := i.CompactValuePtr()
 		if pe.segIdx == idx {
 			c.extents = append(c.extents, gcExtent{
-				CE:   pe,
-				Live: pe.Live(),
+				CE:      pe,
+				Live:    pe.Live(),
+				Segment: idx,
 			})
 		}
 	}
@@ -172,6 +177,8 @@ func (c *CopyIterator) ProcessFromExtents(ctx *Context, log logger.Logger) error
 		c.results = append(c.results, eh)
 	}
 
+	c.processedExtents = append(c.processedExtents, c.extents...)
+
 	return nil
 }
 
@@ -205,28 +212,27 @@ func (c *CopyIterator) updateDisk(ctx context.Context) error {
 	c.d.log.Trace("patching block map from post-gc segment", "segment", c.newSegment)
 	c.d.s.Create(c.newSegment, stats)
 
-	idx := c.d.lba2pba.segmentIdx(ExtentLocation{
-		Segment: c.seg,
-		Disk:    0,
-	})
-
 	newIdx := c.d.lba2pba.segmentIdx(ExtentLocation{
 		Segment: c.newSegment,
 		Disk:    0,
 	})
 
 	return c.d.lba2pba.LockToPatch(func() error {
-		for i, pe := range c.extents {
+		for i, pe := range c.processedExtents {
 			// it's possible that the extent has been deleted and reused by the time
 			// we're returning here. So if the segment is different, then we know it's been
 			// reused. It's not possible to reuse an extent in the same segment because of how
 			// we manage extents in segments.
-			if pe.CE.segIdx != idx {
+			if pe.CE.segIdx != pe.Segment {
+				c.errorPatching = true
+				c.d.log.Warn("unable to patch segment, detected recycled compactExtent")
 				continue
 			}
 
 			// Double check that we're patching for the same live extent. Otherwise bail!
 			if pe.CE.Live() != pe.Live {
+				c.errorPatching = true
+				c.d.log.Warn("unable to patch segment, detected live range has changed")
 				continue
 			}
 
@@ -248,10 +254,15 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 		return err
 	}
 
-	c.d.s.SetDeleted(c.seg, c.d.log)
+	if !c.errorPatching {
+		for _, seg := range c.segmentsProcessed {
+			c.d.s.SetDeleted(seg, c.d.log)
+		}
+	}
 
 	c.d.log.Info("gc cycle complete",
-		"segment", c.seg.String(),
+		"segments", len(c.segmentsProcessed),
+		"new-segment", c.newSegment,
 		"extents", c.copiedExtents,
 		"blocks", c.copiedBlocks,
 		"expected-blocks", c.expectedBlocks,
@@ -262,56 +273,74 @@ func (c *CopyIterator) Close(ctx context.Context) error {
 	return c.or.Close()
 }
 
-func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, error) {
-	ci := &CopyIterator{
-		d:   d,
-		seg: seg,
-	}
-
+func (ci *CopyIterator) Reset(ctx context.Context, seg SegmentId) error {
+	ci.seg = seg
 	ci.gatherExtents()
 
 	if ci.expectedBlocks == 0 {
-		d.log.Info("detected segment completely unused, deleting without GC", "segment", seg)
+		ci.d.log.Info("detected segment completely unused, deleting without GC", "segment", seg)
 
-		d.s.SetDeleted(seg, d.log)
+		ci.d.s.SetDeleted(seg, ci.d.log)
 
-		return nil, nil
+		return nil
 	}
 
-	newSeg, err := d.nextSeq()
-	if err != nil {
-		return nil, err
+	if !ci.newSegment.Valid() {
+		newSeg, err := ci.d.nextSeq()
+		if err != nil {
+			return err
+		}
+
+		ci.newSegment = newSeg
 	}
 
-	ci.newSegment = newSeg
-
-	ci.builder.em = NewExtentMap()
-
-	path := filepath.Join(d.path, "writecache."+seg.String())
-	err = ci.builder.OpenWrite(path, d.log)
-	if err != nil {
-		return nil, err
+	if ci.builder.em == nil {
+		ci.builder.em = NewExtentMap()
 	}
 
-	f, err := d.sa.OpenSegment(ctx, seg)
+	if !ci.builder.OpenP() {
+		path := filepath.Join(ci.d.path, "writecache."+ci.newSegment.String())
+		err := ci.builder.OpenWrite(path, ci.d.log)
+		if err != nil {
+			return err
+		}
+	}
+
+	f, err := ci.d.sa.OpenSegment(ctx, seg)
 	if err != nil {
-		return nil, errors.Wrapf(err, "opening segment %s", seg)
+		return errors.Wrapf(err, "opening segment %s", seg)
 	}
 
 	br := bufio.NewReader(ToReader(f))
 
 	err = ci.hdr.Read(br)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	ci.or = f
 	ci.br = br
 
-	ci.totalBlocks = uint64(ci.hdr.ExtentCount)
-	ci.left = ci.hdr.ExtentCount
+	ci.totalBlocks += uint64(ci.hdr.ExtentCount)
+	ci.left += ci.hdr.ExtentCount
+
+	return nil
+}
+
+func (d *Disk) CopyIterator(ctx context.Context, seg SegmentId) (*CopyIterator, error) {
+	ci := &CopyIterator{
+		d:       d,
+		seg:     seg,
+		builder: NewSegmentBuilder(),
+	}
+
+	err := ci.Reset(ctx, seg)
+	if err != nil {
+		return nil, err
+	}
 
 	return ci, nil
+
 }
 
 func (d *Disk) removeSegmentIfPossible(ctx context.Context, seg SegmentId) error {

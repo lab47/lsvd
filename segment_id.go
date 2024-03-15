@@ -8,4 +8,8 @@ func (s SegmentId) String() string {
 	return ulid.ULID(s).String()
 }
 
+func (s SegmentId) Valid() bool {
+	return s != SegmentId{}
+}
+
 const SegmentIdSize = 16

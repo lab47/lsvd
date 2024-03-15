@@ -16,6 +16,7 @@ const (
 	CloseSegment EventKind = iota
 	CleanupSegments
 	StartGC
+	SweepSmallSegments
 )
 
 type Event struct {
@@ -35,6 +36,8 @@ type Controller struct {
 	d        *Disk
 	events   chan Event
 	internal []Event
+
+	lastCloseSegment time.Time
 }
 
 func NewController(ctx context.Context, d *Disk) (*Controller, error) {
@@ -62,8 +65,10 @@ func (c *Controller) queueInternal(ev Event) {
 func (c *Controller) handleControl(gctx context.Context) {
 	ctx := NewContext(gctx)
 
-	for {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
 
+	for {
 		for _, ev := range c.internal {
 			ctx.Reset()
 			err := c.handleEvent(ctx, ev)
@@ -89,8 +94,53 @@ func (c *Controller) handleControl(gctx context.Context) {
 			if err != nil {
 				c.log.Error("error handling event", "error", err, "event-kind", ev.Kind)
 			}
+		case <-tick.C:
+			err := c.handleTick(ctx)
+			if err != nil {
+				c.log.Error("error handling tick", "error", err)
+			}
 		}
 	}
+}
+
+func (c *Controller) handleTick(ctx *Context) error {
+	if time.Since(c.lastCloseSegment) >= 5*time.Minute {
+		c.lastCloseSegment = time.Now()
+
+		err := c.handleLongIdle(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+const (
+	MaxBlocksPerSmallPack = 20_000
+	SmallSegmentCutOff    = 200
+)
+
+func (c *Controller) handleLongIdle(ctx *Context) error {
+	smallSegments := c.d.s.FindSmallSegments(SmallSegmentCutOff, MaxBlocksPerSmallPack)
+	if len(smallSegments) == 0 {
+		return nil
+	}
+
+	c.log.Info("gather small segments for packing cycle", "segments", len(smallSegments))
+
+	return c.packSegments(ctx, Event{}, smallSegments)
+}
+
+func (c *Controller) sweepSmallSegments(ctx *Context, ev Event) error {
+	smallSegments := c.d.s.FindSmallSegments(SmallSegmentCutOff, MaxBlocksPerSmallPack)
+	if len(smallSegments) == 0 {
+		return c.returnError(ev, nil)
+	}
+
+	c.log.Info("gather small segments for packing cycle", "segments", len(smallSegments))
+
+	return c.packSegments(ctx, ev, smallSegments)
 }
 
 func (c *Controller) handleEvent(ctx *Context, ev Event) error {
@@ -101,6 +151,8 @@ func (c *Controller) handleEvent(ctx *Context, ev Event) error {
 		return c.returnError(ev, c.d.cleanupDeletedSegments(ctx))
 	case StartGC:
 		return c.startGC(ctx, ev)
+	case SweepSmallSegments:
+		return c.sweepSmallSegments(ctx, ev)
 	default:
 		return fmt.Errorf("unknown kind: %d", ev.Kind)
 	}
@@ -112,6 +164,8 @@ func (c *Controller) closeSegment(ctx *Context, ev Event) error {
 	segId := ev.SegmentId
 
 	s := time.Now()
+
+	c.lastCloseSegment = s
 
 	d := c.d
 
@@ -304,6 +358,62 @@ func (c *Controller) startGC(ctx *Context, ev Event) error {
 			ev.Done <- EventResult{
 				Segment: toGC,
 			}
+		}()
+	}
+
+	c.queueInternal(Event{
+		Kind: CleanupSegments,
+	})
+
+	return nil
+}
+
+func (c *Controller) packSegments(ctx *Context, ev Event, segments []SegmentId) error {
+	gcCount.Inc()
+	s := time.Now()
+
+	defer func() {
+		gcTime.Add(time.Since(s).Seconds())
+	}()
+
+	d := c.d
+
+	ci := CopyIterator{
+		d:       c.d,
+		builder: NewSegmentBuilder(),
+	}
+
+	for _, toGC := range segments {
+		err := ci.Reset(ctx, toGC)
+		if err != nil {
+			return c.returnError(ev, errors.Wrapf(err, "reseting copy iterator"))
+		}
+
+		d.log.Info("beginning GC of segment", "segment", toGC)
+
+		err = ci.ProcessFromExtents(ctx, d.log)
+		if err != nil {
+			d.log.Error("error processing segment for gc", "error", err, "segment", toGC)
+			return c.returnError(ev, err)
+		}
+	}
+
+	err := ci.Close(ctx)
+	if err != nil {
+		d.log.Error("error closing segment after gc", "error", err)
+		return c.returnError(ev, err)
+	}
+
+	density := d.s.Usage()
+
+	d.log.Info("GC cycle complete", "updated-density", density)
+
+	dataDensity.Set(density)
+
+	if ev.Done != nil {
+		go func() {
+			defer close(ev.Done)
+			ev.Done <- EventResult{}
 		}()
 	}
 
