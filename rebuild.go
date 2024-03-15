@@ -228,7 +228,7 @@ func (d *Disk) loadLBAMap(ctx context.Context) (bool, error) {
 		}
 
 		total += stats.Size
-		used += stats.Size
+		used += stats.Used
 
 		seg := SegmentId(id)
 
