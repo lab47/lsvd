@@ -9,20 +9,23 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.15.4
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.47.2
 	github.com/aws/smithy-go v1.18.1
-	github.com/davecgh/go-spew v1.1.1
+	github.com/fatih/color v1.13.0
+	github.com/fxamacker/cbor/v2 v2.6.0
 	github.com/hashicorp/go-hclog v1.5.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/hashicorp/hcl/v2 v2.19.1
 	github.com/lab47/cleo v0.0.0-20231211212820-67d5758db9ae
-	github.com/lab47/hclogx v0.0.0-20240208042236-dd5ce338cbe1
 	github.com/lab47/lz4decode v0.0.0-20240106213008-0c6757ab03cd
 	github.com/lab47/mode v0.0.0-20231220013342-9703805c0e9c
+	github.com/lima-vm/go-qcow2reader v0.1.1
 	github.com/mitchellh/cli v1.1.5
 	github.com/mr-tron/base58 v1.2.0
+	github.com/nats-io/nats.go v1.33.1
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pierrec/lz4/v4 v4.1.19
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.17.0
+	github.com/prometheus/client_model v0.4.1-0.20230718164431-9a2bf3000d16
 	github.com/stretchr/testify v1.8.4
 	go.etcd.io/bbolt v1.3.8
 	golang.org/x/exp v0.0.0-20220317015231-48e79f11773a
@@ -53,8 +56,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bgentry/speakeasy v0.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/fatih/color v1.13.0 // indirect
-	github.com/fxamacker/cbor/v2 v2.6.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/google/uuid v1.1.2 // indirect
@@ -65,19 +67,16 @@ require (
 	github.com/jessevdk/go-flags v1.5.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.17.6 // indirect
-	github.com/lima-vm/go-qcow2reader v0.1.1 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/mitchellh/copystructure v1.0.0 // indirect
 	github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7 // indirect
 	github.com/mitchellh/reflectwalk v1.0.0 // indirect
-	github.com/nats-io/nats.go v1.33.1 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/posener/complete v1.1.1 // indirect
-	github.com/prometheus/client_model v0.4.1-0.20230718164431-9a2bf3000d16 // indirect
 	github.com/prometheus/common v0.44.0 // indirect
 	github.com/prometheus/procfs v0.11.1 // indirect
 	github.com/shopspring/decimal v1.2.0 // indirect
