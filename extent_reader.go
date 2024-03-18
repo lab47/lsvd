@@ -157,7 +157,23 @@ func (d *ExtentReader) fetchExtent(
 
 		n, err := lz4.UncompressBlock(rawData, uncomp)
 		if err != nil {
-			return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+			d.log.Error("error uncompressing block, retrying", "error", err, "comp-hash", rangeSum(rawData))
+			rn, err := d.rangeCache.ReadAt(ctx, addr.Segment, rawData, int64(addr.Offset))
+			if err != nil {
+				return RangeData{}, nil, err
+			}
+
+			if rn != len(rawData) {
+				log.Error("didn't read full data during retry", "read", n, "expected", len(rawData), "size", addr.Size)
+				return RangeData{}, nil, fmt.Errorf("short read detected")
+			}
+
+			n, err = lz4.UncompressBlock(rawData, uncomp)
+			if err != nil {
+				return RangeData{}, nil, errors.Wrapf(err, "error uncompressing data (rawsize: %d, compdata: %d)", len(rawData), len(uncomp))
+			}
+
+			log.Warn("retried reading compressed data and worked", "comp-hash", rangeSum(rawData))
 		}
 
 		if n != int(sz) {
