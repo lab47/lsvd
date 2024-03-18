@@ -74,7 +74,7 @@ func (d *ExtentReader) fetchData(ctx context.Context, seg SegmentId, data []byte
 
 	_, err := ci.ReadAt(data, off)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	// We don't check the size because the last chunk might not be a full chunk.
