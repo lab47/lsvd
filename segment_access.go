@@ -12,8 +12,10 @@ type SegmentReader interface {
 }
 
 type VolumeInfo struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	Parent string `json:"parent"`
+	UUID   string `json:"uuid"`
 }
 
 type SegmentAccess interface {

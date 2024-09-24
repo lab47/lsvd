@@ -17,6 +17,7 @@ const (
 	CleanupSegments
 	StartGC
 	SweepSmallSegments
+	ImproveDensity
 )
 
 type Event struct {
@@ -174,6 +175,8 @@ func (c *Controller) handleEvent(ctx *Context, ev Event) error {
 		return c.startGC(ctx, ev)
 	case SweepSmallSegments:
 		return c.sweepSmallSegments(ctx, ev)
+	case ImproveDensity:
+		return c.returnError(ev, c.improveDensity(ctx))
 	default:
 		return fmt.Errorf("unknown kind: %d", ev.Kind)
 	}

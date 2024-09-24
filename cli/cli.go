@@ -20,7 +20,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lab47/lsvd/logger"
+	"github.com/lab47/lve/paths"
+	"github.com/lab47/lve/pkg/id"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -136,6 +139,8 @@ func (c *CLI) loadSegmentAccess(ctx context.Context, path string) (lsvd.SegmentA
 			c.log.Error("error initializing S3 access", "error", err)
 			os.Exit(1)
 		}
+	} else {
+		return nil, fmt.Errorf("no proper storage backend defined")
 	}
 
 	return sa, nil
@@ -218,8 +223,10 @@ func niceSize(sz int64) string {
 
 func (c *CLI) volumeInit(ctx context.Context, opts struct {
 	Global
-	Name string `short:"n" long:"name" description:"name of volume to create" required:"true"`
-	Size string `short:"s" long:"size" description:"size to advertise the volume as" required:"true"`
+	Name   string `short:"n" long:"name" description:"name of volume to create" required:"true"`
+	Size   string `short:"s" long:"size" description:"size to advertise the volume as" required:"true"`
+	Parent string `short:"p" long:"parent" description:"parent volume to pull blocks from"`
+	UUID   string `short:"u" long:"uuid" description:"UUID identifier for the volume"`
 }) error {
 	sa, err := c.loadSegmentAccess(ctx, opts.Config)
 	if err != nil {
@@ -243,16 +250,35 @@ func (c *CLI) volumeInit(ctx context.Context, opts struct {
 		return fmt.Errorf("name must not be empty")
 	}
 
+	if opts.UUID == "" {
+		opts.UUID = uuid.NewString()
+	}
+
+	var parentInfo *lsvd.VolumeInfo
+
+	if opts.Parent != "" {
+		parentInfo, err = sa.GetVolumeInfo(ctx, opts.Parent)
+		if err != nil {
+			return fmt.Errorf("error loading parent volume: %s", err)
+		}
+	}
+
 	err = sa.InitVolume(ctx, &lsvd.VolumeInfo{
-		Name: opts.Name,
-		Size: size,
+		Name:   opts.Name,
+		Size:   size,
+		Parent: opts.Parent,
+		UUID:   opts.UUID,
 	})
 	if err != nil {
 		c.log.Error("error listing volumes", "error", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("volume '%s' created (%d bytes)\n", opts.Name, size)
+	fmt.Printf("volume '%s' created (%d bytes, id: %s)\n", opts.Name, size, opts.UUID)
+
+	if parentInfo != nil {
+		fmt.Printf("  parent: %s (id: %s\n", opts.Parent, parentInfo.UUID)
+	}
 
 	return nil
 }
@@ -271,7 +297,10 @@ func (c *CLI) volumeInspect(ctx context.Context, opts struct {
 		return err
 	}
 
-	fmt.Printf("%s: %d\n", info.Name, info.Size)
+	fmt.Printf("%s: %d (id: %s)\n", info.Name, info.Size, info.UUID)
+	if info.Parent != "" {
+		fmt.Printf("  parent: %s\n", info.Parent)
+	}
 
 	entries, err := sa.ListSegments(ctx, opts.Name)
 	if err != nil {
@@ -347,10 +376,11 @@ func (c *CLI) volumePack(ctx context.Context, opts struct {
 
 func (c *CLI) nbdServe(ctx context.Context, opts struct {
 	Global
-	Name        string `short:"n" long:"name" description:"name of volume to create" required:"true"`
-	Path        string `short:"p" long:"path" description:"path for cached data" required:"true"`
+	Name        string `short:"n" long:"name" description:"name of volume to serve"`
+	Path        string `short:"p" long:"path" description:"path for cached data or lve root if id" required:"true"`
 	Addr        string `short:"a" long:"addr" default:":8989" description:"address to listen on"`
 	MetricsAddr string `long:"metrics" default:":2121" description:"address to expose metrics on"`
+	Id          id.Id  `short:"i" long:"id" description:"identifier of disk"`
 }) error {
 	sa, err := c.loadSegmentAccess(ctx, opts.Config)
 	if err != nil {
@@ -360,16 +390,78 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 	log := c.log
 	path := opts.Path
 	name := opts.Name
+	addr := opts.Addr
 
 	if opts.Debug {
 		log.SetLevel(slog.LevelDebug)
 	}
 
-	d, err := lsvd.NewDisk(ctx, log, path,
+	var diskPath, parentPath string
+
+	if opts.Id.Valid() {
+		name = opts.Id.String()
+
+		root := paths.Root(path)
+
+		err := root.SetupDisk(opts.Id)
+		if err != nil {
+			return err
+		}
+
+		addr = "unix:" + root.DiskSocket(opts.Id)
+
+		diskPath = root.DiskData(opts.Id, "cache")
+		parentPath = root.DiskData(opts.Id, "parent-cache")
+	} else {
+		if name == "" {
+			name = "default"
+		}
+
+		diskPath = path
+		parentPath = filepath.Join(path, "parent")
+	}
+
+	vol, err := sa.GetVolumeInfo(ctx, name)
+	if err != nil {
+		return fmt.Errorf("unable to locate volume: %s", err)
+	}
+
+	diskOpts := []lsvd.Option{
 		lsvd.WithSegmentAccess(sa),
 		lsvd.WithVolumeName(name),
 		lsvd.EnableAutoGC,
-	)
+	}
+
+	if vol.Parent != "" {
+		pvol, err := sa.GetVolumeInfo(ctx, vol.Parent)
+		if err != nil {
+			return fmt.Errorf("unable to locate volume: %s", err)
+		}
+
+		log.Info("using parent volume", "name", vol.Parent, "uuid", pvol.UUID)
+
+		err = os.MkdirAll(parentPath, 0755)
+		if err != nil {
+			return errors.Wrapf(err, "creating parent-cache dir")
+		}
+
+		lower, err := lsvd.NewDisk(ctx, log,
+			parentPath,
+			lsvd.WithSegmentAccess(sa),
+			lsvd.WithVolumeName(vol.Parent),
+			lsvd.ReadOnly(),
+		)
+		if err != nil {
+			log.Error("error creating new disk", "error", err)
+			os.Exit(1)
+		}
+
+		diskOpts = append(diskOpts,
+			lsvd.WithLowerLayer(lower),
+		)
+	}
+
+	d, err := lsvd.NewDisk(ctx, log, diskPath, diskOpts...)
 	if err != nil {
 		log.Error("error creating new disk", "error", err)
 		os.Exit(1)
@@ -396,14 +488,14 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 
 	var l net.Listener
 
-	if strings.HasPrefix(opts.Addr, "unix:") {
-		l, err = net.Listen("unix", opts.Addr[5:])
+	if strings.HasPrefix(addr, "unix:") {
+		l, err = net.Listen("unix", addr[5:])
 		if err != nil {
 			log.Error("error listening on addr", "error", err, "addr", opts.Addr)
 			os.Exit(1)
 		}
 	} else {
-		l, err = net.Listen("tcp", opts.Addr)
+		l, err = net.Listen("tcp", addr)
 		if err != nil {
 			log.Error("error listening on addr", "error", err, "addr", opts.Addr)
 			os.Exit(1)
@@ -435,6 +527,22 @@ func (c *CLI) nbdServe(ctx context.Context, opts struct {
 	http.Handle("/metrics", promhttp.Handler())
 	// Will also include pprof via the init() in net/http/pprof
 	go http.ListenAndServe(opts.MetricsAddr, nil)
+
+	if url := os.Getenv("NATS_URL"); url != "" {
+		nc, err := lsvd.NewNATSConnector(log, d, url, name)
+		if err != nil {
+			log.Error("error creating nats connector", "error", err, "url", url)
+			os.Exit(1)
+		}
+
+		err = nc.Start(ctx)
+		if err != nil {
+			log.Error("error starting nats connector", "error", err, "url", url)
+			os.Exit(1)
+		}
+
+		log.Info("connected disk to nats", "url", url)
+	}
 
 	for {
 		c, err := l.Accept()

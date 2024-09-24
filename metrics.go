@@ -135,6 +135,12 @@ func counterValue(c prometheus.Counter) int64 {
 	return int64(m.Counter.GetValue())
 }
 
+func counterValueFloat(c prometheus.Counter) float64 {
+	var m dto.Metric
+	c.Write(&m)
+	return m.Counter.GetValue()
+}
+
 func gaugeValue(c prometheus.Gauge) float64 {
 	var m dto.Metric
 	c.Write(&m)
